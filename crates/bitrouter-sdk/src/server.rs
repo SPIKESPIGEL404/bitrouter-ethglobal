@@ -36,6 +36,10 @@ use crate::language_model::types::{ApiProtocol, PipelineRequest};
 pub struct AppState {
     /// The `language_model` pipeline.
     pub language_model: Arc<Pipeline>,
+    /// SDK-level `skip_auth`: when `true`, a credential-less request is given a
+    /// synthesised local caller; otherwise a pre-auth anonymous placeholder
+    /// (an `AuthHook` is then expected to validate / reject).
+    pub skip_auth: bool,
 }
 
 impl App {
@@ -49,6 +53,7 @@ impl App {
             .clone();
         let state = AppState {
             language_model: pipeline,
+            skip_auth: self.skip_auth(),
         };
         let router = build_router(state);
         let listener = tokio::net::TcpListener::bind(listen)
@@ -160,9 +165,15 @@ async fn handle(
         Err(e) => return e.into_response(),
     };
 
-    // Phase 2 uses a synthesised local caller; real auth arrives in Phase 3.
-    let mut req =
-        PipelineRequest::new(prompt.model.clone(), CallerContext::local(), prompt.clone());
+    // `skip_auth` decides the starting caller: a synthesised local caller when
+    // on, else a pre-auth anonymous placeholder for `AuthHook` to upgrade or
+    // reject (003 §10 / 004 §3.4).
+    let caller = if state.skip_auth {
+        CallerContext::local()
+    } else {
+        CallerContext::anonymous()
+    };
+    let mut req = PipelineRequest::new(prompt.model.clone(), caller, prompt.clone());
     req.headers = headers;
 
     if prompt.stream {

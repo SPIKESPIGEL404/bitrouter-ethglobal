@@ -35,6 +35,7 @@ pub struct App {
     #[allow(dead_code)]
     metrics_store: Option<Arc<dyn MetricsStore>>,
     migrations: Vec<MigrationItem>,
+    skip_auth: bool,
 }
 
 impl App {
@@ -52,6 +53,12 @@ impl App {
     pub fn migrations(&self) -> &[MigrationItem] {
         &self.migrations
     }
+
+    /// Whether `server.skip_auth` is on — when true, credential-less requests
+    /// are admitted with a synthesised local caller (003 §10 / 004 §3.4).
+    pub fn skip_auth(&self) -> bool {
+        self.skip_auth
+    }
 }
 
 /// Configures an [`App`]. Each protocol is configured through its own
@@ -61,6 +68,7 @@ pub struct AppBuilder {
     language_model: PipelineBuilder,
     metrics_store: Option<Arc<dyn MetricsStore>>,
     migrations: Vec<MigrationItem>,
+    skip_auth: bool,
 }
 
 impl AppBuilder {
@@ -70,7 +78,16 @@ impl AppBuilder {
             language_model: PipelineBuilder::new(),
             metrics_store: None,
             migrations: Vec::new(),
+            skip_auth: false,
         }
+    }
+
+    /// Set the SDK-level `skip_auth` flag (code default `false`). When `true`,
+    /// the server admits credential-less requests with a synthesised local
+    /// caller; `AuthHook` still validates any credential that *is* presented.
+    pub fn skip_auth(mut self, skip_auth: bool) -> Self {
+        self.skip_auth = skip_auth;
+        self
     }
 
     /// Configure the `language_model` protocol pipeline.
@@ -125,6 +142,7 @@ impl AppBuilder {
             language_model,
             metrics_store: self.metrics_store,
             migrations: self.migrations,
+            skip_auth: self.skip_auth,
         })
     }
 }
