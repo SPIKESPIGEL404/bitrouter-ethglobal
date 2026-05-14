@@ -23,6 +23,9 @@ pub mod event;
 pub mod metrics;
 pub mod plugin;
 
+#[cfg(feature = "config_file")]
+pub mod config;
+
 #[cfg(feature = "server")]
 pub mod server;
 

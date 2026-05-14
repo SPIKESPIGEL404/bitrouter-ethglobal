@@ -141,23 +141,33 @@ impl Pipeline {
             ctx.stream_context(),
         );
 
-        Ok(Box::pin(self.drive_stream(ctx, upstream, processor)))
+        // The guard owns the processor + context. Whatever happens to the
+        // returned stream — drained to completion, errored, or **dropped early
+        // by the client** — `on_stream_end` and Settlement run exactly once
+        // (008 §3.5: streaming settlement must not be lost).
+        let guard = StreamSettlementGuard {
+            pipeline: self.clone(),
+            state: Some((processor, ctx)),
+        };
+
+        Ok(Box::pin(self.drive_stream(upstream, guard)))
     }
 
-    /// The streaming driver: feeds upstream parts through the `StreamProcessor`,
-    /// yields the (possibly rewritten) parts, and on termination finalises the
-    /// StreamHook stage and runs Settlement. `on_stream_end` is guaranteed for
-    /// every termination path.
+    /// The streaming driver: feeds upstream parts through the guard's
+    /// `StreamProcessor`, yields the (possibly rewritten) parts, and on a
+    /// normal/errored/aborted termination finalises via the guard. If the
+    /// consumer drops the stream early, the guard's `Drop` impl finalises with
+    /// `ClientDisconnected` instead.
     fn drive_stream(
         self: Arc<Self>,
-        mut ctx: PipelineContext,
         mut upstream: StreamPartStream,
-        mut processor: StreamProcessor,
+        mut guard: StreamSettlementGuard,
     ) -> impl Stream<Item = Result<StreamPart>> + Send {
         async_stream::stream! {
             // Set on every break path below; the loop only exits via `break`.
             let outcome: StreamOutcome;
             'pump: loop {
+                let processor = guard.processor();
                 match upstream.next().await {
                     Some(Ok(part)) => {
                         let is_finish = matches!(part, StreamPart::Finish { .. });
@@ -189,16 +199,8 @@ impl Pipeline {
                     }
                 }
             }
-
-            // StreamHook stage termination — `on_stream_end` fires for every hook.
-            processor.finish(outcome).await;
-            let stream_ctx = processor.into_context();
-            ctx.absorb_stream(stream_ctx);
-
-            // Stage 4 — Settlement runs once the stream is done.
-            self.run_settlement(&mut ctx, true, None).await;
-            self.observe_after(Phase::Settlement, &ctx).await;
-            self.observe_end(&ctx, RequestOutcome::Completed).await;
+            // Normal/errored/aborted termination — finalise inline.
+            guard.finalize(outcome).await;
         }
     }
 
@@ -356,6 +358,62 @@ impl Pipeline {
             if fut.catch_unwind().await.is_err() {
                 tracing::warn!("ObserveHook::on_request_end panicked; swallowed");
             }
+        }
+    }
+}
+
+/// Owns the streaming `StreamProcessor` + `PipelineContext` for the lifetime of
+/// a streaming response, and guarantees the StreamHook stage's `on_stream_end`
+/// plus Stage-4 Settlement run **exactly once** — whether the stream completes
+/// normally or the client drops it early.
+struct StreamSettlementGuard {
+    pipeline: Arc<Pipeline>,
+    /// `Some` until finalised; `take`n by `finalize` or `drop`, whichever fires
+    /// first, so finalisation is exactly-once.
+    state: Option<(StreamProcessor, PipelineContext)>,
+}
+
+impl StreamSettlementGuard {
+    /// Mutable access to the in-flight processor (the stream driver feeds parts
+    /// through it). Panics only if called after finalisation, which the driver
+    /// never does.
+    fn processor(&mut self) -> &mut StreamProcessor {
+        &mut self
+            .state
+            .as_mut()
+            .expect("stream guard used after finalisation")
+            .0
+    }
+
+    /// Finalise inline on a normal/errored/aborted termination.
+    async fn finalize(&mut self, outcome: StreamOutcome) {
+        if let Some((mut processor, mut ctx)) = self.state.take() {
+            processor.finish(outcome).await;
+            ctx.absorb_stream(processor.into_context());
+            self.pipeline.run_settlement(&mut ctx, true, None).await;
+            self.pipeline.observe_after(Phase::Settlement, &ctx).await;
+            self.pipeline
+                .observe_end(&ctx, RequestOutcome::Completed)
+                .await;
+        }
+    }
+}
+
+impl Drop for StreamSettlementGuard {
+    fn drop(&mut self) {
+        // If `state` is still `Some`, the consumer dropped the stream before it
+        // terminated — settle the delivered tokens on a detached task with a
+        // `ClientDisconnected` outcome (008 §3.5: no lost streaming settlement).
+        if let Some((mut processor, mut ctx)) = self.state.take() {
+            let pipeline = self.pipeline.clone();
+            tokio::spawn(async move {
+                processor.finish(StreamOutcome::ClientDisconnected).await;
+                ctx.absorb_stream(processor.into_context());
+                pipeline.run_settlement(&mut ctx, true, None).await;
+                pipeline
+                    .observe_end(&ctx, RequestOutcome::ClientDisconnected)
+                    .await;
+            });
         }
     }
 }
