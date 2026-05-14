@@ -426,7 +426,7 @@ async fn mpp_charge_settles_against_tempo_channel() {
 
 #[tokio::test]
 async fn settlement_owns_only_its_own_tables() {
-    // The settlement migration creates exactly its four tables and no others —
+    // The settlement migration creates exactly its five tables and no others —
     // in particular, never auth's `users` / `api_keys`.
     let pool = pool().await;
     let rows = sqlx::query(
@@ -442,8 +442,87 @@ async fn settlement_owns_only_its_own_tables() {
         vec![
             "byok_provider_keys",
             "credit_accounts",
+            "credit_ledger_entries",
             "mpp_sessions",
             "requests",
         ],
+    );
+}
+
+// ===== credit ledger idempotency (004 §7.5) =====
+
+#[tokio::test]
+async fn credit_charge_through_pipeline_writes_one_ledger_entry() {
+    let pool = pool().await;
+    add_credits(&pool, "u-led", 1_000_000).await.unwrap();
+    let metrics: Arc<SqliteMetricsStore> = Arc::new(SqliteMetricsStore::new(pool.clone()));
+
+    let mut b = PipelineBuilder::new();
+    b.routing_table(routing_table())
+        .executor(executor())
+        .charge_strategy(CreditCharge::new(pool.clone(), pricing()))
+        .settlement_recorder(ReceiptRecorder::new(metrics));
+    let pipeline = Arc::new(b.build().unwrap());
+
+    let resp = pipeline
+        .execute(request(CallerContext::new(
+            "k",
+            "u-led",
+            PaymentMethod::Credits,
+        )))
+        .await
+        .unwrap();
+    assert_eq!(resp.final_charge_micro_usd, 700);
+    // one ledger row from add_credits (+1M) + one from the charge (-700) = 2
+    assert_eq!(
+        crate::charge::credit_ledger_count(&pool, "u-led")
+            .await
+            .unwrap(),
+        2
+    );
+}
+
+#[tokio::test]
+async fn deduct_credits_is_idempotent_on_key() {
+    let pool = pool().await;
+    add_credits(&pool, "u-idem", 1_000_000).await.unwrap();
+
+    // First deduction with key "req-1" — debits the balance, writes a ledger row.
+    let charged = crate::charge::deduct_credits(&pool, "u-idem", 700, "req-1")
+        .await
+        .unwrap();
+    assert!(charged, "first deduction is applied");
+    assert_eq!(
+        credit_balance(&pool, "u-idem").await.unwrap(),
+        1_000_000 - 700
+    );
+
+    // Retry with the SAME key — must be a no-op (no double-debit, no new row).
+    let retried = crate::charge::deduct_credits(&pool, "u-idem", 700, "req-1")
+        .await
+        .unwrap();
+    assert!(!retried, "duplicate deduction reports 'not charged'");
+    assert_eq!(
+        credit_balance(&pool, "u-idem").await.unwrap(),
+        1_000_000 - 700,
+        "balance is debited exactly once"
+    );
+
+    // A different key debits again.
+    let charged2 = crate::charge::deduct_credits(&pool, "u-idem", 300, "req-2")
+        .await
+        .unwrap();
+    assert!(charged2);
+    assert_eq!(
+        credit_balance(&pool, "u-idem").await.unwrap(),
+        1_000_000 - 1000
+    );
+
+    // Ledger: add_credits(1) + req-1(1) + req-2(1) = 3 rows; the retry added none.
+    assert_eq!(
+        crate::charge::credit_ledger_count(&pool, "u-idem")
+            .await
+            .unwrap(),
+        3
     );
 }
