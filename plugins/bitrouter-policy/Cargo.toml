@@ -1,0 +1,20 @@
+[package]
+name = "bitrouter-policy"
+description = "BitRouter policy plugin: PolicyHook, per-API-key spend/chain/expiry/tool rules"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+bitrouter-sdk.workspace = true
+async-trait.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+chrono.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt"] }

@@ -1,0 +1,50 @@
+[package]
+name = "bitrouter-sdk"
+description = "BitRouter SDK: per-protocol pipelines, hook traits, provider adapters"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+async-trait.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+futures.workspace = true
+futures-core.workspace = true
+tokio = { workspace = true, features = ["sync", "rt", "macros", "time"] }
+tokio-stream.workspace = true
+tokio-util.workspace = true
+tracing.workspace = true
+http.workspace = true
+bytes.workspace = true
+pin-project-lite.workspace = true
+async-stream.workspace = true
+reqwest.workspace = true
+eventsource-stream.workspace = true
+chrono.workspace = true
+uuid.workspace = true
+regex.workspace = true
+sha2.workspace = true
+base64.workspace = true
+
+# `server` feature
+axum = { workspace = true, optional = true }
+tower = { workspace = true, optional = true }
+tower-http = { workspace = true, optional = true }
+
+# `config_file` feature
+serde-saphyr = { workspace = true, optional = true }
+
+[features]
+default = []
+# axum HTTP server + SSE handlers + admin endpoints
+server = ["dep:axum", "dep:tower", "dep:tower-http"]
+# yaml config loading (serde-saphyr + tokio::fs)
+config_file = ["dep:serde-saphyr", "tokio/fs"]
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["sync", "rt", "macros", "time", "rt-multi-thread"] }
