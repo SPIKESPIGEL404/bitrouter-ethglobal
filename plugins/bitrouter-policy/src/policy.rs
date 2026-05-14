@@ -1,15 +1,17 @@
-//! Policy definitions and their **combination semantics**.
+//! Policy definitions and their **combination semantics** (004 §4.2).
 //!
-//! A request may be subject to several policies at once (e.g. a key-level and
-//! an org-level policy). v0's behaviour here was implicit; v1 makes the
-//! combination rule explicit (004 §4.2):
+//! A request may be subject to several policies at once. v0's behaviour here
+//! was implicit; v1 makes the combination rule explicit, per check kind:
 //!
-//! - **deny overrides** — if *any* policy denies a model, it is denied;
-//! - **allowlists intersect** — a model must be allowed by *every* policy that
-//!   declares an allowlist;
-//! - **limits take the minimum** — the effective spend ceiling is the smallest
-//!   non-`None` ceiling across all policies;
-//! - **expiry takes the earliest** — the effective expiry is the earliest set.
+//! | check         | combination                                            |
+//! |---------------|---------------------------------------------------------|
+//! | model deny    | union — if *any* policy denies a model, it is denied    |
+//! | model allow   | **intersect** — allowed by *every* policy with a list   |
+//! | spend limit   | **minimum** (AND, strictest)                            |
+//! | expiry        | **earliest** (AND)                                      |
+//! | chain limit   | **intersect** (AND) — allowed by every policy's list    |
+//! | tool access   | **union** (OR) — a tool is OK if *any* policy allows it |
+//! | rate limit    | **minimum** (AND, strictest)                            |
 
 use chrono::{DateTime, Utc};
 use serde::Deserialize;
@@ -28,6 +30,14 @@ pub struct Policy {
     pub max_spend_micro_usd: Option<u64>,
     /// Hard expiry — requests after this instant are denied.
     pub expires_at: Option<DateTime<Utc>>,
+    /// Allowed payment chains (e.g. `tempo`). `None`/empty = all chains
+    /// allowed. Combined by **intersection** across policies (004 §4.2).
+    pub allowed_chains: Option<Vec<String>>,
+    /// Allowed tool names. `None` = all tools allowed. Combined by **union**
+    /// across policies — a tool is permitted if *any* policy allows it.
+    pub allowed_tools: Option<Vec<String>>,
+    /// Requests-per-minute ceiling. Combined by **minimum** (strictest wins).
+    pub max_requests_per_minute: Option<u32>,
 }
 
 /// Why a policy check failed.
@@ -44,6 +54,17 @@ pub enum PolicyViolation {
     },
     /// The policy has expired.
     Expired,
+    /// The caller's payment chain is not in the allowed set.
+    ChainNotAllowed(String),
+    /// A requested tool is not permitted by policy.
+    ToolNotAllowed(String),
+    /// The requests-per-minute ceiling has been reached.
+    RateLimitExceeded {
+        /// Observed requests per minute.
+        observed: u32,
+        /// The ceiling that was hit.
+        limit: u32,
+    },
 }
 
 impl std::fmt::Display for PolicyViolation {
@@ -56,12 +77,21 @@ impl std::fmt::Display for PolicyViolation {
                 write!(f, "spend limit reached ({spent} / {limit} micro-USD)")
             }
             PolicyViolation::Expired => write!(f, "policy has expired"),
+            PolicyViolation::ChainNotAllowed(c) => {
+                write!(f, "payment chain '{c}' is not permitted by policy")
+            }
+            PolicyViolation::ToolNotAllowed(t) => {
+                write!(f, "tool '{t}' is not permitted by policy")
+            }
+            PolicyViolation::RateLimitExceeded { observed, limit } => {
+                write!(f, "rate limit reached ({observed} / {limit} req/min)")
+            }
         }
     }
 }
 
 /// The combined effect of zero or more policies — the result of folding a set
-/// of [`Policy`] together by the documented combination semantics.
+/// of [`Policy`] together by the documented combination semantics (004 §4.2).
 #[derive(Debug, Clone, Default)]
 pub struct EffectivePolicy {
     allowed_models: Option<Vec<String>>,
@@ -70,12 +100,27 @@ pub struct EffectivePolicy {
     pub max_spend_micro_usd: Option<u64>,
     /// The effective (earliest) expiry.
     pub expires_at: Option<DateTime<Utc>>,
+    /// The effective allowed-chain set — the **intersection** of every
+    /// policy's chain allowlist. `None` = unrestricted.
+    allowed_chains: Option<Vec<String>>,
+    /// The effective allowed-tool set — the **union** of every policy's tool
+    /// allowlist. `None` = unrestricted (a policy with no tool list, or no
+    /// policies at all, leaves tools unrestricted).
+    allowed_tools: Option<Vec<String>>,
+    /// The effective (minimum) requests-per-minute ceiling.
+    pub max_requests_per_minute: Option<u32>,
 }
 
 impl EffectivePolicy {
     /// Fold a set of policies into their combined effect.
     pub fn combine<'a>(policies: impl IntoIterator<Item = &'a Policy>) -> Self {
         let mut eff = EffectivePolicy::default();
+        // Tool access is a UNION: track whether any policy left tools
+        // unrestricted (→ effective unrestricted) vs. accumulating the union.
+        let mut tool_union: Vec<String> = Vec::new();
+        let mut any_tool_unrestricted = false;
+        let mut any_tool_restricted = false;
+
         for p in policies {
             // denylists union — deny overrides
             for m in &p.denied_models {
@@ -83,18 +128,47 @@ impl EffectivePolicy {
                     eff.denied_models.push(m.clone());
                 }
             }
-            // allowlists intersect
+            // model allowlists intersect
             if let Some(allow) = &p.allowed_models {
                 eff.allowed_models = Some(match eff.allowed_models.take() {
                     None => allow.clone(),
                     Some(existing) => existing.into_iter().filter(|m| allow.contains(m)).collect(),
                 });
             }
-            // limits take the minimum
+            // chain allowlists intersect (AND)
+            if let Some(chains) = &p.allowed_chains {
+                eff.allowed_chains = Some(match eff.allowed_chains.take() {
+                    None => chains.clone(),
+                    Some(existing) => existing
+                        .into_iter()
+                        .filter(|c| chains.contains(c))
+                        .collect(),
+                });
+            }
+            // tool allowlists union (OR)
+            match &p.allowed_tools {
+                None => any_tool_unrestricted = true,
+                Some(tools) => {
+                    any_tool_restricted = true;
+                    for t in tools {
+                        if !tool_union.contains(t) {
+                            tool_union.push(t.clone());
+                        }
+                    }
+                }
+            }
+            // spend limits take the minimum
             if let Some(limit) = p.max_spend_micro_usd {
                 eff.max_spend_micro_usd = Some(match eff.max_spend_micro_usd {
                     None => limit,
                     Some(existing) => existing.min(limit),
+                });
+            }
+            // rate limits take the minimum (strictest)
+            if let Some(rpm) = p.max_requests_per_minute {
+                eff.max_requests_per_minute = Some(match eff.max_requests_per_minute {
+                    None => rpm,
+                    Some(existing) => existing.min(rpm),
                 });
             }
             // expiry takes the earliest
@@ -105,6 +179,13 @@ impl EffectivePolicy {
                 });
             }
         }
+        // Tools are restricted only if at least one policy declared a list AND
+        // no policy left them unrestricted.
+        eff.allowed_tools = if any_tool_restricted && !any_tool_unrestricted {
+            Some(tool_union)
+        } else {
+            None
+        };
         eff
     }
 
@@ -137,6 +218,53 @@ impl EffectivePolicy {
             }
             _ => Ok(()),
         }
+    }
+
+    /// Check a payment chain against the combined (intersected) allowlist.
+    /// `None`/empty allowlist permits every chain.
+    pub fn check_chain(&self, chain: &str) -> Result<(), PolicyViolation> {
+        match &self.allowed_chains {
+            Some(allow) if !allow.is_empty() && !allow.iter().any(|c| c == chain) => {
+                Err(PolicyViolation::ChainNotAllowed(chain.to_string()))
+            }
+            _ => Ok(()),
+        }
+    }
+
+    /// Check a set of requested tool names against the combined (unioned)
+    /// allowlist. `None` allowlist permits every tool.
+    pub fn check_tools<'t>(
+        &self,
+        tools: impl IntoIterator<Item = &'t str>,
+    ) -> Result<(), PolicyViolation> {
+        if let Some(allow) = &self.allowed_tools {
+            for tool in tools {
+                if !allow.iter().any(|t| t == tool) {
+                    return Err(PolicyViolation::ToolNotAllowed(tool.to_string()));
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Check an observed requests-per-minute rate against the combined ceiling.
+    pub fn check_rate(&self, observed: u32) -> Result<(), PolicyViolation> {
+        match self.max_requests_per_minute {
+            Some(limit) if observed >= limit => {
+                Err(PolicyViolation::RateLimitExceeded { observed, limit })
+            }
+            _ => Ok(()),
+        }
+    }
+
+    /// Whether this effective policy restricts the payment chain.
+    pub fn has_chain_restriction(&self) -> bool {
+        self.allowed_chains.as_ref().is_some_and(|c| !c.is_empty())
+    }
+
+    /// Whether this effective policy restricts tool access.
+    pub fn has_tool_restriction(&self) -> bool {
+        self.allowed_tools.is_some()
     }
 }
 
@@ -205,5 +333,85 @@ mod tests {
         assert!(eff.check_model("anything").is_ok());
         assert!(eff.check_spend(u64::MAX).is_ok());
         assert!(eff.check_expiry(Utc::now()).is_ok());
+        assert!(eff.check_chain("any-chain").is_ok());
+        assert!(eff.check_tools(["any-tool"]).is_ok());
+        assert!(eff.check_rate(u32::MAX).is_ok());
+        assert!(!eff.has_chain_restriction());
+        assert!(!eff.has_tool_restriction());
+    }
+
+    #[test]
+    fn chain_allowlists_intersect() {
+        let a = Policy {
+            id: "a".into(),
+            allowed_chains: Some(vec!["tempo".into(), "solana".into()]),
+            ..Default::default()
+        };
+        let b = Policy {
+            id: "b".into(),
+            allowed_chains: Some(vec!["tempo".into()]),
+            ..Default::default()
+        };
+        let eff = EffectivePolicy::combine([&a, &b]);
+        // only `tempo` is in both allowlists
+        assert!(eff.check_chain("tempo").is_ok());
+        assert!(eff.check_chain("solana").is_err());
+        assert!(eff.has_chain_restriction());
+    }
+
+    #[test]
+    fn tool_allowlists_union() {
+        let a = Policy {
+            id: "a".into(),
+            allowed_tools: Some(vec!["search".into()]),
+            ..Default::default()
+        };
+        let b = Policy {
+            id: "b".into(),
+            allowed_tools: Some(vec!["calculator".into()]),
+            ..Default::default()
+        };
+        let eff = EffectivePolicy::combine([&a, &b]);
+        // union: a tool is OK if *any* policy allows it
+        assert!(eff.check_tools(["search"]).is_ok());
+        assert!(eff.check_tools(["calculator"]).is_ok());
+        assert!(eff.check_tools(["search", "calculator"]).is_ok());
+        assert!(eff.check_tools(["filesystem"]).is_err());
+    }
+
+    #[test]
+    fn an_unrestricted_policy_makes_tools_unrestricted() {
+        // policy `a` restricts tools, `b` does not (None) — union is "all".
+        let a = Policy {
+            id: "a".into(),
+            allowed_tools: Some(vec!["search".into()]),
+            ..Default::default()
+        };
+        let b = Policy {
+            id: "b".into(),
+            allowed_tools: None,
+            ..Default::default()
+        };
+        let eff = EffectivePolicy::combine([&a, &b]);
+        assert!(!eff.has_tool_restriction());
+        assert!(eff.check_tools(["anything-at-all"]).is_ok());
+    }
+
+    #[test]
+    fn rate_limits_take_the_minimum() {
+        let a = Policy {
+            id: "a".into(),
+            max_requests_per_minute: Some(120),
+            ..Default::default()
+        };
+        let b = Policy {
+            id: "b".into(),
+            max_requests_per_minute: Some(30),
+            ..Default::default()
+        };
+        let eff = EffectivePolicy::combine([&a, &b]);
+        assert_eq!(eff.max_requests_per_minute, Some(30));
+        assert!(eff.check_rate(29).is_ok());
+        assert!(eff.check_rate(30).is_err());
     }
 }
