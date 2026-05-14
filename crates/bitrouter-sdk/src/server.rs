@@ -67,6 +67,11 @@ impl App {
     }
 }
 
+/// Inbound request body ceiling. LLM prompts can be large (long context, image
+/// data-URLs), so the limit is generous — but bounded, so a request body can
+/// never be an unbounded allocation.
+const MAX_BODY_BYTES: usize = 16 * 1024 * 1024;
+
 /// Build the axum router for the given state.
 pub fn build_router(state: AppState) -> Router {
     Router::new()
@@ -76,6 +81,7 @@ pub fn build_router(state: AppState) -> Router {
         .route("/v1beta/models/{model_action}", post(google_generate))
         .route("/v1/models", get(list_models))
         .route("/health", get(health))
+        .layer(axum::extract::DefaultBodyLimit::max(MAX_BODY_BYTES))
         .with_state(state)
 }
 

@@ -43,7 +43,11 @@ pub async fn build_app(config: &Config) -> Result<Assembled> {
         .context("running bitrouter-settlement migrations")?;
 
     // ---- routing table + upstream executor ----
-    let routing_table = Arc::new(ConfigRoutingTable::from_config(config.clone()));
+    // Best-effort model discovery for providers with `auto_discover: true`
+    // and no declared models (003 §5.6) — failures WARN, never abort.
+    let mut resolved = config.clone();
+    bitrouter_sdk::config::discover_models(&mut resolved).await;
+    let routing_table = Arc::new(ConfigRoutingTable::from_config(resolved));
     let executor =
         Arc::new(HttpExecutor::with_defaults().context("building the upstream HTTP executor")?);
 

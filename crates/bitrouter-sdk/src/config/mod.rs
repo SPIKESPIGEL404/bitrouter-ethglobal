@@ -373,3 +373,59 @@ pub async fn load(path: impl AsRef<std::path::Path>) -> Result<Config> {
         .map_err(|e| BitrouterError::internal(format!("reading config {}: {e}", path.display())))?;
     parse(&raw)
 }
+
+/// Best-effort model discovery (003 §5.6). For every provider with
+/// `auto_discover: true` and no declared `models`, `GET {api_base}/models` and
+/// populate the model list from the response (`{ "data": [{ "id": … }] }`,
+/// the OpenAI / Anthropic shape). A provider whose discovery call fails is
+/// left as-is with a WARN — discovery never aborts startup.
+pub async fn discover_models(config: &mut Config) {
+    let client = reqwest::Client::new();
+    for (provider_id, provider) in config.providers.iter_mut() {
+        if !provider.auto_discover || !provider.models.is_empty() {
+            continue;
+        }
+        let url = format!("{}/models", provider.api_base.trim_end_matches('/'));
+        let result = async {
+            let resp = client
+                .get(&url)
+                .bearer_auth(&provider.api_key)
+                .send()
+                .await
+                .ok()?;
+            if !resp.status().is_success() {
+                return None;
+            }
+            let json: serde_json::Value = resp.json().await.ok()?;
+            let ids: Vec<String> = json
+                .get("data")?
+                .as_array()?
+                .iter()
+                .filter_map(|m| m.get("id").and_then(|i| i.as_str()).map(String::from))
+                .collect();
+            Some(ids)
+        }
+        .await;
+        match result {
+            Some(ids) if !ids.is_empty() => {
+                tracing::info!(provider = %provider_id, count = ids.len(), "auto-discovered models");
+                provider.models = ids
+                    .into_iter()
+                    .map(|id| ProviderModel {
+                        id,
+                        api_protocol: None,
+                        rate_limits: None,
+                        pricing: None,
+                    })
+                    .collect();
+            }
+            _ => {
+                tracing::warn!(
+                    provider = %provider_id,
+                    %url,
+                    "auto_discover: model discovery failed — provider left with no models"
+                );
+            }
+        }
+    }
+}

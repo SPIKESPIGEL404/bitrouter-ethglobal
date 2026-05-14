@@ -6,7 +6,14 @@
 //! [`SlidingWindowMatcher`] so a pattern that spans two stream deltas is still
 //! caught.
 
-use regex::Regex;
+use regex::{Regex, RegexBuilder};
+
+/// Compiled-size ceiling for an operator-supplied guardrail pattern. The
+/// `regex` crate is already backtracking-free (no classic ReDoS), but a
+/// pathological counted-repetition pattern could still balloon the compiled
+/// program — this caps it at 1 MiB so a bad config fails fast at load time
+/// rather than OOM-ing.
+const REGEX_SIZE_LIMIT: usize = 1 << 20;
 
 /// What to do when a rule matches.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -29,15 +36,19 @@ pub struct GuardrailRule {
 }
 
 impl GuardrailRule {
-    /// Build a rule, compiling `pattern` as a regex.
+    /// Build a rule, compiling `pattern` as a regex under a [`REGEX_SIZE_LIMIT`]
+    /// compiled-size cap.
     pub fn new(
         name: impl Into<String>,
         pattern: &str,
         action: Action,
     ) -> Result<Self, regex::Error> {
+        let pattern = RegexBuilder::new(pattern)
+            .size_limit(REGEX_SIZE_LIMIT)
+            .build()?;
         Ok(Self {
             name: name.into(),
-            pattern: Regex::new(pattern)?,
+            pattern,
             action,
         })
     }
