@@ -13,6 +13,7 @@ pub mod context;
 pub mod executor;
 pub mod hooks;
 pub mod pipeline;
+pub mod protocol;
 pub mod routing;
 pub mod settlement;
 pub mod stream;
@@ -25,12 +26,17 @@ mod tests;
 
 pub use builder::PipelineBuilder;
 pub use context::{PipelineContext, StreamContext};
-pub use executor::{Executor, MockExecutor, MockResponse, StreamPartStream};
+pub use executor::{
+    Executor, HttpExecutor, HttpTimeouts, MockExecutor, MockResponse, StreamPartStream,
+};
 pub use hooks::{
     DenyReason, ExecutionHook, FallbackDecision, HookDecision, ObserveHook, Phase, PreRequestHook,
     RequestOutcome, RouteHook, StreamHook,
 };
 pub use pipeline::{DEFAULT_KEEPALIVE, Pipeline};
+pub use protocol::{
+    ProtocolAdapter, SseEvent, StreamDecoder, StreamEncoder, adapter_for, sanitize_model_name,
+};
 pub use routing::{
     DefaultFallbackPolicy, FallbackPolicy, ModelInfo, RoutingPrefs, RoutingTable, SortOrder,
     StaticRoutingTable,
