@@ -124,12 +124,17 @@ impl ChargeStrategy for CreditCharge {
         }
 
         // #180 / #440 / #443: a missing price is "unconfigured", not "free".
+        // Per 004 §1.5, an unconfigured price means **`Pass`, not `Claim`** —
+        // the charge is left unsettled (funding_source stays `Unsettled`), a
+        // `PricingUnavailable` event is emitted, and zero is never silently
+        // debited from a real account.
         match self.pricing.resolve(&ctx.provider_id, &ctx.model_id) {
             Some(pricing) if !pricing.is_unconfigured() => {
                 let charge = calculate_charge_micro_usd(&usage_of(ctx), &pricing);
                 deduct_credits(&self.pool, ctx.caller.user_id(), charge).await?;
                 ctx.final_charge_micro_usd = charge;
                 ctx.funding_source = FundingSource::Credits;
+                Ok(ChargeOutcome::Claimed)
             }
             _ => {
                 tracing::warn!(
@@ -141,13 +146,9 @@ impl ChargeStrategy for CreditCharge {
                     provider_id: ctx.provider_id.clone(),
                     service_id: ctx.model_id.clone(),
                 });
-                ctx.final_charge_micro_usd = 0;
-                ctx.funding_source = FundingSource::Credits;
+                Ok(ChargeOutcome::Pass)
             }
         }
-        // The credits caller is handled either way — claim so MPP does not also
-        // run (the request must be charged at most once).
-        Ok(ChargeOutcome::Claimed)
     }
 }
 
@@ -175,6 +176,8 @@ impl ChargeStrategy for MppCharge {
             return Ok(ChargeOutcome::Pass);
         }
 
+        // Per 004 §1.6: an unconfigured price → emit `PricingUnavailable` and
+        // `Pass` (do not settle), exactly as `CreditCharge` does.
         let charge = match self.pricing.resolve(&ctx.provider_id, &ctx.model_id) {
             Some(pricing) if !pricing.is_unconfigured() => {
                 calculate_charge_micro_usd(&usage_of(ctx), &pricing)
@@ -189,7 +192,7 @@ impl ChargeStrategy for MppCharge {
                     provider_id: ctx.provider_id.clone(),
                     service_id: ctx.model_id.clone(),
                 });
-                0
+                return Ok(ChargeOutcome::Pass);
             }
         };
 

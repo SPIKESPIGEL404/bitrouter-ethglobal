@@ -42,7 +42,7 @@ serde-saphyr = { workspace = true, optional = true }
 [features]
 default = []
 # axum HTTP server + SSE handlers + admin endpoints
-server = ["dep:axum", "dep:tower", "dep:tower-http"]
+server = ["dep:axum", "dep:tower", "dep:tower-http", "tokio/signal"]
 # yaml config loading (serde-saphyr + tokio::fs)
 config_file = ["dep:serde-saphyr", "tokio/fs"]
 

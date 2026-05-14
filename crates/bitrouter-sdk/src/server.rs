@@ -60,11 +60,38 @@ impl App {
             .await
             .map_err(|e| BitrouterError::internal(format!("bind {listen}: {e}")))?;
         tracing::info!(%listen, "bitrouter listening");
+        // Graceful shutdown (007 §1.2 / §6.2 / 008 §3.6): on SIGINT/SIGTERM
+        // stop accepting new connections and let in-flight requests finish.
         serve(listener, router)
+            .with_graceful_shutdown(shutdown_signal())
             .await
             .map_err(|e| BitrouterError::internal(format!("serve: {e}")))?;
         Ok(())
     }
+}
+
+/// Resolves when the process receives `SIGINT` (Ctrl-C) or `SIGTERM`.
+async fn shutdown_signal() {
+    let ctrl_c = async {
+        let _ = tokio::signal::ctrl_c().await;
+    };
+    #[cfg(unix)]
+    let terminate = async {
+        match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()) {
+            Ok(mut sig) => {
+                sig.recv().await;
+            }
+            Err(_) => std::future::pending::<()>().await,
+        }
+    };
+    #[cfg(not(unix))]
+    let terminate = std::future::pending::<()>();
+
+    tokio::select! {
+        _ = ctrl_c => {}
+        _ = terminate => {}
+    }
+    tracing::info!("shutdown signal received — draining in-flight requests");
 }
 
 /// Inbound request body ceiling. LLM prompts can be large (long context, image

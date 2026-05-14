@@ -51,8 +51,10 @@ enum Command {
 
 #[derive(Subcommand)]
 enum KeyAction {
-    /// Mint a new `brvk_` virtual key for a user.
-    Generate {
+    /// Mint a new `brvk_` virtual key for a user (007 §1.2: `bitrouter key
+    /// sign`). v1 does not sign a JWT — it creates a DB-backed virtual key and
+    /// prints the plaintext once.
+    Sign {
         /// The owning user id.
         #[arg(short, long)]
         user: String,
@@ -62,6 +64,9 @@ enum KeyAction {
         /// Funding model for the key (`credits` / `mpp` / `byok` / `none`).
         #[arg(short, long, default_value = "credits")]
         payment_method: String,
+        /// Optional policy id to bind to the key (the `policy_id` column).
+        #[arg(long)]
+        policy: Option<String>,
     },
 }
 
@@ -107,10 +112,11 @@ async fn init(config_path: &std::path::Path) -> Result<()> {
 
 async fn key(action: KeyAction) -> Result<()> {
     match action {
-        KeyAction::Generate {
+        KeyAction::Sign {
             user,
             db,
             payment_method,
+            policy,
         } => {
             let pm = match payment_method.as_str() {
                 "credits" => PaymentMethod::Credits,
@@ -119,7 +125,7 @@ async fn key(action: KeyAction) -> Result<()> {
                 "none" => PaymentMethod::None,
                 other => anyhow::bail!("unknown payment method '{other}'"),
             };
-            let key = commands::key_generate(&db, &user, pm).await?;
+            let key = commands::key_sign(&db, &user, pm, policy.as_deref()).await?;
             println!("created virtual key {} for user '{user}'", key.id);
             println!();
             println!("  {}", key.secret);

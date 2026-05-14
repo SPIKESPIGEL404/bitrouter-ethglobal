@@ -196,12 +196,13 @@ async fn regression_180_missing_pricing_skips_charge_not_silently_zero() {
     let req = request(CallerContext::new("k3", "u3", PaymentMethod::Credits));
     let resp = pipeline.execute(req).await.unwrap();
 
-    // Charge is skipped (0) — a *deliberate* skip — and the credit balance is
-    // untouched (not silently debited from a real account).
+    // Charge is skipped (0) — a *deliberate* skip — the credit balance is
+    // untouched, and CreditCharge `Pass`es rather than claiming (004 §1.5), so
+    // the request is left explicitly Unsettled, never silently "credits, 0".
     assert_eq!(resp.final_charge_micro_usd, 0);
     assert_eq!(credit_balance(&pool, "u3").await.unwrap(), 1_000_000);
     let row = receipt(&pool, &resp.request_id).await.unwrap();
-    assert_eq!(row.get::<String, _>("funding_source"), "credits");
+    assert_eq!(row.get::<String, _>("funding_source"), "unsettled");
 }
 
 // ===== cloud #207 / #198 — receipts carry full context, failures recorded =====

@@ -60,12 +60,14 @@ pub struct GeneratedKey {
     pub secret: String,
 }
 
-/// `bitrouter key generate` — mint a `brvk_` virtual key for `user_id`, persist
-/// only its hash, and return the plaintext once.
-pub async fn key_generate(
+/// `bitrouter key sign` — mint a `brvk_` virtual key for `user_id`, persist only
+/// its hash, and return the plaintext once. v1 does **not** sign a JWT (004
+/// §3.0); the command keeps the `sign` name but creates a DB-backed virtual key.
+pub async fn key_sign(
     db_url: &str,
     user_id: &str,
     payment_method: PaymentMethod,
+    policy_id: Option<&str>,
 ) -> Result<GeneratedKey> {
     let pool = SqlitePool::connect(db_url)
         .await
@@ -88,7 +90,7 @@ pub async fn key_generate(
             payment_method,
             spend_limit_micro_usd: None,
             rpm_limit: None,
-            policy_id: None,
+            policy_id: policy_id.map(|s| s.to_string()),
         },
     )
     .await
@@ -137,8 +139,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn key_generate_produces_brvk_secret_and_persists_only_hash() {
-        let key = key_generate("sqlite::memory:", "u1", PaymentMethod::Credits)
+    async fn key_sign_produces_brvk_secret_and_persists_only_hash() {
+        let key = key_sign("sqlite::memory:", "u1", PaymentMethod::Credits, Some("p1"))
             .await
             .unwrap();
         assert!(key.secret.starts_with("brvk_"));

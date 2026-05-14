@@ -83,6 +83,16 @@ impl AuthHook {
 #[async_trait]
 impl PreRequestHook for AuthHook {
     async fn check(&self, ctx: &mut PipelineContext) -> Result<HookDecision> {
+        // Mutual exclusion (004 §3.1): an API key and an MPP payment credential
+        // must not both be presented.
+        let has_api_key = Self::extract_credential(ctx).is_some();
+        let has_payment = ctx.headers().contains_key("payment-signature");
+        if has_api_key && has_payment {
+            return Ok(HookDecision::Deny(DenyReason::BadRequest(
+                "both an API key and an MPP payment credential were provided".to_string(),
+            )));
+        }
+
         let credential = Self::extract_credential(ctx);
 
         let Some(credential) = credential else {
