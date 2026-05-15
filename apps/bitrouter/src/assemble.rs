@@ -15,7 +15,9 @@ use bitrouter_sdk::language_model::HttpExecutor;
 
 use bitrouter_auth::AuthHook;
 use bitrouter_guardrails::{Action, GuardrailPreHook, GuardrailRule, GuardrailStreamHook, RuleSet};
+use bitrouter_observe::PrometheusHook;
 use bitrouter_policy::{PolicyHook, PolicyStore};
+use bitrouter_sdk::MetricsRenderer;
 use bitrouter_settlement::{ModelPricing, MppState, PricingTable, SettlementBundle};
 
 /// A running application plus the database pool it was assembled over (the
@@ -86,10 +88,17 @@ pub async fn build_app_with_path(
     let settlement = SettlementBundle::new(pool.clone(), pricing, mpp);
     let metrics_store = settlement.metrics_store();
 
+    // Prometheus exporter (003 §4.6.2). The same `Arc` is both an
+    // `ObserveHook` (writes) and a `MetricsRenderer` (reads from `/metrics`).
+    let prometheus: Arc<PrometheusHook> = Arc::new(PrometheusHook::new());
+    let prometheus_for_observe = prometheus.clone();
+    let metrics_renderer: Arc<dyn MetricsRenderer> = prometheus;
+
     let pool_for_hooks = pool.clone();
     let app = App::builder()
         .skip_auth(config.server.skip_auth)
         .metrics_store(metrics_store.clone())
+        .metrics_renderer(metrics_renderer)
         .language_model(move |lm| {
             lm.routing_table(routing_table).executor(executor);
             // Stage 1, in order: auth → policy → guardrail (upstream).
@@ -104,6 +113,11 @@ pub async fn build_app_with_path(
                 // StreamHook stage: guardrail downstream redaction / abort.
                 lm.stream_hook(GuardrailStreamHook::new(guardrail_rules));
             }
+            // The Prometheus hook is registered through Arc cloning so the
+            // server's /metrics route reads the same accumulator the pipeline
+            // writes to. ObserveHook is read-only / error-swallowing so a
+            // wiring problem never affects the request path.
+            lm.observe_hook(PrometheusObserve(prometheus_for_observe.clone()));
         })
         // The settlement bundle installs BalanceCheckHook, ByokRouteHook,
         // MppStreamHook, the ChargeStrategy chain and ReceiptRecorder.
@@ -215,4 +229,39 @@ fn build_guardrail_rules(config: &Config) -> Result<RuleSet> {
         );
     }
     Ok(set)
+}
+
+/// A `language_model::ObserveHook` that delegates to a shared `Arc<PrometheusHook>`.
+/// We need this wrapper because `PipelineBuilder::observe_hook` takes a hook by
+/// value (and wraps it in an internal `Arc`), but we want to *share* the same
+/// `Arc<PrometheusHook>` between the writer (the pipeline) and the reader
+/// (`GET /metrics`) so both see the same accumulator.
+struct PrometheusObserve(Arc<PrometheusHook>);
+
+#[async_trait::async_trait]
+impl bitrouter_sdk::language_model::ObserveHook for PrometheusObserve {
+    async fn after_phase(
+        &self,
+        phase: bitrouter_sdk::language_model::Phase,
+        ctx: &bitrouter_sdk::language_model::PipelineContext,
+    ) {
+        self.0.after_phase(phase, ctx).await
+    }
+    fn stream_interest(&self) -> bitrouter_sdk::language_model::StreamInterest {
+        self.0.stream_interest()
+    }
+    async fn on_stream_part(
+        &self,
+        ctx: &bitrouter_sdk::language_model::StreamContext,
+        part: &bitrouter_sdk::language_model::StreamPart,
+    ) {
+        self.0.on_stream_part(ctx, part).await
+    }
+    async fn on_request_end(
+        &self,
+        ctx: &bitrouter_sdk::language_model::PipelineContext,
+        outcome: &bitrouter_sdk::language_model::RequestOutcome,
+    ) {
+        self.0.on_request_end(ctx, outcome).await
+    }
 }

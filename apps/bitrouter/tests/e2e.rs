@@ -126,6 +126,7 @@ async fn e2e_http_server_chat_completions_end_to_end() {
     let state = AppState {
         language_model: assembled.app.language_model().unwrap().clone(),
         skip_auth: assembled.app.skip_auth(),
+        metrics_renderer: assembled.app.metrics_renderer().cloned(),
     };
     let router = build_router(state);
 
@@ -153,6 +154,7 @@ async fn e2e_http_server_chat_completions_end_to_end() {
 
     // /health is up
     let health = router
+        .clone()
         .oneshot(
             Request::builder()
                 .uri("/health")
@@ -162,6 +164,42 @@ async fn e2e_http_server_chat_completions_end_to_end() {
         .await
         .unwrap();
     assert_eq!(health.status(), 200);
+
+    // /metrics renders the Prometheus exposition that the pipeline just
+    // accumulated. The earlier /chat/completions request fed the observer,
+    // so the requests_total{outcome="completed"} counter is at least 1.
+    let metrics = router
+        .oneshot(
+            Request::builder()
+                .uri("/metrics")
+                .body(axum::body::Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(metrics.status(), 200);
+    let ct = metrics
+        .headers()
+        .get("content-type")
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .to_string();
+    assert!(
+        ct.starts_with("text/plain"),
+        "Prometheus content-type must be text/plain (got {ct})"
+    );
+    let text = String::from_utf8(
+        axum::body::to_bytes(metrics.into_body(), 1 << 20)
+            .await
+            .unwrap()
+            .to_vec(),
+    )
+    .unwrap();
+    assert!(
+        text.contains("bitrouter_requests_total{outcome=\"completed\"}"),
+        "/metrics should expose the completed-request counter; got:\n{text}"
+    );
 }
 
 #[tokio::test]

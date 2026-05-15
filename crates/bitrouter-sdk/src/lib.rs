@@ -39,6 +39,8 @@ pub use app::{App, AppBuilder, Plugin};
 pub use caller::{CallerContext, FundingSource, PaymentMethod};
 pub use error::{BitrouterError, Result};
 pub use event::{EventBus, PipelineEvent};
-pub use metrics::{MetricsStore, RateMetrics, RequestMetric, TimeWindow, TokenUsage};
+pub use metrics::{
+    MetricsRenderer, MetricsStore, RateMetrics, RequestMetric, TimeWindow, TokenUsage,
+};
 pub use mpp::{MppVerification, MppVerifier};
 pub use plugin::{MigrationContent, MigrationItem, PluginId};

@@ -9,7 +9,7 @@ use std::sync::Arc;
 
 use crate::error::Result;
 use crate::language_model::{self, PipelineBuilder};
-use crate::metrics::MetricsStore;
+use crate::metrics::{MetricsRenderer, MetricsStore};
 use crate::plugin::{MigrationItem, PluginId};
 
 /// An optional convenience packaging: registers a related set of hooks +
@@ -34,6 +34,9 @@ pub struct App {
     language_model: Option<Arc<language_model::Pipeline>>,
     #[allow(dead_code)]
     metrics_store: Option<Arc<dyn MetricsStore>>,
+    /// Optional Prometheus-style metrics renderer; if set, the HTTP server
+    /// exposes `GET /metrics` against it (003 §4.6.2).
+    metrics_renderer: Option<Arc<dyn MetricsRenderer>>,
     migrations: Vec<MigrationItem>,
     skip_auth: bool,
 }
@@ -59,6 +62,12 @@ impl App {
     pub fn skip_auth(&self) -> bool {
         self.skip_auth
     }
+
+    /// The Prometheus-style metrics renderer, if one was wired into the app.
+    /// The HTTP server's `GET /metrics` route reads this.
+    pub fn metrics_renderer(&self) -> Option<&Arc<dyn MetricsRenderer>> {
+        self.metrics_renderer.as_ref()
+    }
 }
 
 /// Configures an [`App`]. Each protocol is configured through its own
@@ -67,6 +76,7 @@ impl App {
 pub struct AppBuilder {
     language_model: PipelineBuilder,
     metrics_store: Option<Arc<dyn MetricsStore>>,
+    metrics_renderer: Option<Arc<dyn MetricsRenderer>>,
     migrations: Vec<MigrationItem>,
     skip_auth: bool,
 }
@@ -77,6 +87,7 @@ impl AppBuilder {
         Self {
             language_model: PipelineBuilder::new(),
             metrics_store: None,
+            metrics_renderer: None,
             migrations: Vec::new(),
             skip_auth: false,
         }
@@ -103,6 +114,14 @@ impl AppBuilder {
     /// written by `ReceiptRecorder`).
     pub fn metrics_store(mut self, store: Arc<dyn MetricsStore>) -> Self {
         self.metrics_store = Some(store);
+        self
+    }
+
+    /// Wire a Prometheus-style metrics renderer. When set, the HTTP server
+    /// exposes `GET /metrics` against it (003 §4.6.2). Typically the same
+    /// `Arc<PrometheusHook>` you registered as an `ObserveHook`.
+    pub fn metrics_renderer(mut self, renderer: Arc<dyn MetricsRenderer>) -> Self {
+        self.metrics_renderer = Some(renderer);
         self
     }
 
@@ -141,6 +160,7 @@ impl AppBuilder {
         Ok(App {
             language_model,
             metrics_store: self.metrics_store,
+            metrics_renderer: self.metrics_renderer,
             migrations: self.migrations,
             skip_auth: self.skip_auth,
         })

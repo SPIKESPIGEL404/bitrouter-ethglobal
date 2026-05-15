@@ -11,6 +11,7 @@ use std::sync::Mutex;
 
 use async_trait::async_trait;
 
+use bitrouter_sdk::MetricsRenderer;
 use bitrouter_sdk::language_model::{
     ObserveHook, Phase, PipelineContext, RequestOutcome, StreamContext, StreamInterest, StreamPart,
 };
@@ -108,6 +109,14 @@ impl ObserveHook for PrometheusHook {
             }
             m.charge_micro_usd_sum += ctx.final_charge_micro_usd;
         }
+    }
+}
+
+/// Lets the HTTP server's `GET /metrics` read the same accumulator the
+/// ObserveHook writes to (the same Arc is registered as both).
+impl MetricsRenderer for PrometheusHook {
+    fn render(&self) -> String {
+        Self::render(self)
     }
 }
 

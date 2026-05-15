@@ -30,6 +30,7 @@ use crate::language_model::Pipeline;
 use crate::language_model::protocol::{adapter_for, sanitize_model_name};
 use crate::language_model::stream::{SseFrame, SseKeepaliveStream};
 use crate::language_model::types::{ApiProtocol, PipelineRequest};
+use crate::metrics::MetricsRenderer;
 
 /// Shared axum state.
 #[derive(Clone)]
@@ -40,6 +41,8 @@ pub struct AppState {
     /// synthesised local caller; otherwise a pre-auth anonymous placeholder
     /// (an `AuthHook` is then expected to validate / reject).
     pub skip_auth: bool,
+    /// Optional Prometheus-style metrics renderer; `GET /metrics` reads this.
+    pub metrics_renderer: Option<Arc<dyn MetricsRenderer>>,
 }
 
 impl App {
@@ -54,6 +57,7 @@ impl App {
         let state = AppState {
             language_model: pipeline.clone(),
             skip_auth: self.skip_auth(),
+            metrics_renderer: self.metrics_renderer().cloned(),
         };
         let router = build_router(state);
         let listener = tokio::net::TcpListener::bind(listen)
@@ -116,6 +120,7 @@ pub fn build_router(state: AppState) -> Router {
         .route("/v1/responses", post(openai_responses))
         .route("/v1beta/models/{model_action}", post(google_generate))
         .route("/v1/models", get(list_models))
+        .route("/metrics", get(prometheus_metrics))
         .route("/health", get(health))
         .layer(axum::extract::DefaultBodyLimit::max(MAX_BODY_BYTES))
         .with_state(state)
@@ -123,6 +128,21 @@ pub fn build_router(state: AppState) -> Router {
 
 async fn health() -> impl IntoResponse {
     (StatusCode::OK, Json(serde_json::json!({ "status": "ok" })))
+}
+
+/// `GET /metrics` — Prometheus text-exposition (003 §4.6.2). Returns 404 when
+/// no [`MetricsRenderer`] is wired into the app, so scrapers can probe.
+async fn prometheus_metrics(State(state): State<AppState>) -> Response {
+    match &state.metrics_renderer {
+        Some(renderer) => Response::builder()
+            .status(StatusCode::OK)
+            .header(header::CONTENT_TYPE, renderer.content_type())
+            .body(Body::from(renderer.render()))
+            .unwrap_or_else(|e| {
+                BitrouterError::internal(format!("rendering metrics: {e}")).into_response()
+            }),
+        None => (StatusCode::NOT_FOUND, "metrics renderer not configured\n").into_response(),
+    }
 }
 
 async fn list_models(State(state): State<AppState>) -> impl IntoResponse {
