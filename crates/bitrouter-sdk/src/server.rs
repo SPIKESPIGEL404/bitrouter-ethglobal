@@ -296,6 +296,74 @@ impl IntoResponse for BitrouterError {
                 "type": self.error_type(),
             }
         }));
-        (status, body).into_response()
+        // 003 §6.4 — payment / rate-limit responses must carry the headers
+        // that auto-paying clients (e.g. the MPP autopay flow, 004 §3.3) and
+        // well-behaved API consumers expect. RFC 7235 §4.1 for
+        // WWW-Authenticate, RFC 7231 §7.1.3 for Retry-After.
+        let mut response = (status, body).into_response();
+        match &self {
+            BitrouterError::PaymentRequired(_) => {
+                if let Ok(v) = header::HeaderValue::from_str(
+                    "Bitrouter-MPP realm=\"bitrouter\", scheme=\"tempo-voucher\"",
+                ) {
+                    response.headers_mut().insert(header::WWW_AUTHENTICATE, v);
+                }
+            }
+            BitrouterError::RateLimited {
+                retry_after: Some(secs),
+            } => {
+                if let Ok(v) = header::HeaderValue::from_str(&secs.to_string()) {
+                    response.headers_mut().insert(header::RETRY_AFTER, v);
+                }
+            }
+            _ => {}
+        }
+        response
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn payment_required_emits_www_authenticate() {
+        let response = BitrouterError::PaymentRequired("send a Tempo voucher".to_string())
+            .into_response();
+        assert_eq!(response.status().as_u16(), 402);
+        let www_auth = response
+            .headers()
+            .get(header::WWW_AUTHENTICATE)
+            .expect("402 must carry WWW-Authenticate (003 §6.4)")
+            .to_str()
+            .unwrap();
+        assert!(www_auth.contains("Bitrouter-MPP"));
+        assert!(www_auth.contains("tempo-voucher"));
+    }
+
+    #[test]
+    fn rate_limited_emits_retry_after_when_present() {
+        let response = BitrouterError::RateLimited {
+            retry_after: Some(42),
+        }
+        .into_response();
+        assert_eq!(response.status().as_u16(), 429);
+        let retry = response
+            .headers()
+            .get(header::RETRY_AFTER)
+            .expect("429 with retry_after must carry Retry-After")
+            .to_str()
+            .unwrap();
+        assert_eq!(retry, "42");
+    }
+
+    #[test]
+    fn rate_limited_omits_retry_after_when_unknown() {
+        let response = BitrouterError::RateLimited { retry_after: None }.into_response();
+        assert_eq!(response.status().as_u16(), 429);
+        assert!(
+            response.headers().get(header::RETRY_AFTER).is_none(),
+            "no Retry-After when the daemon doesn't know how long to wait"
+        );
     }
 }
