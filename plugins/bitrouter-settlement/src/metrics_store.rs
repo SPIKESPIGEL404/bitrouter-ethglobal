@@ -144,13 +144,35 @@ impl MetricsStore for SqliteMetricsStore {
         // The authoritative receipt write. Every billing + identity column is
         // populated (cloud #207 / #198); failed requests are recorded too,
         // with a non-null `error` (#198).
+        //
+        // `ON CONFLICT(request_id) DO UPDATE` over `INSERT OR REPLACE` so that
+        // a retried / streamed-then-finalised write does not reset
+        // `created_at` (which `INSERT OR REPLACE` would). The original
+        // arrival time of a receipt is what analytics keys off; the *update*
+        // refreshes only the mutable columns. Mirrors cloud's pattern in
+        // `bitrouter-cloud-ref/src/db/request_receipt.rs:143-167`.
         sqlx::query(
-            "INSERT OR REPLACE INTO requests \
+            "INSERT INTO requests \
              (request_id, user_id, api_key_id, model_id, provider_id, \
               prompt_tokens, completion_tokens, reasoning_tokens, \
               final_charge_micro_usd, funding_source, byok_used, streamed, \
               latency_ms, generation_time_ms, error, created_at) \
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) \
+             ON CONFLICT(request_id) DO UPDATE SET \
+                user_id = excluded.user_id, \
+                api_key_id = excluded.api_key_id, \
+                model_id = excluded.model_id, \
+                provider_id = excluded.provider_id, \
+                prompt_tokens = excluded.prompt_tokens, \
+                completion_tokens = excluded.completion_tokens, \
+                reasoning_tokens = excluded.reasoning_tokens, \
+                final_charge_micro_usd = excluded.final_charge_micro_usd, \
+                funding_source = excluded.funding_source, \
+                byok_used = excluded.byok_used, \
+                streamed = excluded.streamed, \
+                latency_ms = excluded.latency_ms, \
+                generation_time_ms = excluded.generation_time_ms, \
+                error = excluded.error",
         )
         .bind(&record.request_id)
         .bind(&record.user_id)

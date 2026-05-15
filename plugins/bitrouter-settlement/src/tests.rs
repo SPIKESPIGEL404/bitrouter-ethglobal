@@ -355,6 +355,76 @@ async fn metrics_store_aggregates_spend() {
     assert_eq!(count, 2);
 }
 
+#[tokio::test]
+async fn record_request_upsert_preserves_original_created_at() {
+    // The receipt write is keyed by request_id and uses ON CONFLICT DO UPDATE
+    // so a second write for the same id (streaming finalisation, retry) keeps
+    // the first arrival's created_at. INSERT OR REPLACE used to reset it.
+    use bitrouter_sdk::caller::FundingSource;
+    use bitrouter_sdk::metrics::{MetricsStore, RequestMetric};
+    let pool = pool().await;
+    let metrics = SqliteMetricsStore::new(pool.clone());
+
+    let base = RequestMetric {
+        request_id: "rq1".to_string(),
+        user_id: "u1".to_string(),
+        api_key_id: "k1".to_string(),
+        model_id: "gpt-5".to_string(),
+        provider_id: "openai".to_string(),
+        prompt_tokens: 10,
+        completion_tokens: 5,
+        reasoning_tokens: 0,
+        final_charge_micro_usd: 100,
+        funding_source: FundingSource::Credits,
+        byok_used: false,
+        stream: false,
+        latency_ms: 50,
+        generation_time_ms: 40,
+        error: None,
+    };
+    metrics.record_request(base.clone()).await.unwrap();
+    let first_created_at: String =
+        sqlx::query_scalar("SELECT created_at FROM requests WHERE request_id = ?")
+            .bind("rq1")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+
+    // Sleep just long enough that a fresh Utc::now() would render a different
+    // RFC 3339 string, then overwrite with a different final charge.
+    tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    let mut updated = base.clone();
+    updated.final_charge_micro_usd = 200;
+    updated.error = Some("oops".to_string());
+    metrics.record_request(updated).await.unwrap();
+
+    let second_created_at: String =
+        sqlx::query_scalar("SELECT created_at FROM requests WHERE request_id = ?")
+            .bind("rq1")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    let final_charge: i64 =
+        sqlx::query_scalar("SELECT final_charge_micro_usd FROM requests WHERE request_id = ?")
+            .bind("rq1")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    let error_col: Option<String> =
+        sqlx::query_scalar("SELECT error FROM requests WHERE request_id = ?")
+            .bind("rq1")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+
+    assert_eq!(
+        first_created_at, second_created_at,
+        "created_at must not be reset on conflict"
+    );
+    assert_eq!(final_charge, 200, "mutable fields are refreshed");
+    assert_eq!(error_col.as_deref(), Some("oops"));
+}
+
 // ===== BalanceCheckHook — cloud #225 =====
 
 #[tokio::test]
