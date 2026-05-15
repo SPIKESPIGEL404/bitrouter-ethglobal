@@ -12,8 +12,9 @@
 
 pub mod assemble;
 pub mod commands;
+pub mod daemon;
 
-pub use assemble::{Assembled, build_app};
+pub use assemble::{Assembled, build_app, build_app_with_path};
 
 /// Crate version string, surfaced by `bitrouter --version`.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
