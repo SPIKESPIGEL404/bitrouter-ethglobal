@@ -232,7 +232,13 @@ impl RoutingTable for ConfigRoutingTable {
         let Some(path) = &self.path else {
             return Ok(());
         };
-        let fresh = crate::config::load(path).await?;
+        let mut fresh = crate::config::load(path).await?;
+        // Re-run model discovery so `auto_discover: true` providers pick up
+        // upstream additions / removals (007 §1.2 #3 — "重新获取 provider
+        // 的模型列表 (auto_discover)"). Best-effort: discovery failures WARN,
+        // they do not abort the reload — same policy as initial assembly
+        // (003 §5.6).
+        crate::config::discover_models(&mut fresh).await;
         *self.config.write().expect("config lock poisoned") = fresh;
         Ok(())
     }
