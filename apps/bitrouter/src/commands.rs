@@ -168,9 +168,35 @@ pub fn list_providers(config: &Config) -> Vec<ProviderListing> {
     providers
 }
 
+/// Reject a policy id that would escape its directory or hide as a dotfile.
+/// Allowed: ASCII letters / digits / `_` / `-` / `.` (not as the leading char).
+fn validate_policy_id(id: &str) -> Result<()> {
+    if id.is_empty() {
+        anyhow::bail!("policy id must not be empty");
+    }
+    if id.starts_with('.') {
+        anyhow::bail!("policy id must not start with '.' (no dotfiles / `..`)");
+    }
+    if id.chars().any(|c| {
+        c == '/'
+            || c == '\\'
+            || c == '\0'
+            || c.is_whitespace()
+            || !(c.is_ascii_alphanumeric() || c == '_' || c == '-' || c == '.')
+    }) {
+        anyhow::bail!(
+            "policy id '{id}' contains invalid characters (allowed: letters, digits, `_`, `-`, `.`)"
+        );
+    }
+    Ok(())
+}
+
 /// `bitrouter policy create` — write a starter policy file into `policy_dir`.
-/// Refuses to overwrite an existing policy of the same id.
+/// Refuses to overwrite an existing policy of the same id. The `id` must be a
+/// plain filename (no path separators, no `..`, no leading dot) so the joined
+/// path cannot escape `policy_dir`.
 pub async fn create_policy(policy_dir: &std::path::Path, id: &str) -> Result<std::path::PathBuf> {
+    validate_policy_id(id)?;
     tokio::fs::create_dir_all(policy_dir)
         .await
         .with_context(|| format!("creating policy dir {}", policy_dir.display()))?;
@@ -277,6 +303,40 @@ providers:
         assert_eq!(providers[1].id, "openai");
         assert_eq!(providers[1].model_count, 2);
         assert!(providers[1].active);
+    }
+
+    #[tokio::test]
+    async fn create_policy_rejects_path_traversal_ids() {
+        let dir = std::env::temp_dir().join(format!(
+            "brpoltrav-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        // Path separators, parent refs, dotfiles, control chars — all rejected
+        // before any file is written.
+        for bad in [
+            "../etc/passwd",
+            "foo/bar",
+            "..",
+            ".hidden",
+            "",
+            "a b",
+            "x\0y",
+        ] {
+            let err = create_policy(&dir, bad).await.unwrap_err();
+            let msg = format!("{err}");
+            assert!(
+                msg.contains("invalid characters")
+                    || msg.contains("must not")
+                    || msg.contains("empty"),
+                "bad id '{bad}' should have been rejected; got: {msg}"
+            );
+        }
+        // The dir was never created (because every call bailed before touching fs).
+        // (We don't assert this strongly — a parallel test could create it — just clean up.)
+        let _ = tokio::fs::remove_dir_all(&dir).await;
     }
 
     #[tokio::test]

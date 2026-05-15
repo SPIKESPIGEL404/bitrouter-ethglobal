@@ -298,17 +298,65 @@ async fn serve(config_path: &Path) -> Result<()> {
     };
     let control = daemon::run_control_socket(socket_path, app.clone(), listen);
 
+    // SIGHUP triggers a config reload — per 007 §1.2, reload should be
+    // available via either `bitrouter reload` (the socket path) *or* a HUP
+    // signal. The dispatch reuses the same routing-table reload.
+    let hup_app = app.clone();
+    let hup = async move {
+        use tokio::signal::unix::{SignalKind, signal};
+        let mut hup = match signal(SignalKind::hangup()) {
+            Ok(s) => s,
+            Err(e) => return Err::<(), _>(anyhow::Error::from(e)),
+        };
+        loop {
+            if hup.recv().await.is_none() {
+                return Ok(());
+            }
+            if let Some(pipeline) = hup_app.language_model() {
+                match pipeline.routing_table().reload().await {
+                    Ok(()) => tracing::info!("SIGHUP — config reloaded"),
+                    Err(e) => tracing::warn!(error = %e, "SIGHUP reload failed"),
+                }
+            }
+        }
+    };
+
     let result = tokio::select! {
         r = http => r,
         r = control => r,
+        // SIGHUP loop never returns Ok by design; an error from signal setup
+        // is logged and we keep serving.
+        r = hup => match r {
+            Ok(()) => Ok(()),
+            Err(e) => { tracing::warn!(error = %e, "SIGHUP listener unavailable"); Ok(()) }
+        },
     };
     daemon::remove_pid_file(&pid_path).await;
     result
 }
 
 async fn start(config_path: &Path, log_path: &Path) -> Result<()> {
+    // Refuse to start a second daemon on top of a live one — silent overlap
+    // would race two `serve`s for the same socket and one would die into the
+    // log file (the user wouldn't see it).
+    let cfg_socket_path = match config::load(config_path).await {
+        Ok(cfg) => Some(PathBuf::from(&cfg.server.control_socket)),
+        Err(_) => None,
+    };
+    if let Some(socket) = &cfg_socket_path {
+        let pid_path = pid_path_for(socket);
+        if let Some(pid) = daemon::read_pid_file(&pid_path).await {
+            if process_is_alive(pid) {
+                anyhow::bail!(
+                    "bitrouter is already running (pid {pid}); use `restart` or `stop` first"
+                );
+            }
+            // Stale PID file — clean up before proceeding.
+            daemon::remove_pid_file(&pid_path).await;
+        }
+    }
+
     let exe = std::env::current_exe().context("locating current bitrouter binary")?;
-    // Open the log file (append) for the child's stdout+stderr.
     let log = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
@@ -318,15 +366,31 @@ async fn start(config_path: &Path, log_path: &Path) -> Result<()> {
         .try_clone()
         .context("duplicating log handle for stderr")?;
 
-    let child = std::process::Command::new(&exe)
+    // Detach the child into its own process group so the parent shell's
+    // SIGHUP (terminal close) does not propagate to it. Otherwise closing the
+    // tab would kill the daemon. Pattern from
+    // https://doc.rust-lang.org/std/os/unix/process/trait.CommandExt.html#tymethod.process_group
+    use std::os::unix::process::CommandExt;
+    let mut child = std::process::Command::new(&exe)
         .arg("serve")
         .arg("--config")
         .arg(config_path)
         .stdout(std::process::Stdio::from(log))
         .stderr(std::process::Stdio::from(log_err))
         .stdin(std::process::Stdio::null())
+        .process_group(0)
         .spawn()
         .context("spawning detached `bitrouter serve`")?;
+
+    // Liveness grace period: if the child explodes immediately (bad config,
+    // port already in use, …) we want the user to know now, not in the log.
+    tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+    if let Ok(Some(status)) = child.try_wait() {
+        anyhow::bail!(
+            "daemon exited immediately ({status}); see {} for details",
+            log_path.display()
+        );
+    }
 
     println!(
         "bitrouter daemon started (pid {}) — logs at {}",
@@ -357,21 +421,36 @@ async fn restart(config_path: &Path, socket: &Path, log_path: &Path) -> Result<(
             Ok(other) => return Err(anyhow::anyhow!("unexpected response: {other:?}")),
             Err(e) => tracing::warn!(error = %e, "stop failed — proceeding to start"),
         }
-        // Give the old process a beat to release the socket / port.
-        wait_for_socket_release(socket).await;
+        // 007 §6.2 allows in-flight requests up to 30s to drain. Wait that
+        // long for the socket to be released. If it still isn't, escalate to
+        // SIGKILL on the recorded pid — otherwise `start` would race the old
+        // process for the same socket and one of them would die silently.
+        let pid_path = pid_path_for(socket);
+        if !wait_for_socket_release(socket, std::time::Duration::from_secs(30)).await {
+            tracing::warn!("socket still held after 30s — escalating to SIGKILL on pid file");
+            if let Some(pid) = daemon::read_pid_file(&pid_path).await {
+                force_kill(pid).await;
+            }
+            // One more brief wait so the kernel cleans up the socket inode.
+            wait_for_socket_release(socket, std::time::Duration::from_secs(2)).await;
+            // The killed daemon never removed its pid file; do it now.
+            daemon::remove_pid_file(&pid_path).await;
+        }
     }
     start(config_path, log_path).await
 }
 
 /// Poll until the socket file is gone (the old daemon removes it on exit), up
-/// to a small ceiling. Bounded so a stuck daemon doesn't wedge `restart`.
-async fn wait_for_socket_release(socket: &Path) {
-    for _ in 0..20 {
+/// to `timeout`. Returns true on success, false on timeout.
+async fn wait_for_socket_release(socket: &Path, timeout: std::time::Duration) -> bool {
+    let deadline = std::time::Instant::now() + timeout;
+    while std::time::Instant::now() < deadline {
         if !socket.exists() {
-            return;
+            return true;
         }
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
     }
+    !socket.exists()
 }
 
 async fn reload(socket: &Path) -> Result<()> {
@@ -569,4 +648,28 @@ fn print_unimplemented(name: &str, detail: &str) {
     for line in detail.lines() {
         eprintln!("  {line}");
     }
+}
+
+/// Liveness check: `kill -0 <pid>` returns success iff the pid is reachable
+/// (i.e. exists and we have permission to signal it). No actual signal is
+/// sent. We shell out to keep `apps/bitrouter` `#![forbid(unsafe_code)]`.
+fn process_is_alive(pid: u32) -> bool {
+    std::process::Command::new("kill")
+        .args(["-0", &pid.to_string()])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
+}
+
+/// Send SIGKILL to `pid`. Best-effort — if the process is already gone the
+/// kernel returns ESRCH and we silently move on.
+async fn force_kill(pid: u32) {
+    let _ = tokio::process::Command::new("kill")
+        .args(["-9", &pid.to_string()])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .await;
 }
