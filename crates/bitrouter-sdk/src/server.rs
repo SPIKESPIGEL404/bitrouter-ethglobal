@@ -30,6 +30,7 @@ use crate::language_model::Pipeline;
 use crate::language_model::protocol::{adapter_for, sanitize_model_name};
 use crate::language_model::stream::{SseFrame, SseKeepaliveStream};
 use crate::language_model::types::{ApiProtocol, PipelineRequest};
+use crate::mcp;
 use crate::metrics::MetricsRenderer;
 
 /// Shared axum state.
@@ -37,6 +38,9 @@ use crate::metrics::MetricsRenderer;
 pub struct AppState {
     /// The `language_model` pipeline.
     pub language_model: Arc<Pipeline>,
+    /// Optional `mcp` pipeline — `POST /mcp/{name}` is mounted only when set
+    /// (003 §3.5.1).
+    pub mcp: Option<Arc<mcp::Pipeline>>,
     /// SDK-level `skip_auth`: when `true`, a credential-less request is given a
     /// synthesised local caller; otherwise a pre-auth anonymous placeholder
     /// (an `AuthHook` is then expected to validate / reject).
@@ -56,6 +60,7 @@ impl App {
             .clone();
         let state = AppState {
             language_model: pipeline.clone(),
+            mcp: self.mcp().cloned(),
             skip_auth: self.skip_auth(),
             metrics_renderer: self.metrics_renderer().cloned(),
         };
@@ -120,6 +125,7 @@ pub fn build_router(state: AppState) -> Router {
         .route("/v1/responses", post(openai_responses))
         .route("/v1beta/models/{model_action}", post(google_generate))
         .route("/v1/models", get(list_models))
+        .route("/mcp/{server}", post(mcp_invoke))
         .route("/metrics", get(prometheus_metrics))
         .route("/health", get(health))
         .layer(axum::extract::DefaultBodyLimit::max(MAX_BODY_BYTES))
@@ -142,6 +148,50 @@ async fn prometheus_metrics(State(state): State<AppState>) -> Response {
                 BitrouterError::internal(format!("rendering metrics: {e}")).into_response()
             }),
         None => (StatusCode::NOT_FOUND, "metrics renderer not configured\n").into_response(),
+    }
+}
+
+/// `POST /mcp/{server}` — Model Context Protocol invocation (003 §3.5.1).
+///
+/// v1.0 implements the JSON-RPC request/response shape only; the Streamable
+/// HTTP SSE response variant is a documented follow-up (the MCP protocol's
+/// `Streamable HTTP` transport — see <https://modelcontextprotocol.io>).
+async fn mcp_invoke(
+    State(state): State<AppState>,
+    Path(server): Path<String>,
+    headers: HeaderMap,
+    Json(body): Json<serde_json::Value>,
+) -> Response {
+    let Some(pipeline) = state.mcp.clone() else {
+        return BitrouterError::NotFound("mcp pipeline not configured".to_string()).into_response();
+    };
+    let caller = if state.skip_auth {
+        CallerContext::local()
+    } else {
+        CallerContext::anonymous()
+    };
+    let method = body
+        .get("method")
+        .and_then(|m| m.as_str())
+        .unwrap_or_default()
+        .to_string();
+    if method.is_empty() {
+        return BitrouterError::bad_request("MCP request missing 'method'").into_response();
+    }
+    let params = body
+        .get("params")
+        .cloned()
+        .unwrap_or(serde_json::Value::Null);
+    let request = mcp::McpRequest::new(server, method, params, caller);
+    let _ = headers; // future: pre-request hook may read these
+    match pipeline.execute(request).await {
+        Ok(response) => Json(serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": response.request_id,
+            "result": response.result,
+        }))
+        .into_response(),
+        Err(e) => e.into_response(),
     }
 }
 

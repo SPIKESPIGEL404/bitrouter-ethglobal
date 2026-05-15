@@ -11,6 +11,7 @@ use crate::error::Result;
 use crate::language_model::{self, PipelineBuilder};
 use crate::metrics::{MetricsRenderer, MetricsStore};
 use crate::plugin::{MigrationItem, PluginId};
+use crate::{acp, mcp};
 
 /// An optional convenience packaging: registers a related set of hooks +
 /// migrations into a builder in one call. `Plugin` is **not** a strong,
@@ -32,6 +33,8 @@ pub trait Plugin {
 /// injected infrastructure and the collected migration set.
 pub struct App {
     language_model: Option<Arc<language_model::Pipeline>>,
+    mcp: Option<Arc<mcp::Pipeline>>,
+    acp: Option<Arc<acp::Pipeline>>,
     #[allow(dead_code)]
     metrics_store: Option<Arc<dyn MetricsStore>>,
     /// Optional Prometheus-style metrics renderer; if set, the HTTP server
@@ -50,6 +53,19 @@ impl App {
     /// The `language_model` pipeline, if that protocol was configured.
     pub fn language_model(&self) -> Option<&Arc<language_model::Pipeline>> {
         self.language_model.as_ref()
+    }
+
+    /// The `mcp` (Model Context Protocol) pipeline, if configured. v1.0 ships
+    /// it as pure-routing; the HTTP server mounts `POST /mcp/{name}` against
+    /// it (003 §3.5.1).
+    pub fn mcp(&self) -> Option<&Arc<mcp::Pipeline>> {
+        self.mcp.as_ref()
+    }
+
+    /// The `acp` (Agent Client Protocol) pipeline, if configured. v1.0 ships
+    /// it as pure-routing; the binary's stdio adapter dispatches against it.
+    pub fn acp(&self) -> Option<&Arc<acp::Pipeline>> {
+        self.acp.as_ref()
     }
 
     /// The collected migration set (sorted by version).
@@ -75,6 +91,8 @@ impl App {
 /// you.
 pub struct AppBuilder {
     language_model: PipelineBuilder,
+    mcp: mcp::PipelineBuilder,
+    acp: acp::PipelineBuilder,
     metrics_store: Option<Arc<dyn MetricsStore>>,
     metrics_renderer: Option<Arc<dyn MetricsRenderer>>,
     migrations: Vec<MigrationItem>,
@@ -86,6 +104,8 @@ impl AppBuilder {
     pub fn new() -> Self {
         Self {
             language_model: PipelineBuilder::new(),
+            mcp: mcp::PipelineBuilder::new(),
+            acp: acp::PipelineBuilder::new(),
             metrics_store: None,
             metrics_renderer: None,
             migrations: Vec::new(),
@@ -107,6 +127,28 @@ impl AppBuilder {
         F: FnOnce(&mut PipelineBuilder),
     {
         configure(&mut self.language_model);
+        self
+    }
+
+    /// Configure the `mcp` (Model Context Protocol) protocol pipeline. v1.0
+    /// MCP is pure-routing (no settlement); the HTTP server mounts
+    /// `POST /mcp/{name}` against the built pipeline (003 §3.5.1).
+    pub fn mcp<F>(mut self, configure: F) -> Self
+    where
+        F: FnOnce(&mut mcp::PipelineBuilder),
+    {
+        configure(&mut self.mcp);
+        self
+    }
+
+    /// Configure the `acp` (Agent Client Protocol) protocol pipeline. v1.0
+    /// ACP is pure-routing; the binary's stdio adapter dispatches against the
+    /// built pipeline (003 §3.5.2).
+    pub fn acp<F>(mut self, configure: F) -> Self
+    where
+        F: FnOnce(&mut acp::PipelineBuilder),
+    {
+        configure(&mut self.acp);
         self
     }
 
@@ -154,11 +196,23 @@ impl AppBuilder {
         } else {
             None
         };
+        let mcp = if self.mcp.is_configured() {
+            Some(Arc::new(self.mcp.build()?))
+        } else {
+            None
+        };
+        let acp = if self.acp.is_configured() {
+            Some(Arc::new(self.acp.build()?))
+        } else {
+            None
+        };
 
         self.migrations.sort_by_key(|m| m.version);
 
         Ok(App {
             language_model,
+            mcp,
+            acp,
             metrics_store: self.metrics_store,
             metrics_renderer: self.metrics_renderer,
             migrations: self.migrations,

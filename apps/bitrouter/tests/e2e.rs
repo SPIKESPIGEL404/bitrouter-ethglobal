@@ -125,6 +125,7 @@ async fn e2e_http_server_chat_completions_end_to_end() {
     // oneshot request — exercises server.rs + the inbound OpenAI adapter.
     let state = AppState {
         language_model: assembled.app.language_model().unwrap().clone(),
+        mcp: assembled.app.mcp().cloned(),
         skip_auth: assembled.app.skip_auth(),
         metrics_renderer: assembled.app.metrics_renderer().cloned(),
     };
@@ -262,4 +263,138 @@ async fn e2e_credits_caller_authenticates_and_is_charged() {
         .await
         .unwrap();
     assert_eq!(balance, 1_000_000 - 92);
+}
+
+#[tokio::test]
+async fn e2e_mcp_route_invokes_the_pure_routing_pipeline() {
+    use async_trait::async_trait;
+    use bitrouter_sdk::App;
+    use bitrouter_sdk::mcp::{Executor, McpRequest, McpResponse, McpTarget, RoutingTable};
+    use http::Request;
+    use std::sync::Arc;
+    use tower::ServiceExt;
+
+    // A tiny static MCP routing table + echo executor — just enough to prove
+    // the pipeline wires through the HTTP route.
+    struct StaticTable;
+    #[async_trait]
+    impl RoutingTable for StaticTable {
+        async fn resolve(
+            &self,
+            server: &str,
+            _caller: &bitrouter_sdk::caller::CallerContext,
+        ) -> bitrouter_sdk::Result<McpTarget> {
+            if server == "known" {
+                Ok(McpTarget {
+                    server_name: server.to_string(),
+                    endpoint: "stdio://known".to_string(),
+                    api_key: None,
+                })
+            } else {
+                Err(bitrouter_sdk::BitrouterError::NotFound(format!(
+                    "unknown mcp server '{server}'"
+                )))
+            }
+        }
+    }
+    struct EchoExecutor;
+    #[async_trait]
+    impl Executor for EchoExecutor {
+        async fn execute(
+            &self,
+            target: &McpTarget,
+            request: &McpRequest,
+        ) -> bitrouter_sdk::Result<McpResponse> {
+            Ok(McpResponse {
+                request_id: request.request_id.clone(),
+                result: serde_json::json!({
+                    "method": request.method,
+                    "server": target.server_name,
+                    "params_seen": request.params,
+                }),
+            })
+        }
+    }
+
+    // Minimal LM executor — never actually called by the MCP route. We only
+    // need a Pipeline to satisfy AppState.language_model.
+    struct UnusedLmExecutor;
+    #[async_trait]
+    impl bitrouter_sdk::language_model::Executor for UnusedLmExecutor {
+        async fn execute(
+            &self,
+            _target: &bitrouter_sdk::language_model::RoutingTarget,
+            _prompt: &bitrouter_sdk::language_model::Prompt,
+        ) -> bitrouter_sdk::Result<bitrouter_sdk::language_model::ExecutionResult> {
+            Err(bitrouter_sdk::BitrouterError::internal(
+                "unused in this test",
+            ))
+        }
+        async fn execute_stream(
+            &self,
+            _target: &bitrouter_sdk::language_model::RoutingTarget,
+            _prompt: &bitrouter_sdk::language_model::Prompt,
+        ) -> bitrouter_sdk::Result<bitrouter_sdk::language_model::StreamPartStream> {
+            Err(bitrouter_sdk::BitrouterError::internal(
+                "unused in this test",
+            ))
+        }
+    }
+
+    // Build an App with both pipelines — the LM is just enough to satisfy
+    // AppState; the test exercises POST /mcp/{name}.
+    let app = App::builder()
+        .language_model(|lm| {
+            lm.routing_table(Arc::new(
+                bitrouter_sdk::language_model::StaticRoutingTable::new(),
+            ))
+            .executor(Arc::new(UnusedLmExecutor));
+        })
+        .mcp(|m| {
+            m.routing_table(Arc::new(StaticTable))
+                .executor(Arc::new(EchoExecutor));
+        })
+        .skip_auth(true)
+        .build()
+        .expect("app builds");
+
+    let state = AppState {
+        language_model: app.language_model().unwrap().clone(),
+        mcp: app.mcp().cloned(),
+        skip_auth: true,
+        metrics_renderer: None,
+    };
+    let router = build_router(state);
+
+    let body = serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "tools/list",
+        "params": { "filter": "" }
+    });
+    let request = Request::builder()
+        .method("POST")
+        .uri("/mcp/known")
+        .header("content-type", "application/json")
+        .body(axum::body::Body::from(body.to_string()))
+        .unwrap();
+    let response = router.clone().oneshot(request).await.unwrap();
+    assert_eq!(response.status(), 200);
+    let bytes = axum::body::to_bytes(response.into_body(), 1 << 16)
+        .await
+        .unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(json["jsonrpc"], "2.0");
+    assert_eq!(json["result"]["method"], "tools/list");
+    assert_eq!(json["result"]["server"], "known");
+
+    // Unknown MCP server → routing table 404
+    let bad = Request::builder()
+        .method("POST")
+        .uri("/mcp/no-such-server")
+        .header("content-type", "application/json")
+        .body(axum::body::Body::from(body.to_string()))
+        .unwrap();
+    let response = router.oneshot(bad).await.unwrap();
+    assert_eq!(response.status(), 404);
 }

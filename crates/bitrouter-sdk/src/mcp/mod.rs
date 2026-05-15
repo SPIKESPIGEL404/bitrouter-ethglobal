@@ -233,6 +233,12 @@ impl PipelineBuilder {
         self
     }
 
+    /// Whether this builder has anything registered. The `App` reads this to
+    /// decide whether to build an `mcp::Pipeline` and mount `/mcp/{name}`.
+    pub fn is_configured(&self) -> bool {
+        self.routing_table.is_some() || self.executor.is_some()
+    }
+
     /// Finalise into a [`Pipeline`].
     pub fn build(self) -> Result<Pipeline> {
         Ok(Pipeline {
