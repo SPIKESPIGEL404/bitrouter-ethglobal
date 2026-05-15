@@ -122,9 +122,46 @@ async fn store_loads_from_yaml_dir() {
     .unwrap();
     let store = PolicyStore::load_dir(&dir).await.unwrap();
     assert_eq!(store.len(), 1);
-    let p = store.get("team").unwrap();
-    assert_eq!(p.max_spend_micro_usd, Some(5000));
-    assert_eq!(p.allowed_models.as_ref().unwrap().len(), 2);
+    store.with_policy("team", |p| {
+        let p = p.expect("team policy loaded");
+        assert_eq!(p.max_spend_micro_usd, Some(5000));
+        assert_eq!(p.allowed_models.as_ref().unwrap().len(), 2);
+    });
+    let _ = tokio::fs::remove_dir_all(&dir).await;
+}
+
+#[tokio::test]
+async fn reload_re_reads_the_policy_dir() {
+    use crate::PolicyStore;
+    let dir = std::env::temp_dir().join(format!("brpolicy-reload-{}", uuid_like()));
+    tokio::fs::create_dir_all(&dir).await.unwrap();
+    tokio::fs::write(
+        dir.join("a.yaml"),
+        "id: team-a\nmax_spend_micro_usd: 5000\n",
+    )
+    .await
+    .unwrap();
+    let store = PolicyStore::load_dir(&dir).await.unwrap();
+    assert_eq!(store.len(), 1);
+
+    // Add a second policy file and drop the first.
+    tokio::fs::remove_file(dir.join("a.yaml")).await.unwrap();
+    tokio::fs::write(
+        dir.join("b.yaml"),
+        "id: team-b\nmax_spend_micro_usd: 9000\n",
+    )
+    .await
+    .unwrap();
+
+    store.reload().await.unwrap();
+    assert_eq!(store.len(), 1, "old policy gone, new one in");
+    store.with_policy("team-a", |p| {
+        assert!(p.is_none(), "deleted policy must not survive reload");
+    });
+    store.with_policy("team-b", |p| {
+        let p = p.expect("team-b loaded");
+        assert_eq!(p.max_spend_micro_usd, Some(9000));
+    });
     let _ = tokio::fs::remove_dir_all(&dir).await;
 }
 

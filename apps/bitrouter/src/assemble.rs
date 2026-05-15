@@ -25,6 +25,11 @@ pub struct Assembled {
     pub app: App,
     /// The shared database pool.
     pub pool: SqlitePool,
+    /// The policy store wired into the language_model pipeline. Held by the
+    /// caller (the daemon) so `bitrouter reload` / SIGHUP can call
+    /// [`bitrouter_policy::PolicyStore::reload`] alongside the routing-table
+    /// reload (008 §3.6 — reload must not affect in-flight requests).
+    pub policy_store: Arc<PolicyStore>,
 }
 
 /// Assemble an [`App`] from a parsed config: connect the database, run every
@@ -66,7 +71,8 @@ pub async fn build_app_with_path(
     // ---- pricing, MPP, policy, guardrails — all derived from config ----
     let pricing = build_pricing_table(config);
     let mpp = build_mpp_state(config, &pool)?;
-    let policy_store = Arc::new(load_policy_store(config).await?);
+    let policy_store: Arc<PolicyStore> = Arc::new(load_policy_store(config).await?);
+    let policy_store_for_reload = policy_store.clone();
     let guardrail_rules = build_guardrail_rules(config)?;
 
     // When MPP is enabled, the channel state doubles as `AuthHook`'s MPP
@@ -92,7 +98,7 @@ pub async fn build_app_with_path(
                 auth = auth.with_mpp_verifier(verifier);
             }
             lm.pre_request_hook(auth);
-            lm.pre_request_hook(PolicyHook::new(policy_store, Some(metrics_store)));
+            lm.pre_request_hook(PolicyHook::new(policy_store.clone(), Some(metrics_store)));
             if !guardrail_rules.is_empty() {
                 lm.pre_request_hook(GuardrailPreHook::new(guardrail_rules.clone()));
                 // StreamHook stage: guardrail downstream redaction / abort.
@@ -105,7 +111,11 @@ pub async fn build_app_with_path(
         .build()
         .context("building the App")?;
 
-    Ok(Assembled { app, pool })
+    Ok(Assembled {
+        app,
+        pool,
+        policy_store: policy_store_for_reload,
+    })
 }
 
 /// Build the settlement `PricingTable` from every provider's per-model pricing.

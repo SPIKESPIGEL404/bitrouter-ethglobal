@@ -270,6 +270,35 @@ async fn main() -> Result<()> {
 
 // ===== serve / daemon control =====
 
+/// Fan out a daemon `Reload` (and SIGHUP) to every reloadable subsystem the
+/// running daemon owns. Failures from any single subsystem are accumulated and
+/// reported together so an unrelated subsystem (e.g. a missing policy dir)
+/// doesn't mask a fixable routing-table reload.
+struct AppReloader {
+    app: Arc<bitrouter_sdk::App>,
+    policy_store: Arc<bitrouter_policy::PolicyStore>,
+}
+
+#[async_trait::async_trait]
+impl daemon::DaemonReloader for AppReloader {
+    async fn reload(&self) -> anyhow::Result<()> {
+        let mut errors: Vec<String> = Vec::new();
+        if let Some(pipeline) = self.app.language_model() {
+            if let Err(e) = pipeline.routing_table().reload().await {
+                errors.push(format!("routing table: {e}"));
+            }
+        }
+        if let Err(e) = self.policy_store.reload().await {
+            errors.push(format!("policy store: {e}"));
+        }
+        if errors.is_empty() {
+            Ok(())
+        } else {
+            Err(anyhow::anyhow!(errors.join("; ")))
+        }
+    }
+}
+
 async fn serve(config_path: &Path) -> Result<()> {
     let cfg = config::load(config_path)
         .await
@@ -280,6 +309,11 @@ async fn serve(config_path: &Path) -> Result<()> {
 
     let assembled = bitrouter::build_app_with_path(&cfg, Some(config_path)).await?;
     let app = Arc::new(assembled.app);
+    let policy_store = assembled.policy_store;
+    let reloader: Arc<dyn daemon::DaemonReloader> = Arc::new(AppReloader {
+        app: app.clone(),
+        policy_store: policy_store.clone(),
+    });
 
     daemon::write_pid_file(&pid_path).await?;
     println!(
@@ -296,12 +330,12 @@ async fn serve(config_path: &Path) -> Result<()> {
             .await
             .map_err(anyhow::Error::from)
     };
-    let control = daemon::run_control_socket(socket_path, app.clone(), listen);
+    let control = daemon::run_control_socket(socket_path, app.clone(), listen, reloader.clone());
 
     // SIGHUP triggers a config reload — per 007 §1.2, reload should be
     // available via either `bitrouter reload` (the socket path) *or* a HUP
-    // signal. The dispatch reuses the same routing-table reload.
-    let hup_app = app.clone();
+    // signal. Same fan-out as the Reload command — every reloadable subsystem.
+    let hup_reloader = reloader.clone();
     let hup = async move {
         use tokio::signal::unix::{SignalKind, signal};
         let mut hup = match signal(SignalKind::hangup()) {
@@ -312,11 +346,9 @@ async fn serve(config_path: &Path) -> Result<()> {
             if hup.recv().await.is_none() {
                 return Ok(());
             }
-            if let Some(pipeline) = hup_app.language_model() {
-                match pipeline.routing_table().reload().await {
-                    Ok(()) => tracing::info!("SIGHUP — config reloaded"),
-                    Err(e) => tracing::warn!(error = %e, "SIGHUP reload failed"),
-                }
+            match hup_reloader.reload().await {
+                Ok(()) => tracing::info!("SIGHUP — reload succeeded"),
+                Err(e) => tracing::warn!(error = %e, "SIGHUP reload failed"),
             }
         }
     };

@@ -6,7 +6,23 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use bitrouter::build_app_with_path;
-use bitrouter::daemon::{self, DaemonCommand, DaemonResponse};
+use bitrouter::daemon::{self, DaemonCommand, DaemonResponse, NoopReloader};
+use bitrouter_sdk::App;
+
+/// A reloader that re-reads only the routing table. Used by the reload test —
+/// production callers use the AppReloader in main.rs which also reloads the
+/// policy store.
+struct RoutingTableReloader(Arc<App>);
+
+#[async_trait::async_trait]
+impl daemon::DaemonReloader for RoutingTableReloader {
+    async fn reload(&self) -> anyhow::Result<()> {
+        if let Some(pipeline) = self.0.language_model() {
+            pipeline.routing_table().reload().await?;
+        }
+        Ok(())
+    }
+}
 use bitrouter_sdk::config;
 
 fn tiny_config_yaml(db_url: &str) -> String {
@@ -73,6 +89,7 @@ async fn status_route_and_stop_roundtrip_over_the_control_socket() {
         socket.clone(),
         app.clone(),
         "127.0.0.1:1234".to_string(),
+        Arc::new(NoopReloader),
     ));
 
     // Wait for the listener to be ready (bind is fast but not synchronous).
@@ -140,6 +157,7 @@ async fn reload_re_reads_the_config_file() {
         socket.clone(),
         app.clone(),
         "127.0.0.1:0".to_string(),
+        Arc::new(RoutingTableReloader(app.clone())),
     ));
     for _ in 0..50 {
         if socket.exists() {
@@ -204,6 +222,7 @@ async fn route_for_unknown_model_returns_a_clean_error() {
         socket.clone(),
         app.clone(),
         "127.0.0.1:0".to_string(),
+        Arc::new(NoopReloader),
     ));
     for _ in 0..50 {
         if socket.exists() {
@@ -246,6 +265,7 @@ async fn concurrent_clients_are_all_served() {
         socket.clone(),
         app.clone(),
         "127.0.0.1:0".to_string(),
+        Arc::new(NoopReloader),
     ));
     for _ in 0..50 {
         if socket.exists() {
@@ -289,6 +309,7 @@ async fn malformed_input_does_not_take_the_server_down() {
         socket.clone(),
         app.clone(),
         "127.0.0.1:0".to_string(),
+        Arc::new(NoopReloader),
     ));
     for _ in 0..50 {
         if socket.exists() {
@@ -340,6 +361,7 @@ async fn reload_returns_error_when_the_config_is_broken() {
         socket.clone(),
         app.clone(),
         "127.0.0.1:0".to_string(),
+        Arc::new(RoutingTableReloader(app.clone())),
     ));
     for _ in 0..50 {
         if socket.exists() {
@@ -392,6 +414,7 @@ async fn socket_file_has_owner_only_permissions() {
         socket.clone(),
         app.clone(),
         "127.0.0.1:0".to_string(),
+        Arc::new(NoopReloader),
     ));
     for _ in 0..50 {
         if socket.exists() {

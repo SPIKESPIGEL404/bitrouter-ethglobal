@@ -17,6 +17,28 @@ use bitrouter_sdk::App;
 use bitrouter_sdk::caller::CallerContext;
 use bitrouter_sdk::language_model::RoutingPrefs;
 
+/// Anything the daemon's `Reload` command (and SIGHUP) should re-read. The
+/// runtime reloader fans out to every reloadable subsystem — routing table,
+/// policy store, … — atomically per subsystem. A failure in one is reported
+/// but does not abort the others. The trait uses `#[async_trait]` so it is
+/// object-safe (`Arc<dyn DaemonReloader>`).
+#[async_trait::async_trait]
+pub trait DaemonReloader: Send + Sync {
+    /// Reload every reloadable subsystem.
+    async fn reload(&self) -> anyhow::Result<()>;
+}
+
+/// A reloader that does nothing — useful for tests / minimal embeddings of the
+/// daemon control surface that don't have anything to reload.
+pub struct NoopReloader;
+
+#[async_trait::async_trait]
+impl DaemonReloader for NoopReloader {
+    async fn reload(&self) -> anyhow::Result<()> {
+        Ok(())
+    }
+}
+
 /// A command sent from the CLI to a running daemon.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "cmd", rename_all = "snake_case")]
@@ -82,7 +104,12 @@ pub const DEFAULT_CONTROL_SOCKET: &str = "./bitrouter.sock";
 ///
 /// `listen` is the HTTP address (reported in `Status`); the socket is bound at
 /// `socket_path` and removed on return.
-pub async fn run_control_socket(socket_path: PathBuf, app: Arc<App>, listen: String) -> Result<()> {
+pub async fn run_control_socket(
+    socket_path: PathBuf,
+    app: Arc<App>,
+    listen: String,
+    reloader: Arc<dyn DaemonReloader>,
+) -> Result<()> {
     // A stale socket file from a crashed daemon would block the bind.
     let _ = tokio::fs::remove_file(&socket_path).await;
     let listener = UnixListener::bind(&socket_path)
@@ -96,12 +123,17 @@ pub async fn run_control_socket(socket_path: PathBuf, app: Arc<App>, listen: Str
         .with_context(|| format!("chmod 0600 {}", socket_path.display()))?;
     tracing::info!(socket = %socket_path.display(), "control socket listening (mode 0600)");
 
-    let result = accept_loop(&listener, &app, &listen).await;
+    let result = accept_loop(&listener, &app, &listen, &reloader).await;
     let _ = tokio::fs::remove_file(&socket_path).await;
     result
 }
 
-async fn accept_loop(listener: &UnixListener, app: &Arc<App>, listen: &str) -> Result<()> {
+async fn accept_loop(
+    listener: &UnixListener,
+    app: &Arc<App>,
+    listen: &str,
+    reloader: &Arc<dyn DaemonReloader>,
+) -> Result<()> {
     loop {
         let (stream, _addr) = listener
             .accept()
@@ -109,7 +141,7 @@ async fn accept_loop(listener: &UnixListener, app: &Arc<App>, listen: &str) -> R
             .context("accepting control-socket connection")?;
         // Handle one command per connection. A `Stop` ends the loop (and thus
         // the whole `serve`); any other command loops for the next client.
-        if handle_connection(stream, app, listen).await? {
+        if handle_connection(stream, app, listen, reloader).await? {
             tracing::info!("stop command received — shutting down");
             return Ok(());
         }
@@ -117,7 +149,12 @@ async fn accept_loop(listener: &UnixListener, app: &Arc<App>, listen: &str) -> R
 }
 
 /// Handle one connection. Returns `Ok(true)` if it was a `Stop` command.
-async fn handle_connection(stream: UnixStream, app: &Arc<App>, listen: &str) -> Result<bool> {
+async fn handle_connection(
+    stream: UnixStream,
+    app: &Arc<App>,
+    listen: &str,
+    reloader: &Arc<dyn DaemonReloader>,
+) -> Result<bool> {
     let mut reader = BufReader::new(stream);
     let mut line = String::new();
     if reader.read_line(&mut line).await? == 0 {
@@ -138,26 +175,26 @@ async fn handle_connection(stream: UnixStream, app: &Arc<App>, listen: &str) -> 
     };
 
     let is_stop = matches!(command, DaemonCommand::Stop);
-    let response = dispatch(command, app, listen).await;
+    let response = dispatch(command, app, listen, reloader).await;
     write_response(reader.get_mut(), &response).await?;
     Ok(is_stop)
 }
 
-async fn dispatch(command: DaemonCommand, app: &Arc<App>, listen: &str) -> DaemonResponse {
+async fn dispatch(
+    command: DaemonCommand,
+    app: &Arc<App>,
+    listen: &str,
+    reloader: &Arc<dyn DaemonReloader>,
+) -> DaemonResponse {
     match command {
         DaemonCommand::Stop => DaemonResponse::Ok,
-        DaemonCommand::Reload => match app.language_model() {
-            Some(pipeline) => match pipeline.routing_table().reload().await {
-                Ok(()) => {
-                    tracing::info!("config reloaded");
-                    DaemonResponse::Ok
-                }
-                Err(e) => DaemonResponse::Error {
-                    message: format!("reload failed: {e}"),
-                },
-            },
-            None => DaemonResponse::Error {
-                message: "no language_model pipeline configured".to_string(),
+        DaemonCommand::Reload => match reloader.reload().await {
+            Ok(()) => {
+                tracing::info!("reload succeeded");
+                DaemonResponse::Ok
+            }
+            Err(e) => DaemonResponse::Error {
+                message: format!("reload failed: {e}"),
             },
         },
         DaemonCommand::Status => {
