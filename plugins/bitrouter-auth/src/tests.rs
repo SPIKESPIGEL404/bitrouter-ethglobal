@@ -203,6 +203,31 @@ async fn inactive_key_is_denied() {
     ));
 }
 
+#[tokio::test]
+async fn upsert_user_rejects_reserved_synthesised_ids() {
+    // `local` / `anonymous` are owned by CallerContext::local() / ::anonymous();
+    // accepting an upsert under those ids would let a skip_auth=true request
+    // silently merge with a real account holder.
+    let pool = pool().await;
+    for reserved in ["local", "anonymous"] {
+        let err = db::upsert_user(&pool, reserved).await.unwrap_err();
+        assert!(
+            err.to_string().contains("reserved"),
+            "expected reservation rejection, got: {err}"
+        );
+    }
+    // Normal ids still work.
+    db::upsert_user(&pool, "alice").await.unwrap();
+}
+
+#[test]
+fn is_reserved_user_id_recognises_synthesised_ids() {
+    assert!(db::is_reserved_user_id("local"));
+    assert!(db::is_reserved_user_id("anonymous"));
+    assert!(!db::is_reserved_user_id("alice"));
+    assert!(!db::is_reserved_user_id("Local")); // case-sensitive on purpose
+}
+
 // ===== MPP credential path (004 §3.1 / §3.3) =====
 
 use std::sync::Arc;

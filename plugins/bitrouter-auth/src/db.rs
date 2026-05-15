@@ -125,8 +125,26 @@ pub async fn find_key_by_hash(pool: &SqlitePool, key_hash: &str) -> Result<Optio
     }))
 }
 
-/// Insert a user row (idempotent on conflict).
+/// Reserved user ids — `CallerContext::local()` / `::anonymous()` synthesise
+/// these and downstream code looks them up. A real user row with one of these
+/// ids would silently merge with the synthesised caller, allowing a
+/// credential-less request under `skip_auth: true` to spend a real user's
+/// credits. Refuse to mint them.
+const RESERVED_USER_IDS: &[&str] = &["local", "anonymous"];
+
+/// Whether `user_id` collides with a reserved synthetic caller.
+pub fn is_reserved_user_id(user_id: &str) -> bool {
+    RESERVED_USER_IDS.contains(&user_id)
+}
+
+/// Insert a user row (idempotent on conflict). Rejects [`is_reserved_user_id`]
+/// values — those names are owned by synthesised callers.
 pub async fn upsert_user(pool: &SqlitePool, user_id: &str) -> Result<()> {
+    if is_reserved_user_id(user_id) {
+        return Err(BitrouterError::bad_request(format!(
+            "user id '{user_id}' is reserved for synthesised callers"
+        )));
+    }
     sqlx::query("INSERT OR IGNORE INTO users (id, created_at) VALUES (?, ?)")
         .bind(user_id)
         .bind(Utc::now().to_rfc3339())
