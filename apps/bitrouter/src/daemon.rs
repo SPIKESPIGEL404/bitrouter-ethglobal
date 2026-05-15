@@ -87,7 +87,14 @@ pub async fn run_control_socket(socket_path: PathBuf, app: Arc<App>, listen: Str
     let _ = tokio::fs::remove_file(&socket_path).await;
     let listener = UnixListener::bind(&socket_path)
         .with_context(|| format!("binding control socket {}", socket_path.display()))?;
-    tracing::info!(socket = %socket_path.display(), "control socket listening");
+    // The control surface includes Stop / Reload — only the daemon owner may
+    // reach it. UnixListener::bind respects the process umask (typically 022 →
+    // 0755); tighten to 0600 explicitly so any other local user is excluded.
+    use std::os::unix::fs::PermissionsExt;
+    tokio::fs::set_permissions(&socket_path, std::fs::Permissions::from_mode(0o600))
+        .await
+        .with_context(|| format!("chmod 0600 {}", socket_path.display()))?;
+    tracing::info!(socket = %socket_path.display(), "control socket listening (mode 0600)");
 
     let result = accept_loop(&listener, &app, &listen).await;
     let _ = tokio::fs::remove_file(&socket_path).await;
