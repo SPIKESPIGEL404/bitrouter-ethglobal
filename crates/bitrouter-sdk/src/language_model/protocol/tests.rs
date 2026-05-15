@@ -243,6 +243,146 @@ fn openai_chat_request_roundtrip() {
 }
 
 #[test]
+fn openai_chat_passes_through_uncommon_params() {
+    // tool_choice, stop, seed, response_format, n, presence/frequency_penalty,
+    // logit_bias, logprobs, top_logprobs, user, parallel_tool_calls,
+    // stream_options — every field without a typed slot survives parse → render.
+    let adapter = adapter_for(ApiProtocol::Openai);
+    let body = serde_json::json!({
+        "model": "gpt-5",
+        "messages": [{"role": "user", "content": "hi"}],
+        "tool_choice": {"type": "function", "function": {"name": "search"}},
+        "stop": ["END", "STOP"],
+        "seed": 7,
+        "response_format": {"type": "json_object"},
+        "n": 2,
+        "presence_penalty": 0.5,
+        "frequency_penalty": -0.25,
+        "parallel_tool_calls": false,
+        "logit_bias": {"1234": -100},
+        "user": "alice"
+    });
+    let prompt = adapter.parse_request(body.clone()).unwrap();
+    let rendered = adapter.render_request(&prompt).unwrap();
+    for key in [
+        "tool_choice",
+        "stop",
+        "seed",
+        "response_format",
+        "n",
+        "presence_penalty",
+        "frequency_penalty",
+        "parallel_tool_calls",
+        "logit_bias",
+        "user",
+    ] {
+        assert_eq!(
+            rendered[key], body[key],
+            "OpenAI Chat `{key}` must survive parse/render"
+        );
+    }
+}
+
+#[test]
+fn anthropic_passes_through_uncommon_params() {
+    let adapter = adapter_for(ApiProtocol::Anthropic);
+    let body = serde_json::json!({
+        "model": "claude-sonnet-4-6",
+        "messages": [{"role": "user", "content": "hi"}],
+        "max_tokens": 1024,
+        "tool_choice": {"type": "auto"},
+        "stop_sequences": ["END"],
+        "top_k": 40,
+        "metadata": {"user_id": "alice"},
+        "thinking": {"type": "enabled", "budget_tokens": 1000}
+    });
+    let prompt = adapter.parse_request(body.clone()).unwrap();
+    let rendered = adapter.render_request(&prompt).unwrap();
+    for key in [
+        "tool_choice",
+        "stop_sequences",
+        "top_k",
+        "metadata",
+        "thinking",
+    ] {
+        assert_eq!(
+            rendered[key], body[key],
+            "Anthropic `{key}` must survive parse/render"
+        );
+    }
+}
+
+#[test]
+fn google_passes_through_uncommon_generation_config() {
+    let adapter = adapter_for(ApiProtocol::Google);
+    let body = serde_json::json!({
+        "model": "gemini-2.0-flash",
+        "contents": [{"role": "user", "parts": [{"text": "hi"}]}],
+        "generationConfig": {
+            "temperature": 0.5,
+            "stopSequences": ["END"],
+            "topK": 40,
+            "seed": 7,
+            "responseMimeType": "application/json",
+            "responseSchema": {"type": "object"},
+            "presencePenalty": 0.1,
+            "frequencyPenalty": -0.1
+        }
+    });
+    let prompt = adapter.parse_request(body.clone()).unwrap();
+    let rendered = adapter.render_request(&prompt).unwrap();
+    let gc = &rendered["generationConfig"];
+    for key in [
+        "stopSequences",
+        "topK",
+        "seed",
+        "responseMimeType",
+        "responseSchema",
+        "presencePenalty",
+        "frequencyPenalty",
+    ] {
+        assert_eq!(
+            gc[key], body["generationConfig"][key],
+            "Google generationConfig.{key} must survive parse/render"
+        );
+    }
+}
+
+#[test]
+fn openai_responses_passes_through_uncommon_params() {
+    let adapter = adapter_for(ApiProtocol::Responses);
+    let body = serde_json::json!({
+        "model": "gpt-5",
+        "input": [{"type": "message", "role": "user", "content": [{"type": "input_text", "text": "hi"}]}],
+        "tool_choice": "auto",
+        "parallel_tool_calls": false,
+        "max_tool_calls": 3,
+        "include": ["reasoning.encrypted_content"],
+        "metadata": {"trace_id": "t1"},
+        "previous_response_id": "rsp_prev",
+        "store": false,
+        "stream_options": {"include_obfuscation": false}
+    });
+    let prompt = adapter.parse_request(body.clone()).unwrap();
+    let rendered = adapter.render_request(&prompt).unwrap();
+    for key in [
+        "tool_choice",
+        "parallel_tool_calls",
+        "max_tool_calls",
+        "include",
+        "metadata",
+        "previous_response_id",
+        "store",
+        "stream_options",
+    ] {
+        assert_eq!(
+            rendered[key], body[key],
+            "Responses `{key}` must survive parse/render"
+        );
+    }
+}
+
+#[test]
 fn anthropic_response_roundtrip() {
     let adapter = adapter_for(ApiProtocol::Anthropic);
     let prompt = sample_prompt();

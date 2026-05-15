@@ -74,6 +74,12 @@ struct GoogleGenerationConfig {
     top_p: Option<f64>,
     #[serde(default)]
     max_output_tokens: Option<u32>,
+    /// `stopSequences`, `seed`, `topK`, `responseMimeType`, `responseSchema`,
+    /// `responseLogprobs`, `presencePenalty`, `frequencyPenalty`, … — every
+    /// generation-config knob without a typed slot rides via `extra` and is
+    /// splatted back into `generationConfig` on render. v0 passed these through.
+    #[serde(flatten)]
+    extra: std::collections::HashMap<String, serde_json::Value>,
 }
 
 /// Map a Google role to canonical. Total mapping — unknown roles error (#454-4).
@@ -226,7 +232,7 @@ impl ProtocolAdapter for GoogleAdapter {
                 top_p: g.top_p,
                 max_tokens: g.max_output_tokens,
                 reasoning_effort: None,
-                extra: Default::default(),
+                extra: g.extra,
             })
             .unwrap_or_default();
 
@@ -271,6 +277,12 @@ impl ProtocolAdapter for GoogleAdapter {
         }
         if let Some(mt) = prompt.params.max_tokens {
             gen_config.insert("maxOutputTokens".into(), mt.into());
+        }
+        // Splat Google generation-config extras (stopSequences, topK, seed,
+        // responseMimeType / responseSchema, …) back into the outbound config.
+        // Typed fields above win over a same-named extra.
+        for (k, v) in &prompt.params.extra {
+            gen_config.entry(k.clone()).or_insert_with(|| v.clone());
         }
         if !gen_config.is_empty() {
             req.insert("generationConfig".into(), gen_config.into());

@@ -218,6 +218,32 @@ impl ProtocolAdapter for OpenAiResponsesAdapter {
             })
             .unwrap_or_default();
 
+        // Collect every Responses-API field we don't have a typed slot for —
+        // tool_choice, parallel_tool_calls, max_tool_calls, metadata,
+        // include[], previous_response_id, store, stream_options, etc. — into
+        // `extra` so render_request can splat them back. The parser walks the
+        // body field-by-field (#454-3) so we explicitly subtract the known set.
+        const KNOWN: &[&str] = &[
+            "model",
+            "input",
+            "instructions",
+            "tools",
+            "temperature",
+            "top_p",
+            "max_output_tokens",
+            "reasoning",
+            "stream",
+        ];
+        let extra: std::collections::HashMap<String, serde_json::Value> = body
+            .as_object()
+            .map(|obj| {
+                obj.iter()
+                    .filter(|(k, _)| !KNOWN.contains(&k.as_str()))
+                    .map(|(k, v)| (k.clone(), v.clone()))
+                    .collect()
+            })
+            .unwrap_or_default();
+
         Ok(Prompt {
             model,
             system,
@@ -235,7 +261,7 @@ impl ProtocolAdapter for OpenAiResponsesAdapter {
                     .and_then(|r| r.get("effort"))
                     .and_then(|e| e.as_str())
                     .map(|s| s.to_string()),
-                extra: Default::default(),
+                extra,
             },
             stream: body
                 .get("stream")
@@ -284,6 +310,12 @@ impl ProtocolAdapter for OpenAiResponsesAdapter {
         }
         if let Some(re) = &prompt.params.reasoning_effort {
             req.insert("reasoning".into(), serde_json::json!({ "effort": re }));
+        }
+        // Splat Responses-API extras (tool_choice, parallel_tool_calls,
+        // metadata, include, …) back onto the outbound request. Typed fields
+        // win.
+        for (k, v) in &prompt.params.extra {
+            req.entry(k.clone()).or_insert_with(|| v.clone());
         }
         req.insert("stream".into(), prompt.stream.into());
         Ok(serde_json::Value::Object(req))

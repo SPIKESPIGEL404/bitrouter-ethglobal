@@ -44,6 +44,10 @@ struct MessagesRequest {
     top_p: Option<f64>,
     #[serde(default)]
     stream: bool,
+    /// Every other field — `tool_choice`, `stop_sequences`, `top_k`, `metadata`,
+    /// `thinking`, … — rides along via `extra` and is splatted back on render.
+    #[serde(flatten)]
+    extra: std::collections::HashMap<String, serde_json::Value>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -247,7 +251,7 @@ impl ProtocolAdapter for AnthropicAdapter {
                 top_p: req.top_p,
                 max_tokens: req.max_tokens,
                 reasoning_effort: None,
-                extra: Default::default(),
+                extra: req.extra,
             },
             stream: req.stream,
         })
@@ -291,6 +295,11 @@ impl ProtocolAdapter for AnthropicAdapter {
         }
         if let Some(p) = prompt.params.top_p {
             req.insert("top_p".into(), p.into());
+        }
+        // Splat anthropic-specific extras (tool_choice, stop_sequences, …) back
+        // into the outbound request. Typed fields win over same-named extras.
+        for (k, v) in &prompt.params.extra {
+            req.entry(k.clone()).or_insert_with(|| v.clone());
         }
         req.insert("stream".into(), prompt.stream.into());
         Ok(serde_json::Value::Object(req))

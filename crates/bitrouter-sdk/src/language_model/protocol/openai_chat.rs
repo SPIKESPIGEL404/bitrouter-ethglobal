@@ -6,6 +6,8 @@
 //! Chat Completions is treated as the canonical "hub" shape — it maps most
 //! directly onto the internal representation.
 
+use std::collections::HashMap;
+
 use serde::Deserialize;
 
 use crate::error::{BitrouterError, Result};
@@ -41,6 +43,13 @@ struct ChatRequest {
     reasoning_effort: Option<String>,
     #[serde(default)]
     stream: bool,
+    /// Every other field — `tool_choice`, `stop` / `stop_sequences`, `seed`,
+    /// `response_format`, `n`, `presence_penalty`, `frequency_penalty`,
+    /// `logit_bias`, `logprobs`, `top_logprobs`, `user`, `stream_options`,
+    /// `parallel_tool_calls`, … — survives parse/render via `extra`. v0
+    /// passed these through; v1 must too.
+    #[serde(flatten)]
+    extra: HashMap<String, serde_json::Value>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -212,7 +221,11 @@ impl ProtocolAdapter for OpenAiChatAdapter {
                 top_p: req.top_p,
                 max_tokens: req.max_tokens.or(req.max_completion_tokens),
                 reasoning_effort: req.reasoning_effort,
-                extra: Default::default(),
+                // Every OpenAI-Chat field we don't have a typed slot for —
+                // tool_choice, stop / stop_sequences, seed, response_format,
+                // n, presence/frequency_penalty, logit_bias, … — rides along
+                // in `extra` and is splatted back on render.
+                extra: req.extra,
             },
             stream: req.stream,
         })
@@ -262,6 +275,12 @@ impl ProtocolAdapter for OpenAiChatAdapter {
         }
         if let Some(re) = &prompt.params.reasoning_effort {
             req.insert("reasoning_effort".into(), re.clone().into());
+        }
+        // Splat the extras back into the outbound request — this is how
+        // `tool_choice`, `stop`, `seed`, `response_format`, etc. survive the
+        // round trip. Typed fields above win over any same-named extra.
+        for (k, v) in &prompt.params.extra {
+            req.entry(k.clone()).or_insert_with(|| v.clone());
         }
         req.insert("stream".into(), prompt.stream.into());
         Ok(serde_json::Value::Object(req))
