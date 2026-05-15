@@ -31,6 +31,15 @@ pub struct Assembled {
 /// plugin's migrations, build the routing table + executor, and wire the
 /// builtin hooks onto the `language_model` pipeline.
 pub async fn build_app(config: &Config) -> Result<Assembled> {
+    build_app_with_path(config, None).await
+}
+
+/// Like [`build_app`], but remembering the config's source path so the routing
+/// table's `reload()` (driven by `bitrouter reload` / `SIGHUP`) can re-read it.
+pub async fn build_app_with_path(
+    config: &Config,
+    config_path: Option<&std::path::Path>,
+) -> Result<Assembled> {
     // ---- database + migrations (each plugin owns its own tables) ----
     let pool = SqlitePool::connect(&config.database.url)
         .await
@@ -47,7 +56,10 @@ pub async fn build_app(config: &Config) -> Result<Assembled> {
     // and no declared models (003 §5.6) — failures WARN, never abort.
     let mut resolved = config.clone();
     bitrouter_sdk::config::discover_models(&mut resolved).await;
-    let routing_table = Arc::new(ConfigRoutingTable::from_config(resolved));
+    let routing_table = Arc::new(match config_path {
+        Some(path) => ConfigRoutingTable::from_config_with_path(resolved, path),
+        None => ConfigRoutingTable::from_config(resolved),
+    });
     let executor =
         Arc::new(HttpExecutor::with_defaults().context("building the upstream HTTP executor")?);
 

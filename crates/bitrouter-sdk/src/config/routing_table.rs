@@ -36,6 +36,17 @@ impl ConfigRoutingTable {
         }
     }
 
+    /// Build a routing table from an already-parsed config, **remembering the
+    /// path it came from** so `reload()` can re-read it. Use this when the
+    /// config was parsed (or post-processed, e.g. `auto_discover`) before the
+    /// table was built but hot-reload is still wanted.
+    pub fn from_config_with_path(config: Config, path: impl Into<std::path::PathBuf>) -> Self {
+        Self {
+            config: RwLock::new(config),
+            path: Some(path.into()),
+        }
+    }
+
     /// Load a routing table from a `bitrouter.yaml` path (enables `reload()`).
     pub async fn load(path: impl Into<std::path::PathBuf>) -> Result<Self> {
         let path = path.into();
