@@ -1,4 +1,4 @@
-//! Policy definitions and their **combination semantics** (004 §4.2).
+//! Policy definitions and their **combination semantics**.
 //!
 //! A request may be subject to several policies at once. v0's behaviour here
 //! was implicit; v1 makes the combination rule explicit, per check kind:
@@ -31,7 +31,7 @@ pub struct Policy {
     /// Hard expiry — requests after this instant are denied.
     pub expires_at: Option<DateTime<Utc>>,
     /// Allowed payment chains (e.g. `tempo`). `None`/empty = all chains
-    /// allowed. Combined by **intersection** across policies (004 §4.2).
+    /// allowed. Combined by **intersection** across policies.
     pub allowed_chains: Option<Vec<String>>,
     /// Allowed tool names. `None` = all tools allowed. Combined by **union**
     /// across policies — a tool is permitted if *any* policy allows it.
@@ -91,7 +91,7 @@ impl std::fmt::Display for PolicyViolation {
 }
 
 /// The combined effect of zero or more policies — the result of folding a set
-/// of [`Policy`] together by the documented combination semantics (004 §4.2).
+/// of [`Policy`] together by the documented combination semantics.
 #[derive(Debug, Clone, Default)]
 pub struct EffectivePolicy {
     allowed_models: Option<Vec<String>>,

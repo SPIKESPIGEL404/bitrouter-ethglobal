@@ -3,7 +3,7 @@
 //! Content firewall plugin. Provides [`GuardrailPreHook`] (upstream / request
 //! content — denies on a `Block` rule) and [`GuardrailStreamHook`] (downstream
 //! / response stream — redacts `Redact` matches, aborts on `Block`). See
-//! design doc 004 §5.
+//! design doc.
 
 #![forbid(unsafe_code)]
 

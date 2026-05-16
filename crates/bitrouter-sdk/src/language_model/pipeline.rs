@@ -1,5 +1,5 @@
 //! The `language_model` pipeline — the four-stage flight pipeline plus the
-//! interleaved StreamHook stage. See design doc 003 §3.
+//! interleaved StreamHook stage.
 
 use std::pin::Pin;
 use std::sync::Arc;
@@ -41,7 +41,7 @@ pub struct Pipeline {
     pub(crate) executor: Arc<dyn Executor>,
     pub(crate) keepalive_interval: Duration,
     /// Detached settlement tasks spawned when a streaming client disconnects
-    /// (`StreamSettlementGuard::drop` — 008 §3.5: no lost streaming
+    /// (`StreamSettlementGuard::drop` —.5: no lost streaming
     /// settlement). [`Pipeline::drain_pending_settlements`] awaits them all
     /// on graceful shutdown so the process doesn't exit mid-settlement.
     pub(crate) pending_settlements: Arc<std::sync::Mutex<tokio::task::JoinSet<()>>>,
@@ -61,7 +61,7 @@ impl Pipeline {
 
     /// Wait for every detached client-disconnect settlement task to finish.
     /// Call this from the HTTP server's graceful-shutdown path so a SIGTERM
-    /// during heavy streaming traffic doesn't drop receipts (008 §3.5).
+    /// during heavy streaming traffic doesn't drop receipts.
     /// Returns the number of tasks drained.
     ///
     /// Race note: any new `StreamSettlementGuard::drop` *after* this method
@@ -177,7 +177,7 @@ impl Pipeline {
         // The guard owns the processor + context. Whatever happens to the
         // returned stream — drained to completion, errored, or **dropped early
         // by the client** — `on_stream_end` and Settlement run exactly once
-        // (008 §3.5: streaming settlement must not be lost).
+        // so streaming settlement is never lost.
         let guard = StreamSettlementGuard {
             pipeline: self.clone(),
             state: Some((processor, ctx)),
@@ -250,7 +250,7 @@ impl Pipeline {
     }
 
     async fn resolve_route(&self, ctx: &mut PipelineContext) -> Result<Vec<RoutingTarget>> {
-        // Stage-0 preset overrides (003 §5.4) — `@careful` etc. inject a
+        // Stage-0 preset overrides — `@careful` etc. inject a
         // system prompt / sampling defaults that the request can still
         // override. Done before the cascade so the upstream call sees them.
         let overrides = self.routing_table.preset_overrides(ctx.model()).await?;
@@ -310,7 +310,7 @@ impl Pipeline {
         for target in chain {
             match self.executor.execute_stream(target, ctx.prompt()).await {
                 // Once the stream starts, the SSE response is committed — no
-                // more fallback (003 §8.3).
+                // more fallback.
                 Ok(stream) => return Ok(stream),
                 Err(e) => match self.classify_failure(ctx, &e, target).await {
                     FallbackDecision::TryNext => {
@@ -327,7 +327,7 @@ impl Pipeline {
 
     /// Decide fallback after an upstream failure. Any registered execution hook
     /// voting `Fail` short-circuits to Fail; otherwise the `FallbackPolicy`
-    /// decides (003 §4.3). A previous version of this method consulted the
+    /// decides. A previous version of this method consulted the
     /// FallbackPolicy *only* when `execution_hooks` was empty, which silently
     /// disabled `FallbackPolicy::Fail` on 4xx upstream errors as soon as any
     /// hook (even an observe-only one) was registered.
@@ -441,7 +441,7 @@ impl Drop for StreamSettlementGuard {
     fn drop(&mut self) {
         // If `state` is still `Some`, the consumer dropped the stream before it
         // terminated — settle the delivered tokens on a detached task with a
-        // `ClientDisconnected` outcome (008 §3.5: no lost streaming settlement).
+        // `ClientDisconnected` outcome so no streaming settlement is lost.
         //
         // The task is held on the pipeline's `pending_settlements` JoinSet so
         // `Pipeline::drain_pending_settlements` can await every in-flight

@@ -1,10 +1,10 @@
 //! `AuthHook` — the `language_model::PreRequestHook` that authenticates a
 //! request against a `brvk_` virtual key.
 //!
-//! v1 has **no JWT path** (004 §3.0): the only credential form is a virtual
+//! v1 has **no JWT path**: the only credential form is a virtual
 //! key, looked up by SHA-256 hash in the `api_keys` table.
 //!
-//! Relationship to `server.skip_auth` (004 §3.4): `skip_auth` is an SDK-level
+//! Relationship to `server.skip_auth`: `skip_auth` is an SDK-level
 //! flag handled at the server entry — when it is on and a request carries no
 //! credentials, the server synthesises a *local* `CallerContext`. `AuthHook`
 //! respects an already-local caller and lets it through. The four-way truth
@@ -41,7 +41,7 @@ pub fn plugin_id() -> PluginId {
 /// settlement behaviour — it only establishes identity.
 pub struct AuthHook {
     pool: SqlitePool,
-    /// Optional MPP credential verifier (004 §3.1). Without it, a
+    /// Optional MPP credential verifier. Without it, a
     /// `Payment-SIGNATURE` request is rejected with 402 rather than verified.
     /// `MppVerifier` is implemented by `bitrouter-settlement::MppState`.
     mpp_verifier: Option<Arc<dyn MppVerifier>>,
@@ -95,7 +95,7 @@ impl AuthHook {
     }
 
     /// Verify an MPP payment credential and, on success, establish an
-    /// MPP-funded caller (004 §3.1 / §3.3).
+    /// MPP-funded caller.
     async fn verify_mpp(
         &self,
         credential: &str,
@@ -161,7 +161,7 @@ impl PreRequestHook for AuthHook {
         let credential = Self::extract_credential(ctx);
         let payment_credential = Self::extract_payment_credential(ctx);
 
-        // Mutual exclusion (004 §3.1): an API key and an MPP payment credential
+        // Mutual exclusion: an API key and an MPP payment credential
         // must not both be presented.
         if credential.is_some() && payment_credential.is_some() {
             return Ok(HookDecision::Deny(DenyReason::BadRequest(
@@ -169,7 +169,7 @@ impl PreRequestHook for AuthHook {
             )));
         }
 
-        // MPP path (004 §3.1 / §3.3): a `Payment-SIGNATURE` credential.
+        // MPP path: a `Payment-SIGNATURE` credential.
         if let Some(payment_credential) = payment_credential {
             return self.verify_mpp(&payment_credential, ctx).await;
         }

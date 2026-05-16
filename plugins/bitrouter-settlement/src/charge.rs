@@ -1,7 +1,7 @@
 //! The `ChargeStrategy` responsibility chain: `ByokCharge` → `CreditCharge` →
 //! `MppCharge`. The pipeline tries them in registration order and `break`s on
 //! the first `Claimed` — "charge at most once" is a structural guarantee, not
-//! hook etiquette (003 §4.5).
+//! hook etiquette.
 //!
 //! `CreditCharge` is the only module that touches `credit_accounts` and
 //! `credit_ledger_entries`.
@@ -82,7 +82,7 @@ pub async fn add_credits(pool: &SqlitePool, user_id: &str, amount: i64) -> Resul
 }
 
 /// Deduct `amount` micro-USD from a user's balance, **idempotently** keyed by
-/// `idempotency_key` (004 §7.5). The deduction and its ledger entry are written
+/// `idempotency_key`. The deduction and its ledger entry are written
 /// in one transaction; if a ledger row with the same `idempotency_key` already
 /// exists the call is a retry — the balance is left untouched.
 ///
@@ -168,7 +168,7 @@ fn usage_of(ctx: &SettlementContext) -> Usage {
 /// First link of the chain. If a `ByokKeyApplied` event is present, the request
 /// is BYOK: charge nothing and claim, so neither `CreditCharge` nor `MppCharge`
 /// runs. `byok_used` is set **here**, from the event — never reverse-inferred
-/// from `api_key_override` (cloud #235).
+/// from `api_key_override`.
 pub struct ByokCharge;
 
 #[async_trait]
@@ -208,7 +208,7 @@ impl ChargeStrategy for CreditCharge {
         }
 
         // #180 / #440 / #443: a missing price is "unconfigured", not "free".
-        // Per 004 §1.5, an unconfigured price means **`Pass`, not `Claim`** —
+        // Per, an unconfigured price means **`Pass`, not `Claim`** —
         // the charge is left unsettled (funding_source stays `Unsettled`), a
         // `PricingUnavailable` event is emitted, and zero is never silently
         // debited from a real account.
@@ -216,7 +216,7 @@ impl ChargeStrategy for CreditCharge {
             Some(pricing) if !pricing.is_unconfigured() => {
                 let charge = calculate_charge_micro_usd(&usage_of(ctx), &pricing);
                 // Idempotent on request_id — a retried settlement of the same
-                // request never double-debits (004 §7.5).
+                // request never double-debits.
                 deduct_credits(&self.pool, ctx.caller.user_id(), charge, &ctx.request_id).await?;
                 ctx.final_charge_micro_usd = charge;
                 ctx.funding_source = FundingSource::Credits;
@@ -241,8 +241,7 @@ impl ChargeStrategy for CreditCharge {
 // ===== MppCharge — chain link 3 =====
 
 /// Third link: settles MPP-paying callers against an MPP channel. v1.0 delivers
-/// the **Tempo** channel only; Solana is a placeholder feature, not wired
-/// (008 §1.1).
+/// the **Tempo** channel only; Solana is a placeholder feature, not wired.
 pub struct MppCharge {
     state: MppState,
     pricing: PricingTable,
@@ -262,7 +261,7 @@ impl ChargeStrategy for MppCharge {
             return Ok(ChargeOutcome::Pass);
         }
 
-        // Per 004 §1.6: an unconfigured price → emit `PricingUnavailable` and
+        // Per.6: an unconfigured price → emit `PricingUnavailable` and
         // `Pass` (do not settle), exactly as `CreditCharge` does.
         let charge = match self.pricing.resolve(&ctx.provider_id, &ctx.model_id) {
             Some(pricing) if !pricing.is_unconfigured() => {

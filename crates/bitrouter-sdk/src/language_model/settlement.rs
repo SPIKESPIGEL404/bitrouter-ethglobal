@@ -1,6 +1,6 @@
 //! Settlement for the `language_model` protocol: the `ChargeStrategy`
 //! responsibility chain (mutually exclusive, first-claim-wins) and the
-//! always-run `SettlementRecorder`. See design doc 003 §4.5.
+//! always-run `SettlementRecorder`.
 
 use async_trait::async_trait;
 
@@ -51,8 +51,7 @@ pub struct SettlementContext {
     /// Which funding source settled the request.
     pub funding_source: FundingSource,
     /// BYOK marker. Set by `ByokCharge` when it sees the `ByokKeyApplied`
-    /// event — **never** inferred from `target.api_key_override.is_some()`
-    /// (cloud #235 lesson).
+    /// event — **never** inferred from `target.api_key_override.is_some()`.
     pub byok_used: bool,
     /// The error, if the request failed (Settlement still runs).
     pub error: Option<BitrouterError>,

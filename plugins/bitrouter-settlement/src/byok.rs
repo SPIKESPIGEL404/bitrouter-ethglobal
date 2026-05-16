@@ -1,12 +1,12 @@
 //! `ByokRouteHook` — a `language_model::RouteHook` that injects a caller's own
 //! provider key into the routing chain.
 //!
-//! Critical invariant (cloud #235): when BYOK applies, it emits a
+//! Critical invariant: when BYOK applies, it emits a
 //! [`ByokKeyApplied`] event. The `byok_used` settlement flag is derived **only**
 //! from that event — i.e. from the *existence of a BYOK row* — never from
 //! `target.api_key_override.is_some()`. Anonymous routing / registry hooks may
 //! legitimately set `api_key_override` for their own reasons; inferring BYOK
-//! from it would make every such request bill free (the actual cloud #235 bug).
+//! from it would make every such request bill free.
 //!
 //! This module is the only one that touches the `byok_provider_keys` table.
 
@@ -88,11 +88,10 @@ impl RouteHook for ByokRouteHook {
 /// Insert a BYOK provider credential. Used by the CLI (`bitrouter key`) and by
 /// tests.
 ///
-/// NOTE: Phase 3 stores the key as-is. Production hardening — sealing the key
-/// with an X25519 sealed-box so the database never holds plaintext provider
-/// keys (004 §7.6: cloud's plaintext storage is a known anti-pattern v1 must
-/// not copy) — is tracked as a follow-up and wired through this same insert
-/// path.
+/// NOTE: today the key is stored as-is. Production hardening — sealing the
+/// key with an X25519 sealed-box so the database never holds plaintext
+/// provider keys — is tracked as a follow-up and wired through this same
+/// insert path.
 pub async fn insert_byok_key(
     pool: &SqlitePool,
     id: &str,

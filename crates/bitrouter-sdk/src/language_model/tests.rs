@@ -1,5 +1,4 @@
-//! Phase-1 pipeline tests — exit criteria for 008 Phase 1 and the test
-//! strategy in 003 §11.
+//! Pipeline integration tests for the `language_model` pipeline.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};

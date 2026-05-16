@@ -1,6 +1,6 @@
 //! The `language_model` hook traits.
 //!
-//! Per design doc 003 §0, these are **not** shared across protocols — `mcp` /
+//! these are **not** shared across protocols — `mcp` /
 //! `acp` define their own, independently. The full set here:
 //! `PreRequestHook` / `RouteHook` / `ExecutionHook` / `StreamHook` /
 //! `ChargeStrategy` / `SettlementRecorder` / `ObserveHook`. The last three live
@@ -108,7 +108,7 @@ pub enum FallbackDecision {
 
 /// The StreamHook stage — inline-awaited interception of the canonical
 /// `StreamPart` stream, before outbound protocol conversion. Carries Guardrails
-/// downstream rewriting and MPP per-checkpoint settlement. See 003 §4.4.
+/// downstream rewriting and MPP per-checkpoint settlement.
 #[async_trait]
 pub trait StreamHook: Send + Sync {
     /// Which part kinds this hook wants. The pipeline only invokes the hook on
@@ -151,7 +151,7 @@ pub enum RequestOutcome {
 /// A cross-cutting, read-only observation hook. Invoked at every stage boundary
 /// (including the StreamHook stage). It returns no decision, cannot mutate data,
 /// and **errors / panics inside it never affect the request** — the pipeline
-/// swallows them. See 003 §4.6.
+/// swallows them.
 #[async_trait]
 pub trait ObserveHook: Send + Sync {
     /// Called after each non-streaming stage completes.

@@ -1,6 +1,6 @@
 //! Database access for `bitrouter-auth`. This plugin **owns** the `users` and
 //! `api_keys` tables; no other plugin reads or writes them (plugin DB
-//! isolation, 003 §2.3). All access goes through the typed API here.
+//! isolation,). All access goes through the typed API here.
 
 use chrono::{DateTime, Utc};
 use sqlx::{Row, SqlitePool};

@@ -99,7 +99,7 @@ impl PipelineContext {
         self.model = model.into();
     }
 
-    /// Apply preset prompt-body overrides (003 §5.4). `system_prompt`, when
+    /// Apply preset prompt-body overrides. `system_prompt`, when
     /// present, replaces the prompt's system; `params` is shallow-merged into
     /// the prompt's `params.extra` so provider-specific knobs survive. Already-
     /// set request fields take precedence — a preset is a *default*, not an

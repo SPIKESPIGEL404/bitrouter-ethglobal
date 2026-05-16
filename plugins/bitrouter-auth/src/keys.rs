@@ -1,9 +1,9 @@
 //! `brvk_` virtual key generation and hashing.
 //!
-//! v1 **drops JWT API keys entirely** (004 §3.0): the only key form is an
+//! v1 **drops JWT API keys entirely**: the only key form is an
 //! opaque virtual key, prefix `brvk_`, of which the database stores **only the
 //! SHA-256 hash** — never the plaintext secret. The prefix matches
-//! bitrouter-cloud's virtual-key scheme except for the `brvk_` prefix.
+//!  virtual-key scheme except for the `brvk_` prefix.
 
 use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;

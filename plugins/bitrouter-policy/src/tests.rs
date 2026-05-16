@@ -173,7 +173,7 @@ fn uuid_like() -> u64 {
         .as_nanos() as u64
 }
 
-// ===== chain / tool / rate checks (004 §4.1) =====
+// ===== chain / tool / rate checks =====
 
 use async_trait::async_trait;
 use bitrouter_sdk::language_model::Tool;

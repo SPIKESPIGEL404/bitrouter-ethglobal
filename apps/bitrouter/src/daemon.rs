@@ -1,4 +1,4 @@
-//! Daemon control over a Unix domain socket (007 §6.1).
+//! Daemon control over a Unix domain socket.
 //!
 //! A running `bitrouter serve` listens on a control socket alongside the HTTP
 //! API. The CLI's `stop` / `restart` / `reload` / `status` / `route`

@@ -4,10 +4,10 @@
 //! `BalanceCheckHook`, `MppStreamHook`, the `ChargeStrategy` chain
 //! (`ByokCharge` / `CreditCharge` / `MppCharge`), `ReceiptRecorder`, and
 //! `SqliteMetricsStore` — plus the `SettlementBundle` convenience packaging.
-//! See design doc 004 §1.
+//!
 //!
 //! MPP delivers the **Tempo** channel only in v1.0; `mpp-solana` is a
-//! placeholder feature, never wired (008 §1.1).
+//! placeholder feature, never wired.
 
 #![forbid(unsafe_code)]
 

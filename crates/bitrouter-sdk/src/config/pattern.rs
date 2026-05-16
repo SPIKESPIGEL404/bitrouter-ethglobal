@@ -2,7 +2,7 @@
 //!
 //! A provider's `api_protocol` / `rate_limits` are lists of `(pattern, value)`
 //! where `pattern` is a **glob-prefix** — `*`, `prefix*`, or an exact literal
-//! (003 §5.3). Glob-prefix (not full regex) is chosen deliberately: "longest
+//!. Glob-prefix (not full regex) is chosen deliberately: "longest
 //! literal prefix wins" gives a clean, total specificity ordering, which full
 //! regex does not.
 //!
@@ -56,7 +56,7 @@ impl Pattern {
 }
 
 /// An ordered list of `(pattern, value)` entries. Resolution picks the
-/// most-specific matching pattern (003 §5.3 precedence).
+/// most-specific matching pattern.
 #[derive(Debug, Clone, Default)]
 pub struct PatternMap<T> {
     entries: Vec<(Pattern, T)>,

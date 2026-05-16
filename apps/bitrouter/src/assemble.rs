@@ -2,7 +2,7 @@
 //!
 //! This is the home of v0's `load_builtin_plugins` logic — it lives in the
 //! `apps/bitrouter` **lib** (above the SDK and the plugins), wiring the builtin
-//! hooks onto the `language_model` pipeline from config (002 §4.3).
+//! hooks onto the `language_model` pipeline from config.
 
 use std::sync::Arc;
 
@@ -30,7 +30,7 @@ pub struct Assembled {
     /// The policy store wired into the language_model pipeline. Held by the
     /// caller (the daemon) so `bitrouter reload` / SIGHUP can call
     /// [`bitrouter_policy::PolicyStore::reload`] alongside the routing-table
-    /// reload (008 §3.6 — reload must not affect in-flight requests).
+    /// reload — reload must not affect in-flight requests.
     pub policy_store: Arc<PolicyStore>,
 }
 
@@ -76,7 +76,7 @@ pub async fn build_app_with_path(
 
     // ---- routing table + upstream executor ----
     // Best-effort model discovery for providers with `auto_discover: true`
-    // and no declared models (003 §5.6) — failures WARN, never abort.
+    // and no declared models — failures WARN, never abort.
     let mut resolved = config.clone();
     bitrouter_sdk::config::discover_models(&mut resolved).await;
     let routing_table = Arc::new(match config_path {
@@ -94,23 +94,23 @@ pub async fn build_app_with_path(
     let guardrail_rules = build_guardrail_rules(config)?;
 
     // When MPP is enabled, the channel state doubles as `AuthHook`'s MPP
-    // credential verifier (004 §3.1) — the SDK's `MppVerifier` trait keeps
+    // credential verifier — the SDK's `MppVerifier` trait keeps
     // bitrouter-auth from depending on bitrouter-settlement.
     let mpp_verifier: Option<std::sync::Arc<dyn bitrouter_sdk::MppVerifier>> =
         mpp.clone().map(|m| std::sync::Arc::new(m) as _);
 
     // The settlement bundle owns the MetricsStore; share it with PolicyHook so
-    // spend ceilings can be enforced (003 §4.7).
+    // spend ceilings can be enforced.
     let settlement = SettlementBundle::new(pool.clone(), pricing, mpp);
     let metrics_store = settlement.metrics_store();
 
-    // Prometheus exporter (003 §4.6.2). The same `Arc` is both an
+    // Prometheus exporter. The same `Arc` is both an
     // `ObserveHook` (writes) and a `MetricsRenderer` (reads from `/metrics`).
     let prometheus: Arc<PrometheusHook> = Arc::new(PrometheusHook::new());
     let prometheus_for_observe = prometheus.clone();
     let metrics_renderer: Arc<dyn MetricsRenderer> = prometheus;
 
-    // Optional OTLP/HTTP JSON tracer (003 §4.6 / 008 F17). Configured under
+    // Optional OTLP/HTTP JSON tracer. Configured under
     // `plugins.bitrouter-observe.otlp_endpoint`; absent → exporter not wired.
     let otlp_endpoint: Option<String> = config
         .plugins
@@ -182,7 +182,7 @@ fn build_pricing_table(config: &Config) -> PricingTable {
 }
 
 /// Build the MPP state from `plugins.bitrouter-settlement` config. v1.0 wires
-/// the Tempo channel only; `solana` is rejected (008 §1.1).
+/// the Tempo channel only; `solana` is rejected.
 fn build_mpp_state(config: &Config, pool: &SqlitePool) -> Result<Option<MppState>> {
     let Some(settlement_cfg) = config.plugins.get("bitrouter-settlement") else {
         return Ok(None);
@@ -202,7 +202,7 @@ fn build_mpp_state(config: &Config, pool: &SqlitePool) -> Result<Option<MppState
         "tempo" => Ok(Some(MppState::tempo(pool.clone()))),
         "solana" => {
             // Solana MPP is out of scope for v1.0 — fail loudly, do not
-            // silently fall back (008 §1.1).
+            // silently fall back.
             MppState::solana(pool.clone())
                 .map(Some)
                 .context("MPP channel 'solana' is not supported in v1.0")

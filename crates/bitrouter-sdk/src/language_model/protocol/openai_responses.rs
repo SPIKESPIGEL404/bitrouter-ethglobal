@@ -702,7 +702,7 @@ impl StreamDecoder for ResponsesStreamDecoder {
             // them (would duplicate, #434).
             "response.function_call_arguments.done" | "response.output_item.done" => {}
             "response.completed" | "response.incomplete" => {
-                // #454-2: the full `response` object is carried here. 005 §2.3:
+                // #454-2: the full `response` object is carried here..3:
                 // map `response.completed` to the dedicated `ResponseCompleted`
                 // part so the response id + status survive (a bare `Finish`
                 // would lose them).
@@ -924,7 +924,7 @@ impl StreamEncoder for ResponsesStreamEncoder {
             }
             StreamPart::ResponseCompleted { id, status, usage } => {
                 // A native Responses terminal part — use the carried id/status
-                // (005 §2.3), falling back to our request id if absent.
+                //, falling back to our request id if absent.
                 let response_id = if id.is_empty() {
                     self.request_id.clone()
                 } else {

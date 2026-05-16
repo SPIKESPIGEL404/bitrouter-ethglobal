@@ -1,13 +1,13 @@
 //! The `acp` protocol module — Agent Client Protocol / A2A agent routing.
 //!
-//! v1.0: **pure routing, no settlement** (same as v0; 008 §1.1). The ACP
+//! v1.0: **pure routing, no settlement**. The ACP
 //! pipeline has only `PreRequestHook` / `RouteHook` / `ExecutionHook` — no
 //! `ChargeStrategy` / `SettlementRecorder` stage.
 //!
-//! Per design doc 003 §0 these hook traits are **independent** of both
+//! these hook traits are **independent** of both
 //! `language_model`'s and `mcp`'s — protocol isolation is enforced at compile
 //! time. The shape mirrors `mcp` because ACP is also JSON-RPC routing; the
-//! deliberate "drift risk" of hand-writing each protocol is accepted (003 §0).
+//! deliberate "drift risk" of hand-writing each protocol is accepted.
 //!
 //! Spec refs:
 //! - Protocol overview + schema: <https://agentclientprotocol.com/protocol/schema>

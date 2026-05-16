@@ -27,7 +27,7 @@ sqlite = ["dep:sqlx", "sqlx/sqlite"]
 postgres = ["dep:sqlx", "sqlx/postgres"]
 mysql = ["dep:sqlx", "sqlx/mysql"]
 # MPP payment channels. tempo is delivered in v1.0; solana is a placeholder
-# (not wired — see 008 §1.1).
+# (not wired — see).
 mpp-tempo = []
 mpp-solana = []
 

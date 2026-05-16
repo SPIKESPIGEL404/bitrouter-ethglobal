@@ -4,7 +4,7 @@
 //! The bundle is **not** the atomic unit — every hook it installs
 //! (`ByokRouteHook`, `BalanceCheckHook`, `MppStreamHook`, `ByokCharge`,
 //! `CreditCharge`, `MppCharge`, `ReceiptRecorder`) is `pub` and can be
-//! registered individually. The bundle just saves you the wiring (003 §2.1).
+//! registered individually. The bundle just saves you the wiring.
 
 use std::sync::Arc;
 

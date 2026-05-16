@@ -1,5 +1,5 @@
 //! Stage-0 model-name resolution: stripping `@preset` / `:variant` and deriving
-//! the clean model name + `RoutingPrefs` + prompt body overrides (003 §5.4).
+//! the clean model name + `RoutingPrefs` + prompt body overrides.
 //!
 //! A request `model` string composes as `[@preset]base[:variant]`:
 //! - `@careful` — a preset (its `model:` supplies the base);
@@ -8,7 +8,7 @@
 //!
 //! Disambiguation from the `provider:model` Strategy-1 form: a trailing
 //! `:segment` is treated as a variant **only if it names a known variant** —
-//! `openai:gpt-5` is left intact for Strategy 1 (003 §5.2).
+//! `openai:gpt-5` is left intact for Strategy 1.
 //!
 //! Validation: an unknown `@preset` is a hard 400; an unknown `:variant` is a
 //! passthrough (not stripped).
@@ -87,7 +87,7 @@ pub fn resolve_presets(
         None => (None, Some(head)),
     };
 
-    // 3. An unknown preset is a hard error (003 §5.4: unknown preset → 400).
+    // 3. An unknown preset is a hard error: 400.
     let preset: Option<&PresetConfig> = match preset_name {
         Some(name) => Some(
             presets

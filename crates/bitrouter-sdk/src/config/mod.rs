@@ -1,13 +1,22 @@
-//! Configuration types and loader — gated behind the `config_file` feature.
+//! YAML configuration — gated behind the `config_file` feature.
 //!
-//! The config file (`bitrouter.yaml`) serves the `bitrouter` CLI app. Core
-//! fields live at the top level (`server` / `database` / `providers` /
-//! `models` / `presets` / `variants`); plugin config lives under `plugins`.
-//! See design doc 003 §5 / §10.
+//! The [`Config`] type is the parsed shape of a `bitrouter.yaml` file. Top
+//! level keys: `server`, `database`, `providers`, `models`, `presets`,
+//! `variants`; per-plugin config lives under `plugins`. Load a file with
+//! [`load`]; build a [`RoutingTable`](crate::language_model::RoutingTable) over
+//! it with [`ConfigRoutingTable`].
 //!
-//! The `providers` schema is **registry-style** (003 §5.3): `api_protocol` and
+//! The `providers` schema is **registry-style**: `api_protocol` and
 //! `rate_limits` are glob-prefix [`pattern::PatternMap`] lists, so a local
-//! `bitrouter.yaml` and an external `provider-registry` share one schema.
+//! `bitrouter.yaml` and an external provider registry can share one schema.
+//!
+//! ```no_run
+//! # async fn run() -> bitrouter_sdk::Result<()> {
+//! use bitrouter_sdk::config::{load, ConfigRoutingTable};
+//! let config = load("./bitrouter.yaml").await?;
+//! let routing = ConfigRoutingTable::from_config(config);
+//! # let _ = routing; Ok(()) }
+//! ```
 
 use std::collections::HashMap;
 
@@ -40,12 +49,12 @@ pub struct Config {
     pub database: DatabaseConfig,
     /// Upstream providers, keyed by provider id.
     pub providers: HashMap<String, ProviderConfig>,
-    /// Explicit virtual-model definitions (Strategy 2; see 003 §5.2). Optional —
+    /// Explicit virtual-model definitions (Strategy 2.2). Optional —
     /// when absent, bare model names fall through to Strategy 3 auto-cascade.
     pub models: HashMap<String, VirtualModel>,
-    /// `@preset` definitions (003 §5.4).
+    /// `@preset` definitions.
     pub presets: HashMap<String, PresetConfig>,
-    /// `:variant` definitions (003 §5.4).
+    /// `:variant` definitions.
     pub variants: HashMap<String, VariantConfig>,
     /// Plugin config, keyed by plugin / bundle id.
     pub plugins: HashMap<String, serde_json::Value>,
@@ -80,7 +89,7 @@ pub struct ServerConfig {
     pub log_level: String,
     /// SDK-level flag: when `true`, credential-less requests are admitted with
     /// a synthesised local caller. Code default is **`false`** — only the
-    /// config file produced by `bitrouter init` writes `true` (003 §10).
+    /// config file produced by `bitrouter init` writes `true`.
     pub skip_auth: bool,
 }
 
@@ -113,7 +122,7 @@ impl Default for DatabaseConfig {
 
 /// A rate limit for one `(provider, pattern)` bucket. Limits are keyed
 /// per-`(provider, matched pattern)` — two patterns with different RPMs get
-/// independent windows (003 §5.3, the per-pattern-keyed correction over cloud).
+/// independent windows.
 #[derive(Debug, Clone, Copy, Default, Deserialize)]
 pub struct RateLimit {
     /// Requests-per-minute ceiling for this bucket.
@@ -135,7 +144,7 @@ pub struct PricingConfig {
     pub output_micro_usd_per_token: f64,
 }
 
-/// One upstream provider entry — registry-style (003 §5.3).
+/// One upstream provider entry — registry-style.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default)]
 pub struct ProviderConfig {
@@ -150,8 +159,8 @@ pub struct ProviderConfig {
     pub rate_limits: PatternMap<RateLimit>,
     /// Declared model entries. Empty + `auto_discover` triggers discovery.
     pub models: Vec<ProviderModel>,
-    /// When `true` and `models` is empty, discover models from the provider
-    /// (003 §5.6).
+    /// When `true` and `models` is empty, discover models from the provider's
+    /// `/models` endpoint at startup and on reload.
     pub auto_discover: bool,
     /// Whether this provider is active / routable.
     pub active: bool,
@@ -185,7 +194,7 @@ impl ProviderConfig {
     /// Resolve the effective `ApiProtocol` for `model_id`: per-model override
     /// wins, then the longest matching `api_protocol` pattern, then the
     /// provider default (`openai`). Includes the `auto_discover` protocol
-    /// inference from the api-base host (003 §5.6).
+    /// inference from the api-base host.
     pub fn protocol_for(&self, model_id: &str) -> ApiProtocol {
         if let Some(m) = self.models.iter().find(|m| m.id == model_id) {
             if let Some(p) = m.api_protocol {
@@ -225,7 +234,7 @@ impl ProviderConfig {
     }
 }
 
-/// Infer a wire protocol from a provider's api-base host (003 §5.6).
+/// Infer a wire protocol from a provider's api-base host.
 pub fn infer_protocol(api_base: &str) -> ApiProtocol {
     let host = api_base.to_ascii_lowercase();
     if host.contains("anthropic.com") {
@@ -280,7 +289,7 @@ pub struct VirtualEndpoint {
     pub service_id: String,
 }
 
-/// Routing knobs shared by presets and variants (003 §5.4).
+/// Routing knobs shared by presets and variants.
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(default)]
 pub struct RoutingConfig {
@@ -445,7 +454,7 @@ pub async fn load(path: impl AsRef<std::path::Path>) -> Result<Config> {
     parse(&raw)
 }
 
-/// Best-effort model discovery (003 §5.6). For every provider with
+/// Best-effort model discovery. For every provider with
 /// `auto_discover: true` and no declared `models`, `GET {api_base}/models` and
 /// populate the model list from the response (`{ "data": [{ "id": … }] }`,
 /// the OpenAI / Anthropic shape). A provider whose discovery call fails is

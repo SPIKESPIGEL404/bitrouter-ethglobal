@@ -1,6 +1,6 @@
 //! Typed pipeline event system (`PipelineEvent` trait + `EventBus`).
 //!
-//! See design doc 003 §3.4. The core crate defines only the trait and the bus;
+//! The core crate defines only the trait and the bus;
 //! concrete event types are declared by the plugin crates that emit them.
 //!
 //! `Serialize` is a mandatory supertrait used as a guardrail: closures, pointers

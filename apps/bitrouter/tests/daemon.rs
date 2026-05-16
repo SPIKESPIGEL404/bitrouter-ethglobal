@@ -1,4 +1,4 @@
-//! Integration tests for the Unix-socket daemon control surface (007 §6.1):
+//! Integration tests for the Unix-socket daemon control surface:
 //! roundtrip `Status` / `Route` / `Reload` / `Stop` against a fully assembled
 //! `App`. Bare-bones — no HTTP server, just the control socket.
 
@@ -401,7 +401,7 @@ async fn reload_returns_error_when_the_config_is_broken() {
 #[tokio::test]
 async fn socket_file_has_owner_only_permissions() {
     // Anyone-on-the-host shouldn't be able to talk to our daemon. Verify the
-    // socket is mode 0600 after bind (007 §6.1).
+    // socket is mode 0600 after bind.
     use std::os::unix::fs::PermissionsExt;
     let dir = tempdir("perms");
     let cfg_path = write_config(&dir, "sqlite::memory:").await;

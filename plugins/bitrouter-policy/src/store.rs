@@ -1,10 +1,10 @@
 //! `PolicyStore` — policies loaded from files. This plugin owns **no database
-//! table**; policies are pure config (003 §4 / 002 §4.4).
+//! table**; policies are pure config.
 //!
 //! The store is *reloadable*: when built via [`PolicyStore::load_dir`] it
 //! remembers the source directory and [`PolicyStore::reload`] re-scans it. The
 //! `PolicyHook` reads via a read lock so reload is safe under concurrent
-//! requests (008 §3.6 — reload must not affect in-flight requests).
+//! requests — reload must not affect in-flight requests.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};

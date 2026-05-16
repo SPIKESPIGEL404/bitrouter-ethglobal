@@ -1,5 +1,5 @@
 //! Phase-2 protocol-conversion tests: the 4×4 inbound/outbound matrix plus the
-//! v0 bug-regression suite (008 §3.2 / §3.3).
+//! v0 bug-regression suite.
 
 use crate::language_model::protocol::*;
 use crate::language_model::types::*;
@@ -229,7 +229,7 @@ fn conversion_matrix_4x4_streaming() {
     }
 }
 
-// ===== per-adapter unit tests (005 §9.3) =====
+// ===== per-adapter unit tests =====
 
 #[test]
 fn openai_chat_request_roundtrip() {
@@ -742,7 +742,7 @@ fn responses_request_roundtrip() {
     assert_eq!(parsed.messages.len(), 1);
 }
 
-// ===== v0 bug regression suite (008 §3.2) =====
+// ===== v0 bug regression suite =====
 
 /// #276 — ANSI escape codes in the model name. After sanitising, an escape
 /// sequence is stripped so the router sees a clean (here: unknown) model name
@@ -1006,7 +1006,7 @@ fn regression_432_responses_incomplete_and_unknown_events_not_errors() {
     );
 
     // `response.incomplete` is a clean terminal event — mapped to a
-    // `ResponseCompleted` part with status "incomplete" (005 §2.3), never an
+    // `ResponseCompleted` part with status "incomplete", never an
     // error.
     let incomplete = SseEvent {
         event: Some("response.incomplete".to_string()),
@@ -1086,7 +1086,7 @@ fn regression_454_2_responses_stream_envelope() {
     );
 }
 
-/// 005 §2.3 — `response.completed` decodes to the dedicated `ResponseCompleted`
+///.3 — `response.completed` decodes to the dedicated `ResponseCompleted`
 /// part, preserving the response id + status + usage that a bare `Finish` would
 /// have lost; and that part re-encodes to a `response.completed` event carrying
 /// the same id.

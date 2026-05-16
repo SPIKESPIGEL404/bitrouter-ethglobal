@@ -6,7 +6,7 @@
 //! Any inbound protocol can be paired with any outbound protocol (the 4×4
 //! conversion matrix).
 //!
-//! Design rules (008 Phase 2 / 005 §10):
+//! Design rules:
 //! - streaming parsing is an **explicit state machine**, never a catch-all
 //!   `_ =>` arm that silently swallows variants;
 //! - wire types omit absent fields entirely (`skip_serializing_if`), never
@@ -73,7 +73,7 @@ pub trait ProtocolAdapter: Send + Sync {
 }
 
 /// Stateful decoder: upstream SSE events → canonical stream parts. Streaming
-/// protocols are explicit state machines (005 §10.3).
+/// protocols are explicit state machines.
 pub trait StreamDecoder: Send {
     /// Feed one SSE event; emit zero or more canonical parts.
     fn decode(&mut self, event: &SseEvent) -> Result<Vec<StreamPart>>;

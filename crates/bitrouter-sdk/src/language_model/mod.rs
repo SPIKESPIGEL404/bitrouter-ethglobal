@@ -1,12 +1,61 @@
-//! The `language_model` protocol module.
+//! The `language_model` pipeline — LLM chat / completion routing.
 //!
-//! Carries the full seven-hook set: `PreRequestHook`, `RouteHook`,
-//! `ExecutionHook`, `StreamHook`, `ChargeStrategy`, `SettlementRecorder`,
-//! `ObserveHook`. See design doc 003.
+//! This is the main BitRouter pipeline. Inbound requests on any of four wire
+//! protocols ([`ApiProtocol`]) are parsed into a canonical [`Prompt`] by the
+//! adapters in [`protocol`], run through a four-stage flight pipeline plus an
+//! interleaved stream stage, and rendered back in the inbound protocol.
 //!
-//! Per design doc 003 §0, this module's `Pipeline` / hook traits are **not**
-//! shared with `mcp` / `acp` — those protocols define their own. Reuse is via
-//! shared library code at the crate root.
+//! ## Pipeline stages
+//!
+//! 1. **Pre-request** — every [`PreRequestHook`] runs in registration order.
+//!    Each returns a [`HookDecision`] of [`Allow`](HookDecision::Allow) or
+//!    [`Deny`](HookDecision::Deny). The first deny short-circuits the pipeline.
+//! 2. **Route** — the [`RoutingTable`] resolves the request's `model` into an
+//!    ordered chain of [`RoutingTarget`]s, then every [`RouteHook`] can mutate
+//!    or extend it (e.g. BYOK swaps the caller's own provider key onto a
+//!    target).
+//! 3. **Execute** — the [`Executor`] calls the first target. On a retriable
+//!    failure (5xx, timeout, 408/429) the [`FallbackPolicy`] advances to the
+//!    next target. Every [`ExecutionHook`] runs on success and failure.
+//! 4. **Stream stage** (interleaved when the response is streaming) —
+//!    each [`StreamHook`] sees every canonical [`StreamPart`] and can
+//!    [`Pass`](StreamAction::Pass), [`Replace`](StreamAction::Replace), or
+//!    [`Abort`](StreamAction::Abort) it.
+//! 5. **Settle** — the registered [`ChargeStrategy`]s form a
+//!    responsibility chain; the first one whose
+//!    [`try_charge`](ChargeStrategy::try_charge) returns
+//!    [`Claimed`](ChargeOutcome::Claimed) records the charge and the chain
+//!    stops. Every [`SettlementRecorder`] then always runs.
+//! 6. **Observe** — every [`ObserveHook`] sees phase boundaries and the final
+//!    [`RequestOutcome`]; observers are read-only and error-swallowing.
+//!
+//! ## Building a pipeline
+//!
+//! The usual entry point is [`crate::App::builder`] → `.language_model(...)`
+//! sub-builder, which exposes [`PipelineBuilder`]:
+//!
+//! ```no_run
+//! use std::sync::Arc;
+//! use bitrouter_sdk::App;
+//! use bitrouter_sdk::language_model::{HttpExecutor, StaticRoutingTable};
+//!
+//! # fn run() -> bitrouter_sdk::Result<()> {
+//! let app = App::builder()
+//!     .language_model(|lm| {
+//!         lm.routing_table(Arc::new(StaticRoutingTable::new()))
+//!           .executor(Arc::new(HttpExecutor::with_defaults().unwrap()));
+//!     })
+//!     .build()?;
+//! # let _ = app;
+//! # Ok(()) }
+//! ```
+//!
+//! ## Protocol isolation
+//!
+//! The hook traits here are **not** shared with [`crate::mcp`] / [`crate::acp`]:
+//! an `mcp::RouteHook` cannot be registered on a `language_model::Pipeline`
+//! (compile-time error). Cross-cutting reuse goes through crate-root library
+//! code, never a shared trait.
 
 pub mod builder;
 pub mod context;

@@ -164,12 +164,19 @@ fn truncate_upstream_message(text: &str) -> String {
     }
 }
 
+/// The default upstream [`Executor`] — dispatches a canonical
+/// [`Prompt`] to the wire protocol of the resolved [`RoutingTarget`] over
+/// HTTP and parses the response back into a canonical [`GenerateResult`] /
+/// stream of [`StreamPart`]s.
+///
+/// Build with [`HttpExecutor::with_defaults`] for sensible timeout defaults
+/// or [`HttpExecutor::new`] with a custom [`HttpTimeouts`].
 pub struct HttpExecutor {
     client: reqwest::Client,
 }
 
 impl HttpExecutor {
-    /// Build an executor with the given upstream timeout configuration (#394).
+    /// Build an executor with the given upstream timeout configuration.
     pub fn new(timeouts: HttpTimeouts) -> Result<Self> {
         let client = reqwest::Client::builder()
             .connect_timeout(timeouts.connect)

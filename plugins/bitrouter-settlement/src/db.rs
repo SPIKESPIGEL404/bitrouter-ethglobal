@@ -3,7 +3,7 @@
 //! This plugin owns five tables — `requests` (receipts + usage metrics source),
 //! `credit_accounts`, `credit_ledger_entries`, `byok_provider_keys`,
 //! `mpp_sessions`. Each is touched only by its dedicated hook module (plugin DB
-//! isolation, 004 §7.2):
+//! isolation,):
 //!
 //! | table                   | owner module          |
 //! |-------------------------|-----------------------|
@@ -46,7 +46,7 @@ CREATE TABLE IF NOT EXISTS credit_accounts (
     updated_at        TEXT NOT NULL
 );
 
--- Append-only ledger of every balance change (004 §7.5). `idempotency_key` is
+-- Append-only ledger of every balance change. `idempotency_key` is
 -- UNIQUE so a retried charge cannot be applied twice; NULL keys (manual
 -- top-ups) are exempt — sqlite permits multiple NULLs in a UNIQUE column.
 CREATE TABLE IF NOT EXISTS credit_ledger_entries (

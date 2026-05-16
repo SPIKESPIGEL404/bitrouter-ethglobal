@@ -257,7 +257,7 @@ pub enum StreamPart {
         reason: FinishReason,
     },
     /// Terminal lifecycle part for OpenAI Responses — preserves the response id
-    /// and status that a bare [`StreamPart::Finish`] would lose (005 §2.3).
+    /// and status that a bare [`StreamPart::Finish`] would lose.
     /// Only the Responses decoder emits this; the other protocols' encoders
     /// treat it as a terminal part equivalent to `Finish`.
     ResponseCompleted {
@@ -311,8 +311,7 @@ pub struct RoutingTarget {
     /// The wire protocol this target speaks.
     pub api_protocol: ApiProtocol,
     /// BYOK key override. Set by `ByokRouteHook`. **Never** used to infer
-    /// `byok_used` — that signal comes from the `ByokKeyApplied` event
-    /// (cloud #235 lesson).
+    /// `byok_used` — that signal comes from the `ByokKeyApplied` event.
     pub api_key_override: Option<String>,
     /// BYOK api-base override, paired with `api_key_override`.
     pub api_base_override: Option<String>,

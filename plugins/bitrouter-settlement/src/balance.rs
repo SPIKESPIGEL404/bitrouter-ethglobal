@@ -1,7 +1,7 @@
 //! `BalanceCheckHook` — a `language_model::PreRequestHook` that gates a request
 //! on funding availability.
 //!
-//! cloud #225 lesson: a BYOK caller must **never** be rejected at the verify
+//! lesson: a BYOK caller must **never** be rejected at the verify
 //! stage for an empty credit balance. v1 makes the funding model explicit on
 //! the API key (`api_keys.payment_method`): a `Byok` key carries no balance
 //! check at all, and the real charge-time enforcement lives in `CreditCharge` /

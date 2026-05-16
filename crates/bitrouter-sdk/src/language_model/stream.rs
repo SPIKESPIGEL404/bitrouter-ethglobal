@@ -244,7 +244,7 @@ impl UsageAccumulator {
 /// every hook regardless of how the stream terminated.
 ///
 /// Kept as an explicit driver (rather than a `Stream` impl) so the StreamHook
-/// stage is unit-testable in isolation (003 §11.3).
+/// stage is unit-testable in isolation.
 pub struct StreamProcessor {
     hooks: Vec<Arc<dyn StreamHook>>,
     observe: Vec<Arc<dyn ObserveHook>>,

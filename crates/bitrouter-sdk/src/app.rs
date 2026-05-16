@@ -1,9 +1,38 @@
-//! `App` and `AppBuilder` — shared library code (crate root).
+//! [`App`] and [`AppBuilder`] — the top-level entry point.
 //!
-//! `App` holds one `Pipeline` per enabled protocol. `AppBuilder` configures
-//! each protocol through its own sub-builder. `Plugin` is an **optional**
-//! convenience packaging — the atomic unit is a single hook, and hooks can be
-//! registered one by one without ever touching a `Plugin`.
+//! An [`App`] holds one pipeline per enabled protocol
+//! ([`crate::language_model::Pipeline`], [`crate::mcp::Pipeline`],
+//! [`crate::acp::Pipeline`]) plus the injected infrastructure (metrics store,
+//! metrics renderer, the aggregated migration set).
+//!
+//! [`AppBuilder`] configures each protocol through its own sub-builder closure
+//! ([`language_model`](AppBuilder::language_model), [`mcp`](AppBuilder::mcp),
+//! [`acp`](AppBuilder::acp)). A pipeline is built only for protocols that have
+//! something configured.
+//!
+//! # Plugins vs hooks
+//!
+//! The [`Plugin`] trait is an **optional** convenience: it packages a related
+//! set of hooks plus any SQL [`crate::plugin::MigrationItem`]s and installs
+//! them through [`AppBuilder::plugin`]. The atomic unit is still a single
+//! hook — every plugin can be re-created by calling the relevant
+//! sub-builder's hook methods one by one without ever touching [`Plugin`].
+//!
+//! ```no_run
+//! use std::sync::Arc;
+//! use bitrouter_sdk::App;
+//! use bitrouter_sdk::language_model::{HttpExecutor, StaticRoutingTable};
+//!
+//! # fn run() -> bitrouter_sdk::Result<()> {
+//! let app = App::builder()
+//!     .skip_auth(true)
+//!     .language_model(|lm| {
+//!         lm.routing_table(Arc::new(StaticRoutingTable::new()))
+//!           .executor(Arc::new(HttpExecutor::with_defaults().unwrap()));
+//!     })
+//!     .build()?;
+//! # let _ = app; Ok(()) }
+//! ```
 
 use std::sync::Arc;
 
@@ -38,7 +67,7 @@ pub struct App {
     #[allow(dead_code)]
     metrics_store: Option<Arc<dyn MetricsStore>>,
     /// Optional Prometheus-style metrics renderer; if set, the HTTP server
-    /// exposes `GET /metrics` against it (003 §4.6.2).
+    /// exposes `GET /metrics` against it.
     metrics_renderer: Option<Arc<dyn MetricsRenderer>>,
     migrations: Vec<MigrationItem>,
     skip_auth: bool,
@@ -57,7 +86,7 @@ impl App {
 
     /// The `mcp` (Model Context Protocol) pipeline, if configured. v1.0 ships
     /// it as pure-routing; the HTTP server mounts `POST /mcp/{name}` against
-    /// it (003 §3.5.1).
+    /// it.
     pub fn mcp(&self) -> Option<&Arc<mcp::Pipeline>> {
         self.mcp.as_ref()
     }
@@ -74,7 +103,7 @@ impl App {
     }
 
     /// Whether `server.skip_auth` is on — when true, credential-less requests
-    /// are admitted with a synthesised local caller (003 §10 / 004 §3.4).
+    /// are admitted with a synthesised local caller.
     pub fn skip_auth(&self) -> bool {
         self.skip_auth
     }
@@ -132,7 +161,7 @@ impl AppBuilder {
 
     /// Configure the `mcp` (Model Context Protocol) protocol pipeline. v1.0
     /// MCP is pure-routing (no settlement); the HTTP server mounts
-    /// `POST /mcp/{name}` against the built pipeline (003 §3.5.1).
+    /// `POST /mcp/{name}` against the built pipeline.
     pub fn mcp<F>(mut self, configure: F) -> Self
     where
         F: FnOnce(&mut mcp::PipelineBuilder),
@@ -143,7 +172,7 @@ impl AppBuilder {
 
     /// Configure the `acp` (Agent Client Protocol) protocol pipeline. v1.0
     /// ACP is pure-routing; the binary's stdio adapter dispatches against the
-    /// built pipeline (003 §3.5.2).
+    /// built pipeline.
     pub fn acp<F>(mut self, configure: F) -> Self
     where
         F: FnOnce(&mut acp::PipelineBuilder),
@@ -160,7 +189,7 @@ impl AppBuilder {
     }
 
     /// Wire a Prometheus-style metrics renderer. When set, the HTTP server
-    /// exposes `GET /metrics` against it (003 §4.6.2). Typically the same
+    /// exposes `GET /metrics` against it. Typically the same
     /// `Arc<PrometheusHook>` you registered as an `ObserveHook`.
     pub fn metrics_renderer(mut self, renderer: Arc<dyn MetricsRenderer>) -> Self {
         self.metrics_renderer = Some(renderer);

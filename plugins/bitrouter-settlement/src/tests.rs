@@ -1,5 +1,5 @@
-//! Phase-3 settlement tests: the v0/cloud bug-regression suite and the
-//! `ChargeStrategy` chain (008 §3.2 / Phase 3 exit criteria).
+//! Settlement integration tests: the regression suite and the
+//! `ChargeStrategy` chain.
 //!
 //! These are integration-style: they build a real `language_model::Pipeline`
 //! with the settlement hooks + a `MockExecutor`, run requests, and inspect the
@@ -98,7 +98,7 @@ async fn receipt(pool: &SqlitePool, request_id: &str) -> Option<sqlx::sqlite::Sq
 // ===== ChargeStrategy chain — mutual exclusion =====
 
 /// A `RouteHook` that injects an `api_key_override` **without** emitting a BYOK
-/// event — simulating an anonymous-router / registry injection (cloud #235).
+/// event — simulating an anonymous-router / registry injection.
 struct AnonOverrideRouteHook;
 #[async_trait]
 impl RouteHook for AnonOverrideRouteHook {
@@ -145,10 +145,10 @@ async fn byok_charge_claims_and_credit_charge_does_not_run() {
     assert_eq!(row.get::<i64, _>("final_charge_micro_usd"), 0);
 }
 
-// ===== cloud #235 — free billing on every request =====
+// ===== — free billing on every request =====
 
 #[tokio::test]
-async fn regression_cloud_235_anon_override_without_byok_row_still_charges() {
+async fn regression_235_anon_override_without_byok_row_still_charges() {
     let pool = pool().await;
     add_credits(&pool, "u2", 1_000_000).await.unwrap();
     let metrics: Arc<SqliteMetricsStore> = Arc::new(SqliteMetricsStore::new(pool.clone()));
@@ -198,7 +198,7 @@ async fn regression_180_missing_pricing_skips_charge_not_silently_zero() {
     let resp = pipeline.execute(req).await.unwrap();
 
     // Charge is skipped (0) — a *deliberate* skip — the credit balance is
-    // untouched, and CreditCharge `Pass`es rather than claiming (004 §1.5), so
+    // untouched, and CreditCharge `Pass`es rather than claiming, so
     // the request is left explicitly Unsettled, never silently "credits, 0".
     assert_eq!(resp.final_charge_micro_usd, 0);
     assert_eq!(credit_balance(&pool, "u3").await.unwrap(), 1_000_000);
@@ -206,10 +206,10 @@ async fn regression_180_missing_pricing_skips_charge_not_silently_zero() {
     assert_eq!(row.get::<String, _>("funding_source"), "unsettled");
 }
 
-// ===== cloud #207 / #198 — receipts carry full context, failures recorded =====
+// ===== — receipts carry full context, failures recorded =====
 
 #[tokio::test]
-async fn regression_cloud_207_198_receipt_has_full_context() {
+async fn regression_207_198_receipt_has_full_context() {
     let pool = pool().await;
     add_credits(&pool, "u4", 1_000_000).await.unwrap();
     let metrics: Arc<SqliteMetricsStore> = Arc::new(SqliteMetricsStore::new(pool.clone()));
@@ -225,7 +225,7 @@ async fn regression_cloud_207_198_receipt_has_full_context() {
     let resp = pipeline.execute(req).await.unwrap();
 
     let row = receipt(&pool, &resp.request_id).await.unwrap();
-    // identity + billing columns all populated (cloud #207 / #198)
+    // identity + billing columns all populated
     assert_eq!(row.get::<String, _>("user_id"), "u4");
     assert_eq!(row.get::<String, _>("api_key_id"), "k4");
     assert_eq!(row.get::<String, _>("model_id"), "gpt-5");
@@ -236,7 +236,7 @@ async fn regression_cloud_207_198_receipt_has_full_context() {
 }
 
 #[tokio::test]
-async fn regression_cloud_198_failed_request_is_still_recorded() {
+async fn regression_198_failed_request_is_still_recorded() {
     let pool = pool().await;
     let metrics: Arc<SqliteMetricsStore> = Arc::new(SqliteMetricsStore::new(pool.clone()));
 
@@ -428,10 +428,10 @@ async fn record_request_upsert_preserves_original_created_at() {
     assert_eq!(error_col.as_deref(), Some("oops"));
 }
 
-// ===== BalanceCheckHook — cloud #225 =====
+// ===== BalanceCheckHook — =====
 
 #[tokio::test]
-async fn regression_cloud_225_byok_caller_not_balance_gated() {
+async fn regression_225_byok_caller_not_balance_gated() {
     use crate::balance::BalanceCheckHook;
     use bitrouter_sdk::language_model::{HookDecision, PreRequestHook};
 
@@ -522,7 +522,7 @@ async fn settlement_owns_only_its_own_tables() {
     );
 }
 
-// ===== credit ledger idempotency (004 §7.5) =====
+// ===== credit ledger idempotency =====
 
 #[tokio::test]
 async fn credit_charge_through_pipeline_writes_one_ledger_entry() {

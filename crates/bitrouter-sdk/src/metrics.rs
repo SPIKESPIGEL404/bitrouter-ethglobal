@@ -1,9 +1,19 @@
-//! `MetricsStore` — usage metrics infrastructure (crate root).
+//! Usage metrics interfaces.
 //!
-//! See design doc 003 §4.7. `MetricsStore` is **infrastructure, not a hook**:
-//! it is injected via `App::builder()` alongside `RoutingTable`. The authoritative
-//! writer is the Settlement stage's `ReceiptRecorder`; the readers are
-//! PreRequest hooks (`PolicyHook` / `RateLimitHook`) doing spend/rate gating.
+//! Two traits live here:
+//!
+//! - [`MetricsStore`] — the storage interface for per-request records
+//!   ([`RequestMetric`]) and spend / rate queries ([`TokenUsage`],
+//!   [`RateMetrics`]). The Settlement stage's recorder writes to it; the
+//!   pre-request stage's policy and rate-limit hooks read from it.
+//! - [`MetricsRenderer`] — a Prometheus-style text exposer. When wired via
+//!   [`crate::AppBuilder::metrics_renderer`], the HTTP server's
+//!   `GET /metrics` route reads it.
+//!
+//! Both are **infrastructure, not hooks** — they are injected onto the
+//! [`crate::App`] via the builder, not registered onto a particular pipeline.
+//! `bitrouter-settlement` provides a sqlite-backed implementation of
+//! [`MetricsStore`]; `bitrouter-observe` provides one of [`MetricsRenderer`].
 
 use crate::Result;
 use crate::caller::FundingSource;
@@ -114,7 +124,7 @@ pub trait MetricsStore: Send + Sync {
 }
 
 /// A renderer of Prometheus-style text-exposition metrics. The SDK's HTTP
-/// server mounts `GET /metrics` against this trait (003 §4.6.2). The trait is
+/// server mounts `GET /metrics` against this trait. The trait is
 /// deliberately tiny — synchronous, returns owned text — so any in-process
 /// accumulator (e.g. `bitrouter_observe::PrometheusHook`) can implement it
 /// without dragging Prometheus library types into the SDK.

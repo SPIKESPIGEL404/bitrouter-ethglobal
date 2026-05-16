@@ -5,7 +5,7 @@
 //! the home of v0's `load_builtin_plugins` equivalent.
 //!
 //! Assembly sits **above** the SDK and the plugins (`plugins → sdk`, sdk never
-//! depends back) — see 002 §4.2. The `bin` target (`main.rs`) is the CLI/TUI
+//! depends back) — see. The `bin` target (`main.rs`) is the CLI/TUI
 //! entry point and a thin shell over this lib.
 
 #![forbid(unsafe_code)]

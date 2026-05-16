@@ -323,14 +323,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "bitrouter-p2p"
-version = "1.0.0-alpha.1"
-dependencies = [
- "bitrouter-sdk",
- "tracing",
-]
-
-[[package]]
 name = "bitrouter-policy"
 version = "1.0.0-alpha.1"
 dependencies = [

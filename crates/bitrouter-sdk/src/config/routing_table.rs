@@ -1,6 +1,6 @@
 //! `ConfigRoutingTable` — a `RoutingTable` backed by `bitrouter.yaml`.
 //!
-//! Implements the full model-name resolution pipeline (003 §5.2):
+//! Implements the full model-name resolution pipeline:
 //!
 //! - **Stage 0** — strip `@preset` / `:variant`, derive `RoutingPrefs`.
 //! - **Strategy 1** — `provider:model_id` → direct route (chain length 1).
@@ -161,14 +161,14 @@ pub fn resolve_route_chain(
     }
 
     if chain.is_empty() {
-        // No `DEFAULT_PROVIDER` fallback — a clean 404 (003 §5.2).
+        // No `DEFAULT_PROVIDER` fallback — a clean 404.
         return Err(BitrouterError::NotFound(format!(
             "no active provider declares model '{clean}'"
         )));
     }
 
     // Order the cascade. `Latency` / `Cost` have no metrics source yet, so
-    // they fall back to the alphabetical initial sort (003 §5.2 note).
+    // they fall back to the alphabetical initial sort.
     match prefs.sort {
         SortOrder::Alphabetical | SortOrder::Latency | SortOrder::Cost => {
             chain.sort_by(|a, b| a.0.cmp(&b.0));
@@ -246,10 +246,9 @@ impl RoutingTable for ConfigRoutingTable {
         let _guard = self.reload_lock.lock().await;
         let mut fresh = crate::config::load(path).await?;
         // Re-run model discovery so `auto_discover: true` providers pick up
-        // upstream additions / removals (007 §1.2 #3 — "重新获取 provider
-        // 的模型列表 (auto_discover)"). Best-effort: discovery failures WARN,
-        // they do not abort the reload — same policy as initial assembly
-        // (003 §5.6).
+        // upstream additions / removals. Best-effort: discovery failures
+        // WARN; they do not abort the reload — same policy as the initial
+        // assembly path.
         crate::config::discover_models(&mut fresh).await;
         *self.config.write().expect("config lock poisoned") = fresh;
         Ok(())

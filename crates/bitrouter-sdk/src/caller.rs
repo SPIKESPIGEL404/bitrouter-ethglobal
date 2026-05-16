@@ -1,7 +1,13 @@
-//! Caller identity and funding context — shared library code (crate root).
+//! Caller identity and funding context.
 //!
-//! `CallerContext` is one of the shared sub-structs embedded by every
-//! protocol's `*PipelineContext` (see 003 §0).
+//! [`CallerContext`] identifies the authenticated client of a request and how
+//! they pay ([`PaymentMethod`] + [`FundingSource`]). Every protocol's
+//! `*PipelineContext` embeds one.
+//!
+//! Hooks set or upgrade the caller during the pre-request stage — typically
+//! `bitrouter-auth`'s `AuthHook` resolves a `brvk_` virtual key into a known
+//! user + funding source. When `server.skip_auth` is set, a credential-less
+//! request is given the synthetic [`CallerContext::local`] caller.
 
 use serde::{Deserialize, Serialize};
 

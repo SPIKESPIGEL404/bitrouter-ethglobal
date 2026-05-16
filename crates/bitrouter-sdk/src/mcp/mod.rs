@@ -1,11 +1,11 @@
 //! The `mcp` protocol module — Model Context Protocol routing.
 //!
-//! v1.0: **pure routing, no settlement** (same as v0; 008 §1.1). The MCP
+//! v1.0: **pure routing, no settlement**. The MCP
 //! pipeline has only `PreRequestHook` / `RouteHook` / `ExecutionHook` — there
 //! is no `ChargeStrategy` / `SettlementRecorder` stage. MCP tool calls are
 //! JSON-RPC; the canonical request/response here are JSON.
 //!
-//! Per design doc 003 §0 these hook traits are **independent** of
+//! these hook traits are **independent** of
 //! `language_model`'s — an `mcp::RouteHook` cannot be registered on a
 //! `language_model::Pipeline` (compile-time protocol isolation). Reuse of
 //! cross-cutting logic is via shared crate-root library code, not shared traits.

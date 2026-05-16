@@ -3,7 +3,7 @@
 //! `ReceiptRecorder` (a `SettlementRecorder`) calls `record_request`, and the
 //! PreRequest hooks (`BalanceCheckHook` / policy hooks) call the read methods.
 //!
-//! This is the only module that touches the `requests` table (004 §7.2).
+//! This is the only module that touches the `requests` table.
 
 use async_trait::async_trait;
 use chrono::{DateTime, Datelike, Duration, TimeZone, Utc};
@@ -142,7 +142,7 @@ impl MetricsStore for SqliteMetricsStore {
 
     async fn record_request(&self, record: RequestMetric) -> Result<()> {
         // The authoritative receipt write. Every billing + identity column is
-        // populated (cloud #207 / #198); failed requests are recorded too,
+        // populated; failed requests are recorded too,
         // with a non-null `error` (#198).
         //
         // `ON CONFLICT(request_id) DO UPDATE` over `INSERT OR REPLACE` so that
@@ -150,7 +150,7 @@ impl MetricsStore for SqliteMetricsStore {
         // `created_at` (which `INSERT OR REPLACE` would). The original
         // arrival time of a receipt is what analytics keys off; the *update*
         // refreshes only the mutable columns. Mirrors cloud's pattern in
-        // `bitrouter-cloud-ref/src/db/request_receipt.rs:143-167`.
+        // .
         sqlx::query(
             "INSERT INTO requests \
              (request_id, user_id, api_key_id, model_id, provider_id, \

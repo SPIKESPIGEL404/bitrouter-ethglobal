@@ -6,7 +6,7 @@
 //! - [`otlp::OtlpExportHook`] — behind the `otlp` feature, a self-contained
 //!   OTLP/HTTP JSON trace exporter that completes v0's unfinished #409.
 //!
-//! Every hook here is read-only and error-swallowing (003 §4.6).
+//! Every hook here is read-only and error-swallowing.
 
 #![forbid(unsafe_code)]
 

@@ -3,7 +3,7 @@
 //! Auth plugin. Provides [`AuthHook`] — a `language_model::PreRequestHook` that
 //! validates `brvk_` virtual keys (and, later, MPP credentials) — owns the
 //! `users` and `api_keys` tables, and emits the [`Authenticated`] event. v1 has
-//! **no JWT path** (004 §3.0).
+//! **no JWT path**.
 //!
 //! This plugin owns its tables exclusively; other plugins coordinate via the
 //! [`Authenticated`] event, never by reading `api_keys` directly.

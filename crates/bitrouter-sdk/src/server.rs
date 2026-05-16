@@ -38,8 +38,7 @@ use crate::metrics::MetricsRenderer;
 pub struct AppState {
     /// The `language_model` pipeline.
     pub language_model: Arc<Pipeline>,
-    /// Optional `mcp` pipeline — `POST /mcp/{name}` is mounted only when set
-    /// (003 §3.5.1).
+    /// Optional `mcp` pipeline — `POST /mcp/{name}` is mounted only when set.
     pub mcp: Option<Arc<mcp::Pipeline>>,
     /// SDK-level `skip_auth`: when `true`, a credential-less request is given a
     /// synthesised local caller; otherwise a pre-auth anonymous placeholder
@@ -69,7 +68,7 @@ impl App {
             .await
             .map_err(|e| BitrouterError::internal(format!("bind {listen}: {e}")))?;
         tracing::info!(%listen, "bitrouter listening");
-        // Graceful shutdown (007 §1.2 / §6.2 / 008 §3.6): on SIGINT/SIGTERM
+        // Graceful shutdown: on SIGINT/SIGTERM
         // stop accepting new connections and let in-flight requests finish.
         let drain_pipeline = pipeline.clone();
         serve(listener, router)
@@ -79,7 +78,7 @@ impl App {
         // After the HTTP server drains, also wait for every detached client-
         // disconnect settlement task (StreamSettlementGuard::drop). Without
         // this, SIGTERM during heavy streaming traffic could drop the
-        // detached tasks mid-await and lose receipts (008 §3.5).
+        // detached tasks mid-await and lose receipts.
         let drained = drain_pipeline.drain_pending_settlements().await;
         if drained > 0 {
             tracing::info!(drained, "drained pending streaming settlements on shutdown");
@@ -136,7 +135,7 @@ async fn health() -> impl IntoResponse {
     (StatusCode::OK, Json(serde_json::json!({ "status": "ok" })))
 }
 
-/// `GET /metrics` — Prometheus text-exposition (003 §4.6.2). Returns 404 when
+/// `GET /metrics` — Prometheus text-exposition. Returns 404 when
 /// no [`MetricsRenderer`] is wired into the app, so scrapers can probe.
 async fn prometheus_metrics(State(state): State<AppState>) -> Response {
     match &state.metrics_renderer {
@@ -151,7 +150,7 @@ async fn prometheus_metrics(State(state): State<AppState>) -> Response {
     }
 }
 
-/// `POST /mcp/{server}` — Model Context Protocol invocation (003 §3.5.1).
+/// `POST /mcp/{server}` — Model Context Protocol invocation.
 ///
 /// v1.0 implements the JSON-RPC request/response shape only; the Streamable
 /// HTTP SSE response variant is a documented follow-up. Spec refs:
@@ -392,7 +391,7 @@ async fn handle(
 
     // `skip_auth` decides the starting caller: a synthesised local caller when
     // on, else a pre-auth anonymous placeholder for `AuthHook` to upgrade or
-    // reject (003 §10 / 004 §3.4).
+    // reject.
     let caller = if state.skip_auth {
         CallerContext::local()
     } else {
@@ -488,8 +487,8 @@ impl IntoResponse for BitrouterError {
                 "type": self.error_type(),
             }
         }));
-        // 003 §6.4 — payment / rate-limit responses must carry the headers
-        // that auto-paying clients (e.g. the MPP autopay flow, 004 §3.3) and
+        //.4 — payment / rate-limit responses must carry the headers
+        // that auto-paying clients (e.g. the MPP autopay flow,) and
         // well-behaved API consumers expect. RFC 7235 §4.1 for
         // WWW-Authenticate, RFC 7231 §7.1.3 for Retry-After.
         let mut response = (status, body).into_response();
@@ -506,7 +505,7 @@ impl IntoResponse for BitrouterError {
             BitrouterError::PaymentRequired(_) => {
                 // 402 + WWW-Authenticate: our scheme name (`Bitrouter-MPP`)
                 // and params predate the mpp.dev finalised wire format and
-                // remain compatible with v0 clients (cloud #183 will revisit
+                // remain compatible with v0 clients ( will revisit
                 // alignment with <https://mpp.dev/protocol/http-402>).
                 if let Ok(v) = header::HeaderValue::from_str(
                     "Bitrouter-MPP realm=\"bitrouter\", scheme=\"tempo-voucher\"",
@@ -539,7 +538,7 @@ mod tests {
         let www_auth = response
             .headers()
             .get(header::WWW_AUTHENTICATE)
-            .expect("402 must carry WWW-Authenticate (003 §6.4)")
+            .expect("402 must carry WWW-Authenticate")
             .to_str()
             .unwrap();
         assert!(www_auth.contains("Bitrouter-MPP"));

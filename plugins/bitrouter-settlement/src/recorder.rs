@@ -2,7 +2,7 @@
 //! receipt for **every** request (success or failure) by feeding the
 //! `MetricsStore`.
 //!
-//! cloud #207 / #198 lessons:
+//! lessons:
 //! - every billing + identity column is written (`user_id`, `api_key_id`,
 //!   `final_charge_micro_usd`, `funding_source`, …) — never left NULL;
 //! - failed requests are recorded too, with a non-empty `error` — they are not
@@ -35,7 +35,7 @@ impl SettlementRecorder for ReceiptRecorder {
     async fn record(&self, ctx: &SettlementContext) -> Result<()> {
         let metric = RequestMetric {
             request_id: ctx.request_id.clone(),
-            // identity columns — always populated (cloud #198)
+            // identity columns — always populated
             user_id: ctx.caller.user_id().to_string(),
             api_key_id: ctx.caller.api_key_id().to_string(),
             model_id: ctx.model_id.clone(),
@@ -45,12 +45,12 @@ impl SettlementRecorder for ReceiptRecorder {
             reasoning_tokens: ctx.reasoning_tokens,
             latency_ms: ctx.latency_ms,
             generation_time_ms: ctx.generation_time_ms,
-            // billing columns — always populated (cloud #207)
+            // billing columns — always populated
             final_charge_micro_usd: ctx.final_charge_micro_usd,
             funding_source: ctx.funding_source,
             byok_used: ctx.byok_used,
             stream: ctx.streamed,
-            // failed requests are recorded with a non-empty error (cloud #198)
+            // failed requests are recorded with a non-empty error
             error: ctx.error.as_ref().map(|e| e.to_string()),
         };
         self.metrics_store.record_request(metric).await

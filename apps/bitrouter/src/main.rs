@@ -1,9 +1,9 @@
 //! `bitrouter` CLI entry point — a thin shell over the `bitrouter` lib.
 //!
-//! Subcommand surface (007 §1.1): `serve` / `start` / `stop` / `restart` /
+//! Subcommand surface: `serve` / `start` / `stop` / `restart` /
 //! `reload` / `status` / `route` / `init` / `key sign` / `models` / `tools` /
 //! `policy create` / `providers (list|use)` / `wallet` / `login` / `logout` /
-//! `whoami` / `agents`. Daemon control runs over a Unix socket (007 §6.1) —
+//! `whoami` / `agents`. Daemon control runs over a Unix socket —
 //! `start` spawns `serve` detached; the client subcommands send one
 //! [`DaemonCommand`] each.
 //!
@@ -139,9 +139,8 @@ enum Command {
 
 #[derive(Subcommand)]
 enum KeyAction {
-    /// Mint a new `brvk_` virtual key for a user (007 §1.2: `bitrouter key
-    /// sign`). v1 does not sign a JWT — it creates a DB-backed virtual key and
-    /// prints the plaintext once.
+    /// Mint a new `brvk_` virtual key for a user. v1 does not sign a JWT — it
+    /// creates a DB-backed virtual key and prints the plaintext once.
     Sign {
         /// The owning user id.
         #[arg(short, long)]
@@ -160,7 +159,7 @@ enum KeyAction {
 
 #[derive(Subcommand)]
 enum PolicyAction {
-    /// Write a starter policy file to the policy dir (007 §1.1).
+    /// Write a starter policy file to the policy dir.
     Create {
         /// Policy id (becomes the file stem and the `id:` field).
         id: String,
@@ -220,7 +219,7 @@ async fn main() -> Result<()> {
             print_unimplemented(
                 "tools",
                 "v1.0 has no global tool registry — request bodies carry their own\n\
-                 tool list and `PolicyHook` (004 §4) gates them by name.",
+                 tool list and `PolicyHook` gates them by name.",
             );
             Ok(())
         }
@@ -332,7 +331,7 @@ async fn serve(config_path: &Path) -> Result<()> {
     };
     let control = daemon::run_control_socket(socket_path, app.clone(), listen, reloader.clone());
 
-    // SIGHUP triggers a config reload — per 007 §1.2, reload should be
+    // SIGHUP triggers a config reload — per, reload should be
     // available via either `bitrouter reload` (the socket path) *or* a HUP
     // signal. Same fan-out as the Reload command — every reloadable subsystem.
     let hup_reloader = reloader.clone();
@@ -453,7 +452,7 @@ async fn restart(config_path: &Path, socket: &Path, log_path: &Path) -> Result<(
             Ok(other) => return Err(anyhow::anyhow!("unexpected response: {other:?}")),
             Err(e) => tracing::warn!(error = %e, "stop failed — proceeding to start"),
         }
-        // 007 §6.2 allows in-flight requests up to 30s to drain. Wait that
+        //.2 allows in-flight requests up to 30s to drain. Wait that
         // long for the socket to be released. If it still isn't, escalate to
         // SIGKILL on the recorded pid — otherwise `start` would race the old
         // process for the same socket and one of them would die silently.

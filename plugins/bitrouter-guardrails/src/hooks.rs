@@ -1,9 +1,9 @@
 //! The two guardrail hooks:
 //! - [`GuardrailPreHook`] — a `language_model::PreRequestHook` that scans the
-//!   **request** content and denies on a `Block` rule (upstream / 004 §5.5);
+//!   **request** content and denies on a `Block` rule (upstream /);
 //! - [`GuardrailStreamHook`] — a `language_model::StreamHook` that scans the
 //!   **response** stream, redacting `Redact` matches and aborting on `Block`
-//!   (downstream / 004 §5.5).
+//!   (downstream /).
 
 use async_trait::async_trait;
 

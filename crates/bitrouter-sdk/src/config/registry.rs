@@ -2,14 +2,14 @@
 //! `provider-registry` directory.
 //!
 //! It shares the **same registry-style provider schema** as
-//! [`crate::config::ConfigRoutingTable`] (003 §5.3) — the only difference is
+//! [`crate::config::ConfigRoutingTable`] — the only difference is
 //! the data source. The registry directory holds one YAML file per provider
 //! (`<provider-id>.yaml`, each a [`crate::config::ProviderConfig`]); the
 //! routing logic itself is reused via an inner `ConfigRoutingTable`.
 //!
 //! In cloud this table is paired with a recommender + circuit breaker that
 //! keep evolving; v1's `RegistryRoutingTable` is the architecture seat for
-//! that, tracking cloud's current shape (006 §3).
+//! that, tracking cloud's current shape.
 
 use std::path::PathBuf;
 use std::sync::RwLock;

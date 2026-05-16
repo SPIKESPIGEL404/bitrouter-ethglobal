@@ -10,7 +10,7 @@
 //!   (JSON mapping per <https://opentelemetry.io/docs/specs/otlp/#json-protobuf-encoding>)
 //!
 //! As an `ObserveHook` it is read-only and error-swallowing. Per design doc
-//! 003 §4.6 the exporter manages its own async: `on_request_end` does a
+//!.6 the exporter manages its own async: `on_request_end` does a
 //! non-blocking `try_send` onto an unbounded channel; a background task drains
 //! the channel and POSTs batches.
 

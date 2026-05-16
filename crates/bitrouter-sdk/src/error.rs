@@ -1,4 +1,11 @@
-//! Crate-wide error type. Shared across all protocol modules.
+//! Crate-wide error type.
+//!
+//! Every fallible SDK call returns [`Result<T>`](Result) (an alias for
+//! `std::result::Result<T, BitrouterError>`). Variants carry an HTTP status so
+//! the server handlers can render OpenAI/Anthropic-style error envelopes
+//! without a separate mapping table. The type is `Clone` because the pipeline
+//! hands the same error to several consumers (observe hooks, settlement
+//! recorders, the caller).
 
 use std::fmt;
 

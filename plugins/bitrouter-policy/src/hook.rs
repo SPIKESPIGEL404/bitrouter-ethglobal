@@ -1,11 +1,10 @@
 //! `PolicyHook` — a `language_model::PreRequestHook` enforcing per-API-key
 //! policy: model allow/deny, spend ceiling, expiry, payment-chain limits,
-//! tool-access rules and request-rate limits (004 §4.1).
+//! tool-access rules and request-rate limits.
 //!
 //! The caller's `policy_id` is read from the `bitrouter-auth` plugin's
-//! `PipelineContext` metadata (not by importing the auth crate's event type) —
-//! see 003 §3.3. Spend and rate are read from the injected `MetricsStore`
-//! (003 §4.7.3).
+//! `PipelineContext` metadata (not by importing the auth crate's event type).
+//! Spend and rate are read from the injected `MetricsStore`.
 
 use std::sync::Arc;
 
@@ -45,7 +44,7 @@ impl PolicyHook {
     }
 
     /// The caller's payment chain, for chain-limit checks. v1.0 supports the
-    /// Tempo MPP channel only (008 §1.1), so an MPP caller is on `tempo`;
+    /// Tempo MPP channel only, so an MPP caller is on `tempo`;
     /// non-MPP callers have no chain to gate.
     fn caller_chain(ctx: &PipelineContext) -> Option<&'static str> {
         match ctx.caller().payment_method() {

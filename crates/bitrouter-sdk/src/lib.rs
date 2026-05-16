@@ -1,19 +1,115 @@
 //! # bitrouter-sdk
 //!
-//! The BitRouter SDK. Merges v0's `bitrouter-core` + `bitrouter-api` +
-//! `bitrouter-config` + `bitrouter-providers` into a single crate.
+//! The BitRouter SDK: build a programmable router for LLM API traffic.
+//! Inbound requests on any of four wire protocols (OpenAI Chat, OpenAI
+//! Responses, Anthropic Messages, Google Generative AI) are normalised into a
+//! canonical pipeline, run through a chain of hooks (auth, policy, settlement,
+//! guardrails, observability), dispatched to the right upstream provider, and
+//! rendered back in the inbound protocol — so a client written for one
+//! provider can transparently use any other.
 //!
-//! Each routing protocol is a module with its own `Pipeline`, `PipelineContext`,
-//! `RoutingTable`, `Router` and hook traits. There is **no protocol generic and
-//! no cross-protocol shared hook trait** (see design doc 003 §0). Reuse is via
-//! shared library code (structs / fns) at the crate root, not shared traits.
+//! ## What's in the SDK
 //!
-//! ## Feature flags
+//! - **Three independent protocol pipelines** — one per wire family:
+//!   - [`language_model`] — the main pipeline. Handles LLM completions with the
+//!     full hook set (pre-request → route → execute → settle, plus an
+//!     interleaved stream stage and read-only observation).
+//!   - [`mcp`] — Model Context Protocol routing (pure routing, no settlement).
+//!   - [`acp`] — Agent Client Protocol routing (pure routing, no settlement).
 //!
-//! - `server` — axum HTTP handlers, SSE, admin endpoints.
-//! - `config_file` — yaml config loading (`serde-saphyr` + `tokio::fs`).
+//!   The pipelines are deliberately **not** generic over a shared hook trait:
+//!   each one has its own hooks so a stage in `language_model` can't be
+//!   accidentally registered on `mcp`. Cross-cutting reuse goes through the
+//!   crate-root library code below, never a shared trait.
+//!
+//! - **Shared crate-root infrastructure** that every protocol uses:
+//!   - [`app`] — [`App`] / [`AppBuilder`] / [`Plugin`].
+//!   - [`error`] — the unified [`BitrouterError`] / [`Result`].
+//!   - [`caller`] — [`CallerContext`], [`FundingSource`], [`PaymentMethod`].
+//!   - [`event`] — typed [`PipelineEvent`] bus.
+//!   - [`metrics`] — the [`MetricsStore`] / [`MetricsRenderer`] traits.
+//!   - [`mpp`] — the [`MppVerifier`] trait used by the auth + settlement
+//!     plugins for paying callers.
+//!   - [`plugin`] — [`PluginId`] and SQL [`MigrationItem`]s.
+//!
+//! - **Optional features** (off by default):
+//!   - `server` — an [axum] HTTP front-end ([`server::build_router`],
+//!     [`App::serve`]) wiring all four inbound protocols, plus
+//!     `GET /metrics`, `POST /mcp/{server}`, and graceful shutdown.
+//!   - `config_file` — YAML config loading ([`config::load`],
+//!     [`config::ConfigRoutingTable`]).
+//!
+//! [axum]: https://docs.rs/axum
+//!
+//! ## Anatomy of a request
+//!
+//! For the LLM pipeline (`language_model`):
+//!
+//! 1. **Pre-request** — every [`PreRequestHook`] runs; auth, policy, and
+//!    upstream guardrails reject early. Returns
+//!    [`HookDecision::Allow`] or denies.
+//! 2. **Route** — a [`RoutingTable`] resolves the `model` field into an
+//!    ordered chain of [`RoutingTarget`]s; every
+//!    [`RouteHook`](language_model::RouteHook) can mutate it (e.g. BYOK swaps
+//!    in the caller's own provider key).
+//! 3. **Execute** — the [`Executor`](language_model::Executor) calls the first
+//!    target. On a retriable failure the [`FallbackPolicy`] advances to the
+//!    next target. Streaming responses run through every
+//!    [`StreamHook`](language_model::StreamHook) on each canonical part.
+//! 4. **Settle** — exactly one [`ChargeStrategy`](language_model::ChargeStrategy)
+//!    in the registered chain claims and records the charge. Every
+//!    [`SettlementRecorder`](language_model::SettlementRecorder) always runs.
+//! 5. **Observe** — [`ObserveHook`](language_model::ObserveHook)s see every
+//!    phase boundary and the final outcome; they never influence the request.
+//!
+//! See each hook trait's docs for the exact contract.
+//!
+//! ## Building an `App`
+//!
+//! At minimum a `language_model` pipeline needs a routing table and an
+//! executor:
+//!
+//! ```no_run
+//! use std::sync::Arc;
+//! use bitrouter_sdk::App;
+//! use bitrouter_sdk::language_model::{HttpExecutor, StaticRoutingTable};
+//!
+//! # fn run() -> bitrouter_sdk::Result<()> {
+//! let app = App::builder()
+//!     .language_model(|lm| {
+//!         lm.routing_table(Arc::new(StaticRoutingTable::new()))
+//!           .executor(Arc::new(HttpExecutor::with_defaults().unwrap()));
+//!     })
+//!     .build()?;
+//! # let _ = app;
+//! # Ok(()) }
+//! ```
+//!
+//! Plugins (`bitrouter-auth`, `bitrouter-policy`, `bitrouter-settlement`,
+//! `bitrouter-guardrails`, `bitrouter-observe`) install themselves through
+//! [`AppBuilder::plugin`] — a convenience that drops their hooks into the
+//! right sub-builder. Hooks can equally be registered one-by-one without
+//! [`Plugin`].
+//!
+//! With the `server` feature on, `app.serve("0.0.0.0:4356")` wires the
+//! whole router and runs it until SIGTERM.
+//!
+//! ## What ships in adjacent crates
+//!
+//! The SDK does not include the default plugins; each plugin is its own crate
+//! that implements one or more hook traits from here:
+//!
+//! - `bitrouter-auth` — virtual API key (`brvk_…`) auth + optional MPP.
+//! - `bitrouter-policy` — per-key policy: spend ceilings, RPM, model
+//!   allow/deny, tool-access rules.
+//! - `bitrouter-settlement` — credit + BYOK + MPP charge strategies, sqlite
+//!   `MetricsStore`, receipt recorder, model pricing table.
+//! - `bitrouter-guardrails` — request / response content scanning (block +
+//!   redact).
+//! - `bitrouter-observe` — Prometheus exporter + OTLP/HTTP traces.
 
 #![forbid(unsafe_code)]
+#![warn(missing_docs)]
 
 // ===== shared library code (crate root) =====
 pub mod app;
@@ -39,6 +135,9 @@ pub use app::{App, AppBuilder, Plugin};
 pub use caller::{CallerContext, FundingSource, PaymentMethod};
 pub use error::{BitrouterError, Result};
 pub use event::{EventBus, PipelineEvent};
+pub use language_model::{
+    FallbackPolicy, HookDecision, PreRequestHook, RoutingTable, RoutingTarget,
+};
 pub use metrics::{
     MetricsRenderer, MetricsStore, RateMetrics, RequestMetric, TimeWindow, TokenUsage,
 };

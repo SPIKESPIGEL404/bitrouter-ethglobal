@@ -1,5 +1,4 @@
-//! Phase-3 auth tests: the `skip_auth` truth table and the `brvk_` validation
-//! flow (008 Phase 3 exit criteria).
+//! Auth tests: the `skip_auth` truth table and the `brvk_` validation flow.
 
 use sqlx::SqlitePool;
 
@@ -114,7 +113,7 @@ async fn non_virtual_key_is_denied() {
     ));
 }
 
-// ===== skip_auth truth table (004 §3.4) =====
+// ===== skip_auth truth table =====
 
 #[tokio::test]
 async fn truth_table_no_skip_auth_no_credential_denies() {
@@ -228,7 +227,7 @@ fn is_reserved_user_id_recognises_synthesised_ids() {
     assert!(!db::is_reserved_user_id("Local")); // case-sensitive on purpose
 }
 
-// ===== MPP credential path (004 §3.1 / §3.3) =====
+// ===== MPP credential path =====
 
 use std::sync::Arc;
 

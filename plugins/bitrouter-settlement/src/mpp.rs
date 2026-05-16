@@ -1,13 +1,13 @@
 //! MPP (micropayment-protocol) settlement.
 //!
 //! v1.0 delivers the **Tempo** channel only. Solana MPP sessions are explicitly
-//! out of scope for v1.0 (008 §1.1) — the `mpp-solana` feature is a placeholder
+//! out of scope for v1.0 — the `mpp-solana` feature is a placeholder
 //! that is never wired; constructing an `MppState` for the Solana channel is an
 //! error.
 //!
 //! `MppState` is the only module that touches the `mpp_sessions` table.
 //!
-//! NOTE: the Tempo EVM wallet + channel close-signing (cloud #183, still OPEN)
+//! NOTE: the Tempo EVM wallet + channel close-signing (, still OPEN)
 //! is a known follow-up — it is *not* a direct migration. `MppState` here
 //! tracks channel balance and per-checkpoint progress in `mpp_sessions`; the
 //! on-chain signing path plugs into [`MppState::sign_checkpoint`].
@@ -17,7 +17,7 @@
 //! mpp.dev `Authorization: Payment <base64url-json>` Credential envelope.
 //! `MppState::verify` currently checks that `sig=` is non-empty but does
 //! NOT cryptographically verify it against the channel signing key — Tempo
-//! signature verification ships with cloud #183. Until that lands, a caller
+//! signature verification ships with. Until that lands, a caller
 //! with a leaked `session=` value can spend the channel. See discussion in
 //! `crates/bitrouter-sdk/src/mpp.rs`.
 
@@ -50,11 +50,11 @@ impl MppState {
     }
 
     /// Build an `MppState` for the Solana channel — **unsupported in v1.0**.
-    /// Solana MPP sessions are out of scope (008 §1.1); this always errors so a
+    /// Solana MPP sessions are out of scope; this always errors so a
     /// misconfiguration fails loudly rather than silently mis-settling.
     pub fn solana(_pool: SqlitePool) -> Result<Self> {
         Err(BitrouterError::internal(
-            "Solana MPP channel is not supported in v1.0 (008 §1.1) — \
+            "Solana MPP channel is not supported in v1.0 — \
              the mpp-solana feature is a placeholder",
         ))
     }
@@ -205,7 +205,7 @@ impl MppState {
 /// v1.0 requires the credential to carry **both** `session=<id>` and
 /// `sig=<voucher>` components. The `sig` value is required to be present and
 /// non-empty but is not yet cryptographically verified — that's the documented
-/// Tempo follow-up (cloud #183). The presence requirement matters today: a
+/// Tempo follow-up. The presence requirement matters today: a
 /// leaked / guessed bare session id alone must not authenticate, because
 /// without the `sig=` requirement an attacker who learns *any* session id (a
 /// log leak, a backup peek) gets to spend that channel's balance. Requiring
@@ -275,7 +275,7 @@ use crate::pricing::{PricingTable, calculate_charge_micro_usd};
 /// A `language_model::StreamHook` that settles an MPP session incrementally as
 /// a stream is delivered. Each `Usage` part advances a signed channel
 /// checkpoint, so a mid-stream client disconnect still settles the tokens
-/// already delivered — neither over- nor under-charging (003 §4.4 / 008 §3.5).
+/// already delivered — neither over- nor under-charging.
 pub struct MppStreamHook {
     state: MppState,
     pricing: PricingTable,

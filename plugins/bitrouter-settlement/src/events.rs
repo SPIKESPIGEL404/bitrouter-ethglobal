@@ -1,4 +1,4 @@
-//! Pipeline events emitted by `bitrouter-settlement` (003 §3.4.3).
+//! Pipeline events emitted by `bitrouter-settlement`.
 
 use serde::Serialize;
 
@@ -7,7 +7,7 @@ use bitrouter_sdk::PipelineEvent;
 /// BYOK matched: `ByokRouteHook` found an active `byok_provider_keys` row for
 /// the caller against this provider. `byok_used` is derived **only** from the
 /// presence of this event — never reverse-inferred from
-/// `target.api_key_override.is_some()` (cloud #235 lesson).
+/// `target.api_key_override.is_some()`.
 #[derive(Debug, Clone, Serialize)]
 pub struct ByokKeyApplied {
     /// The provider the caller's own key was applied to.

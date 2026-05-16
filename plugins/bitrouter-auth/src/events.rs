@@ -2,7 +2,7 @@
 //!
 //! Downstream hooks (`bitrouter-settlement`'s `BalanceCheckHook` and the
 //! `ChargeStrategy` chain) read these events for caller identity instead of
-//! querying the `api_keys` table directly — plugin DB isolation (003 §3.4.6).
+//! querying the `api_keys` table directly — plugin DB isolation.
 
 use serde::Serialize;
 

@@ -7,7 +7,7 @@
 //! consumes `Arc<dyn MppVerifier>`, settlement implements it (the same
 //! SDK-defines-the-trait pattern as [`crate::MetricsStore`]).
 //!
-//! v1.0 verifies the **Tempo** channel only (008 §1.1).
+//! v1.0 verifies the **Tempo** channel only.
 //!
 //! ## Wire-format divergence from <https://mpp.dev>
 //!
@@ -17,7 +17,7 @@
 //! <base64url-json>` with a typed `Challenge` / `Credential` / `Receipt`
 //! envelope, RFC 9457 Problem Details for 402 bodies, and a `Payment-Receipt`
 //! response header. Aligning v1's wire shape with the public MPP spec is a
-//! tracked follow-up (cloud #183 covers Tempo signature verification first;
+//! tracked follow-up ( covers Tempo signature verification first;
 //! once the cryptographic side lands the wire format can follow).
 
 use crate::Result;
