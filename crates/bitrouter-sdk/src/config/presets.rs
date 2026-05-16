@@ -19,21 +19,11 @@ use crate::config::{PresetConfig, RoutingConfig, VariantConfig};
 use crate::error::{BitrouterError, Result};
 use crate::language_model::routing::RoutingPrefs;
 
-/// Prompt body overrides carried by a preset, shallow-merged into the request.
-#[derive(Debug, Clone, Default, PartialEq)]
-pub struct PromptOverrides {
-    /// System prompt to set, if the preset defines one.
-    pub system_prompt: Option<String>,
-    /// Generation-parameter overrides (shallow-merged).
-    pub params: serde_json::Map<String, serde_json::Value>,
-}
-
-impl PromptOverrides {
-    /// Whether there is nothing to apply.
-    pub fn is_empty(&self) -> bool {
-        self.system_prompt.is_none() && self.params.is_empty()
-    }
-}
+// `PromptOverrides` is defined in `language_model::routing` because it is the
+// return type of [`crate::language_model::RoutingTable::preset_overrides`],
+// which must stay available without the `config_file` feature. Re-exported
+// here so callers reading the config still find it under its old path.
+pub use crate::language_model::routing::PromptOverrides;
 
 /// The result of Stage-0 resolution.
 #[derive(Debug, Clone)]

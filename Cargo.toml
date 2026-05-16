@@ -68,3 +68,8 @@ crossterm = "0.28"
 
 [profile.release]
 lto = "thin"
+
+# The profile that `dist` builds release artifacts under (see dist-workspace.toml).
+[profile.dist]
+inherits = "release"
+lto = "thin"

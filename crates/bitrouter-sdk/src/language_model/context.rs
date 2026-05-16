@@ -105,7 +105,10 @@ impl PipelineContext {
     /// set request fields take precedence — a preset is a *default*, not an
     /// override of an explicit request value (except for `system` which has
     /// no merging surface).
-    pub fn apply_preset_overrides(&mut self, overrides: &crate::config::PromptOverrides) {
+    pub fn apply_preset_overrides(
+        &mut self,
+        overrides: &crate::language_model::routing::PromptOverrides,
+    ) {
         if overrides.is_empty() {
             return;
         }

@@ -77,13 +77,35 @@ pub trait RoutingTable: Send + Sync {
     async fn reload(&self) -> Result<()>;
 
     /// Stage-0 preset prompt-body overrides for `model`. Implementations that
-    /// don't know about presets return an empty
-    /// [`PromptOverrides`](crate::config::PromptOverrides); the pipeline
-    /// applies these (shallow-merge into params, set system prompt) before
-    /// execution. Default impl returns nothing so non-preset-aware tables
-    /// (e.g. `StaticRoutingTable`) work unchanged.
-    async fn preset_overrides(&self, _model: &str) -> Result<crate::config::PromptOverrides> {
-        Ok(crate::config::PromptOverrides::default())
+    /// don't know about presets return an empty [`PromptOverrides`]; the
+    /// pipeline applies these (shallow-merge into params, set system prompt)
+    /// before execution. Default impl returns nothing so non-preset-aware
+    /// tables (e.g. [`StaticRoutingTable`]) work unchanged.
+    async fn preset_overrides(&self, _model: &str) -> Result<PromptOverrides> {
+        Ok(PromptOverrides::default())
+    }
+}
+
+/// Prompt body overrides carried by a preset, shallow-merged into the request.
+///
+/// Returned by [`RoutingTable::preset_overrides`] and applied by the pipeline
+/// *before* the request is dispatched: a non-empty `system_prompt` is set on
+/// the canonical [`Prompt`](crate::language_model::Prompt) when it has none,
+/// and `params` entries are inserted into
+/// [`GenerationParams::extra`](crate::language_model::GenerationParams::extra)
+/// for keys not already present.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct PromptOverrides {
+    /// System prompt to set, if the preset defines one.
+    pub system_prompt: Option<String>,
+    /// Generation-parameter overrides (shallow-merged).
+    pub params: serde_json::Map<String, serde_json::Value>,
+}
+
+impl PromptOverrides {
+    /// Whether there is nothing to apply.
+    pub fn is_empty(&self) -> bool {
+        self.system_prompt.is_none() && self.params.is_empty()
     }
 }
 
