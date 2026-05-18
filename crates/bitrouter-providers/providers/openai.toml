@@ -1,0 +1,22 @@
+# OpenAI — Bearer auth on `Authorization`.
+#
+# Official auth docs:
+# - https://platform.openai.com/docs/api-reference/authentication
+#   ("All API requests should include your API key in an Authorization HTTP
+#   header: Authorization: Bearer OPENAI_API_KEY")
+# - https://platform.openai.com/docs/api-reference/introduction
+#   (base URL `https://api.openai.com/v1`)
+#
+# Default wire protocol: Chat Completions. The Responses API is also live and
+# accepts the same Bearer credential — operators select it per-request via
+# routing config (it shares this provider's auth and `api_base`).
+
+id = "openai"
+display_name = "OpenAI"
+api_base = "https://api.openai.com/v1"
+api_protocol = "openai"
+doc_url = "https://platform.openai.com/docs/api-reference"
+
+[auth]
+kind = "bearer"
+env = "OPENAI_API_KEY"

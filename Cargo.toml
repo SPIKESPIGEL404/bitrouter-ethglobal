@@ -14,6 +14,7 @@ rust-version = "1.85"
 # internal crates
 bitrouter-sdk = { path = "crates/bitrouter-sdk", version = "1.0.0-alpha.1", default-features = false }
 bitrouter-bedrock = { path = "crates/bitrouter-bedrock", version = "1.0.0-alpha.1" }
+bitrouter-providers = { path = "crates/bitrouter-providers", version = "1.0.0-alpha.1" }
 bitrouter-auth = { path = "plugins/bitrouter-auth", version = "1.0.0-alpha.1" }
 bitrouter-policy = { path = "plugins/bitrouter-policy", version = "1.0.0-alpha.1" }
 bitrouter-settlement = { path = "plugins/bitrouter-settlement", version = "1.0.0-alpha.1", default-features = false }
@@ -49,6 +50,7 @@ url = "2"
 
 # config (sdk `config_file` feature)
 serde-saphyr = "0.0.26"
+toml = "0.8"
 
 # database (settlement plugin)
 sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "macros", "chrono"] }

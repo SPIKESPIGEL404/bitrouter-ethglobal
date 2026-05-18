@@ -1,0 +1,16 @@
+[package]
+name = "bitrouter-providers"
+description = "Compiled-in provider catalog (auth + protocol mapping) for bitrouter — one TOML per built-in provider."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+bitrouter-sdk.workspace = true
+
+serde.workspace = true
+thiserror.workspace = true
+toml.workspace = true
