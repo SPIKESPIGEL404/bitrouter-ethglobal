@@ -111,9 +111,13 @@ enum Command {
         #[arg(short, long)]
         provider: Option<String>,
     },
-    /// Tool registry — v1.0 routes tool calls but does not maintain a global
-    /// tool registry; per-request tools live in the request body.
-    Tools,
+    /// MCP server introspection — list/status/discover against the upstreams
+    /// declared under `mcp_servers` in `bitrouter.yaml`. v1.0 does not maintain
+    /// a global tool registry; these are one-shot queries.
+    Tools {
+        #[command(subcommand)]
+        action: ToolsAction,
+    },
     /// Policy management.
     Policy {
         #[command(subcommand)]
@@ -145,6 +149,31 @@ enum Command {
     Whoami,
     /// ACP agent management — the v1.0 `acp` module is pure-routing only.
     Agents,
+}
+
+#[derive(Subcommand)]
+enum ToolsAction {
+    /// List tools advertised by every configured MCP server.
+    List {
+        /// Path to `bitrouter.yaml`.
+        #[arg(short, long, default_value = "bitrouter.yaml")]
+        config: PathBuf,
+    },
+    /// Health-check every configured MCP server with a `tools/list` round-trip.
+    Status {
+        /// Path to `bitrouter.yaml`.
+        #[arg(short, long, default_value = "bitrouter.yaml")]
+        config: PathBuf,
+    },
+    /// Connect to one MCP server and print a YAML stub suitable for pasting
+    /// into `mcp_servers:`.
+    Discover {
+        /// Server id (must exist under `mcp_servers` in the config).
+        server: String,
+        /// Path to `bitrouter.yaml`.
+        #[arg(short, long, default_value = "bitrouter.yaml")]
+        config: PathBuf,
+    },
 }
 
 #[derive(Subcommand)]
@@ -225,14 +254,7 @@ async fn main() -> Result<()> {
         Command::Init { config } => init(&config).await,
         Command::Key { action } => key(action).await,
         Command::Models { config, provider } => models(&config, provider.as_deref()).await,
-        Command::Tools => {
-            print_unimplemented(
-                "tools",
-                "v1.0 has no global tool registry — request bodies carry their own\n\
-                 tool list and `PolicyHook` gates them by name.",
-            );
-            Ok(())
-        }
+        Command::Tools { action } => tools(action).await,
         Command::Policy { action } => policy(action).await,
         Command::Providers { action } => providers(action).await,
         Command::Wallet => {
@@ -677,6 +699,86 @@ async fn providers(action: ProviderAction) -> Result<()> {
                 "  request a specific provider per-call via the model name or routing\n  prefs; bind a default by editing `bitrouter.yaml`."
             );
             Ok(())
+        }
+    }
+}
+
+async fn tools(action: ToolsAction) -> Result<()> {
+    use bitrouter::tools as tools_cmd;
+
+    match action {
+        ToolsAction::List { config } => {
+            let cfg = config::load(&config)
+                .await
+                .with_context(|| format!("loading {}", config.display()))?;
+            if cfg.mcp_servers.is_empty() {
+                println!("(no MCP servers configured in {})", config.display());
+                println!("  add a `mcp_servers:` block — see the commented stub in the");
+                println!("  starter config written by `bitrouter init`.");
+                return Ok(());
+            }
+            let rows = tools_cmd::list(&cfg).await;
+            for row in rows {
+                match row.outcome {
+                    Ok(tools) if tools.is_empty() => {
+                        println!("{} (no tools advertised)", row.server);
+                    }
+                    Ok(tools) => {
+                        println!("{} ({})", row.server, tools.len());
+                        for t in tools {
+                            if t.description.is_empty() {
+                                println!("  {}", t.name);
+                            } else {
+                                println!("  {} — {}", t.name, t.description);
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        eprintln!("{}: ERROR — {e}", row.server);
+                    }
+                }
+            }
+            Ok(())
+        }
+        ToolsAction::Status { config } => {
+            let cfg = config::load(&config)
+                .await
+                .with_context(|| format!("loading {}", config.display()))?;
+            if cfg.mcp_servers.is_empty() {
+                println!("(no MCP servers configured)");
+                return Ok(());
+            }
+            let rows = tools_cmd::status(&cfg).await;
+            println!(
+                "{:<24} {:<8} {:<12} TRANSPORT",
+                "SERVER", "STATUS", "LATENCY"
+            );
+            for row in rows {
+                let (status, latency) = match row.outcome {
+                    Ok(d) => ("ok".to_string(), format!("{}ms", d.as_millis())),
+                    Err(_) => ("FAIL".to_string(), "-".to_string()),
+                };
+                println!(
+                    "{:<24} {:<8} {:<12} {}",
+                    row.server, status, latency, row.transport
+                );
+                if let Err(e) = row.outcome.as_ref() {
+                    eprintln!("  ↳ {e}");
+                }
+            }
+            Ok(())
+        }
+        ToolsAction::Discover { server, config } => {
+            let cfg = config::load(&config)
+                .await
+                .with_context(|| format!("loading {}", config.display()))?;
+            match tools_cmd::discover(&cfg, &server).await {
+                Ok(yaml) => {
+                    print!("{yaml}");
+                    Ok(())
+                }
+                Err(e) => anyhow::bail!("discover '{server}': {e}"),
+            }
         }
     }
 }

@@ -38,6 +38,24 @@ providers:
       - id: gpt-5
       - id: gpt-4o
 
+# Upstream MCP (Model Context Protocol) servers — `bitrouter tools list/status`
+# reads this, and `POST /mcp/<name>` proxies JSON-RPC against the entry.
+# Uncomment to opt in. Spec: https://modelcontextprotocol.io/specification/2025-06-18
+# mcp_servers:
+#   ctx7:
+#     name: ctx7
+#     transport:
+#       type: http
+#       url: https://mcp.context7.com/mcp
+#       headers:
+#         Authorization: "Bearer ${CTX7_TOKEN}"
+#   git:
+#     name: git
+#     transport:
+#       type: stdio
+#       command: uvx
+#       args: ["mcp-server-git"]
+
 inherit_defaults: true
 "#;
 
