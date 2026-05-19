@@ -20,6 +20,11 @@ const EMBEDDED: &[(&str, &str)] = &[
         "github-copilot",
         include_str!("../providers/github-copilot.toml"),
     ),
+    (
+        "opencode-zen",
+        include_str!("../providers/opencode-zen.toml"),
+    ),
+    ("opencode-go", include_str!("../providers/opencode-go.toml")),
 ];
 
 static REGISTRY: OnceLock<Vec<ProviderEntry>> = OnceLock::new();
@@ -70,7 +75,7 @@ mod tests {
         let entries = load_embedded().expect("embedded TOML files must parse");
         // Bump this when adding a new provider — keeps the test honest about
         // catalog growth.
-        assert_eq!(entries.len(), 5);
+        assert_eq!(entries.len(), 7);
     }
 
     #[test]
@@ -80,7 +85,83 @@ mod tests {
         assert!(find("google").is_some());
         assert!(find("openrouter").is_some());
         assert!(find("github-copilot").is_some());
+        assert!(find("opencode-zen").is_some());
+        assert!(find("opencode-go").is_some());
         assert!(find("definitely-not-a-provider").is_none());
+    }
+
+    #[test]
+    fn opencode_zen_per_model_protocols() {
+        use bitrouter_sdk::language_model::types::ApiProtocol;
+        let zen = find("opencode-zen").unwrap();
+        // GPT family → OpenAI Responses (zen serves them via /responses).
+        assert_eq!(
+            zen.api_protocol.resolve("opencode/gpt-5.5"),
+            Some(ApiProtocol::Responses)
+        );
+        assert_eq!(
+            zen.api_protocol.resolve("opencode/gpt-5.3-codex"),
+            Some(ApiProtocol::Responses)
+        );
+        // Claude family → Anthropic Messages.
+        assert_eq!(
+            zen.api_protocol.resolve("opencode/claude-opus-4.7"),
+            Some(ApiProtocol::Anthropic)
+        );
+        // Gemini family → Google.
+        assert_eq!(
+            zen.api_protocol.resolve("opencode/gemini-3.1-pro"),
+            Some(ApiProtocol::Google)
+        );
+        // Everything else (qwen, glm, kimi, minimax, …) → OpenAI Chat.
+        assert_eq!(
+            zen.api_protocol.resolve("opencode/qwen3.6-plus"),
+            Some(ApiProtocol::Openai)
+        );
+        assert_eq!(
+            zen.api_protocol.resolve("opencode/minimax-m2.7"),
+            Some(ApiProtocol::Openai)
+        );
+    }
+
+    #[test]
+    fn opencode_go_per_model_protocols() {
+        use bitrouter_sdk::language_model::types::ApiProtocol;
+        let go = find("opencode-go").unwrap();
+        // MiniMax → Anthropic Messages (go serves MiniMax via /messages).
+        assert_eq!(
+            go.api_protocol.resolve("opencode-go/minimax-m2.7"),
+            Some(ApiProtocol::Anthropic)
+        );
+        // Everyone else (glm, kimi, deepseek, mimo, qwen) → OpenAI Chat.
+        assert_eq!(
+            go.api_protocol.resolve("opencode-go/glm-5.1"),
+            Some(ApiProtocol::Openai)
+        );
+        assert_eq!(
+            go.api_protocol.resolve("opencode-go/kimi-k2.6"),
+            Some(ApiProtocol::Openai)
+        );
+        assert_eq!(
+            go.api_protocol.resolve("opencode-go/deepseek-v4-pro"),
+            Some(ApiProtocol::Openai)
+        );
+    }
+
+    #[test]
+    fn opencode_zen_and_go_share_one_env_var() {
+        // The user opens *one* opencode.ai account; both gateway tiers
+        // authenticate with the same `OPENCODE_ZEN_API_KEY`, so a
+        // subscriber to Go gets Zen pay-as-you-go billing fall-through
+        // (and vice versa) without juggling two creds.
+        assert_eq!(
+            find("opencode-zen").unwrap().auth.env_var(),
+            Some("OPENCODE_ZEN_API_KEY")
+        );
+        assert_eq!(
+            find("opencode-go").unwrap().auth.env_var(),
+            Some("OPENCODE_ZEN_API_KEY")
+        );
     }
 
     #[test]

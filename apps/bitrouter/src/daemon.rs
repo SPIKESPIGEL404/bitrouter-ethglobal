@@ -404,7 +404,10 @@ mod tests {
         match back {
             DaemonCommand::Reload { env } => {
                 assert_eq!(env.len(), 1);
-                assert_eq!(env[0], ("OPENAI_API_KEY".to_string(), "sk-test".to_string()));
+                assert_eq!(
+                    env[0],
+                    ("OPENAI_API_KEY".to_string(), "sk-test".to_string())
+                );
             }
             other => panic!("expected Reload, got {other:?}"),
         }

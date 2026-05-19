@@ -761,10 +761,15 @@ fn announce_zero_config(
     }
     let enabled: Vec<&str> = cfg.providers.keys().map(String::as_str).collect();
     if enabled.is_empty() {
-        let hint: Vec<String> = bitrouter_providers::zero_config_env_var_providers()
+        // Multiple providers can share one env var (opencode-zen and
+        // opencode-go both read `OPENCODE_ZEN_API_KEY`), so the hint
+        // would otherwise list the same name twice.
+        let mut hint: Vec<String> = bitrouter_providers::zero_config_env_var_providers()
             .into_iter()
             .map(|(_, env)| env.to_string())
             .collect();
+        hint.sort();
+        hint.dedup();
         bitrouter::error_report::info(format_args!(
             "zero-config mode — no provider env vars set (try {})",
             hint.join(" / ")
