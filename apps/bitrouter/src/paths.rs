@@ -47,11 +47,10 @@ pub fn resolve_config(explicit: Option<&Path>) -> Result<PathBuf> {
         Resolution::ScaffoldDefault { home, config_file } => {
             scaffold_default_home(&home, &config_file)
                 .with_context(|| format!("scaffolding default home at {}", home.display()))?;
-            eprintln!(
-                "bitrouter: no config found in cwd or $BITROUTER_HOME; \
-                 scaffolded a starter config at {}",
+            crate::error_report::info(format_args!(
+                "no config found in cwd or $BITROUTER_HOME; scaffolded a starter config at {}",
                 config_file.display()
-            );
+            ));
             Ok(config_file)
         }
     }

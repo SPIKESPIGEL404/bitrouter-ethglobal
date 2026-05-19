@@ -281,7 +281,20 @@ enum ProviderAction {
 }
 
 #[tokio::main]
-async fn main() -> Result<()> {
+async fn main() {
+    // Defer to `run` for the actual dispatch so the entry point can
+    // route the resulting `Result` through `error_report::report` instead
+    // of leaking anyhow's verbose `Debug` formatter to end users.
+    match run().await {
+        Ok(()) => {}
+        Err(e) => {
+            bitrouter::error_report::report(&e);
+            std::process::exit(1);
+        }
+    }
+}
+
+async fn run() -> Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
