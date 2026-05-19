@@ -90,30 +90,28 @@
 //! # Ok(()) }
 //! ```
 //!
-//! Plugins (`bitrouter-auth`, `bitrouter-policy`, `bitrouter-settlement`,
-//! `bitrouter-guardrails`, `bitrouter-observe`) install themselves through
-//! [`AppBuilder::plugin`] — a convenience that drops their hooks into the
-//! right sub-builder. Hooks can equally be registered one-by-one without
-//! [`Plugin`].
+//! Shared library plugins implement one or more hook traits from this SDK
+//! and install themselves through [`AppBuilder::plugin`] (a convenience
+//! that drops their hooks into the right sub-builder; hooks can equally be
+//! registered one-by-one without [`Plugin`]).
 //!
 //! With the `server` feature on, `app.serve("0.0.0.0:4356")` wires the
 //! whole router and runs it until SIGTERM.
 //!
 //! ## What ships in adjacent crates
 //!
-//! The SDK does not include the default plugins; each plugin is its own crate
-//! that implements one or more hook traits from here.
-//!
-//! ## Shared library plugins shipped in this repo
+//! Two shared library plugins in this repo:
 //!
 //! - `bitrouter-observe` — Prometheus exporter + OTLP/HTTP traces.
 //! - `bitrouter-guardrails` — request / response content scanning (block +
 //!   redact).
 //!
-//! Anything else (auth, policy, charging, metering) is deployment-specific
-//! and lives in the deployment's own code, not as a shared library. The OSS
-//! `apps/bitrouter` binary provides its own implementations under
-//! `apps/bitrouter/src/{auth,policy,metering}/`.
+//! Anything else (auth, policy, charging, metering) is **deployment-specific
+//! business logic, not shared library code**. The OSS `apps/bitrouter`
+//! binary provides its own implementations under
+//! `apps/bitrouter/src/{auth,policy,metering}/`. Closed-source deployments
+//! (e.g. a cloud product) write their own `PreRequestHook` /
+//! `SettlementRecorder` impls against the SDK's stable traits.
 
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]

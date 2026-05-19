@@ -232,7 +232,7 @@ async fn e2e_metering_drives_policy_spend_cap() {
     let upstream = mock_openai_upstream().await;
 
     // Same provider/pricing as `config_for`, but augmented with a policy
-    // directory containing a single `pol_cap` policy with a 100µ$ ceiling.
+    // directory containing a single `pol_cap` policy with a 50µ$ ceiling.
     let policy_dir = std::env::temp_dir().join(format!(
         "bitrouter-e2e-policy-{}",
         std::time::SystemTime::now()
@@ -298,7 +298,7 @@ plugins:
     let pipeline = assembled.app.language_model().unwrap().clone();
 
     // First request: anonymous caller + bearer credential → AuthHook
-    // upgrades; PolicyHook sees 0µ$ accrued < 100µ$ cap → Allow; metering
+    // upgrades; PolicyHook sees 0µ$ accrued < 50µ$ cap → Allow; metering
     // recorder writes 92µ$ row.
     let mut req1 = PipelineRequest::new("test-model", CallerContext::anonymous(), chat_prompt());
     req1.headers.insert(
