@@ -17,6 +17,7 @@ pub mod auth;
 pub mod commands;
 pub mod daemon;
 pub mod metering;
+pub mod paths;
 pub mod policy;
 pub mod tools;
 

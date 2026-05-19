@@ -35,15 +35,17 @@ enum Command {
     /// Load a config, run migrations, and serve HTTP + control socket
     /// **in the foreground**.
     Serve {
-        /// Path to `bitrouter.yaml`.
-        #[arg(short, long, default_value = "bitrouter.yaml")]
-        config: PathBuf,
+        /// Path to `bitrouter.yaml`. When omitted, the binary resolves
+        /// in this order: `./bitrouter.yaml` → `$BITROUTER_HOME/bitrouter.yaml`
+        /// → `~/.bitrouter/bitrouter.yaml` (auto-scaffolded on first run).
+        #[arg(short, long)]
+        config: Option<PathBuf>,
     },
     /// Spawn `bitrouter serve` as a detached background process.
     Start {
         /// Path to `bitrouter.yaml` (passed through to the child).
-        #[arg(short, long, default_value = "bitrouter.yaml")]
-        config: PathBuf,
+        #[arg(short, long)]
+        config: Option<PathBuf>,
         /// Path to redirect the daemon's stdout/stderr to.
         #[arg(long, default_value = "./bitrouter.log")]
         log: PathBuf,
@@ -56,9 +58,11 @@ enum Command {
     },
     /// `stop` then `start` — config path is passed through.
     Restart {
-        /// Path to `bitrouter.yaml`.
-        #[arg(short, long, default_value = "bitrouter.yaml")]
-        config: PathBuf,
+        /// Path to `bitrouter.yaml`. When omitted, the binary resolves
+        /// in this order: `./bitrouter.yaml` → `$BITROUTER_HOME/bitrouter.yaml`
+        /// → `~/.bitrouter/bitrouter.yaml` (auto-scaffolded on first run).
+        #[arg(short, long)]
+        config: Option<PathBuf>,
         /// Control socket path.
         #[arg(long, default_value = DEFAULT_CONTROL_SOCKET)]
         socket: PathBuf,
@@ -84,8 +88,8 @@ enum Command {
         /// The model name to resolve.
         model: String,
         /// Path to `bitrouter.yaml` (used as the standalone fallback).
-        #[arg(short, long, default_value = "bitrouter.yaml")]
-        config: PathBuf,
+        #[arg(short, long)]
+        config: Option<PathBuf>,
         /// Control socket path.
         #[arg(long, default_value = DEFAULT_CONTROL_SOCKET)]
         socket: PathBuf,
@@ -103,9 +107,11 @@ enum Command {
     },
     /// List routable models for a config, optionally filtered by provider.
     Models {
-        /// Path to `bitrouter.yaml`.
-        #[arg(short, long, default_value = "bitrouter.yaml")]
-        config: PathBuf,
+        /// Path to `bitrouter.yaml`. When omitted, the binary resolves
+        /// in this order: `./bitrouter.yaml` → `$BITROUTER_HOME/bitrouter.yaml`
+        /// → `~/.bitrouter/bitrouter.yaml` (auto-scaffolded on first run).
+        #[arg(short, long)]
+        config: Option<PathBuf>,
         /// Show only models declared by this provider.
         #[arg(short, long)]
         provider: Option<String>,
@@ -160,9 +166,11 @@ enum Command {
     AgentProxy {
         /// Agent id (must exist under `agents:` in the config).
         agent: String,
-        /// Path to `bitrouter.yaml`.
-        #[arg(short, long, default_value = "bitrouter.yaml")]
-        config: PathBuf,
+        /// Path to `bitrouter.yaml`. When omitted, the binary resolves
+        /// in this order: `./bitrouter.yaml` → `$BITROUTER_HOME/bitrouter.yaml`
+        /// → `~/.bitrouter/bitrouter.yaml` (auto-scaffolded on first run).
+        #[arg(short, long)]
+        config: Option<PathBuf>,
     },
 }
 
@@ -171,15 +179,19 @@ enum AgentsAction {
     /// Show the bundled v1.0 catalog of well-known agents and which of
     /// them are present under `agents:` in the loaded config.
     List {
-        /// Path to `bitrouter.yaml`.
-        #[arg(short, long, default_value = "bitrouter.yaml")]
-        config: PathBuf,
+        /// Path to `bitrouter.yaml`. When omitted, the binary resolves
+        /// in this order: `./bitrouter.yaml` → `$BITROUTER_HOME/bitrouter.yaml`
+        /// → `~/.bitrouter/bitrouter.yaml` (auto-scaffolded on first run).
+        #[arg(short, long)]
+        config: Option<PathBuf>,
     },
     /// Spawn each configured agent and verify it answers `initialize`.
     Check {
-        /// Path to `bitrouter.yaml`.
-        #[arg(short, long, default_value = "bitrouter.yaml")]
-        config: PathBuf,
+        /// Path to `bitrouter.yaml`. When omitted, the binary resolves
+        /// in this order: `./bitrouter.yaml` → `$BITROUTER_HOME/bitrouter.yaml`
+        /// → `~/.bitrouter/bitrouter.yaml` (auto-scaffolded on first run).
+        #[arg(short, long)]
+        config: Option<PathBuf>,
     },
     /// Print a YAML stub for an agent in the catalog (paste under
     /// `agents:` in `bitrouter.yaml`).
@@ -193,24 +205,30 @@ enum AgentsAction {
 enum ToolsAction {
     /// List tools advertised by every configured MCP server.
     List {
-        /// Path to `bitrouter.yaml`.
-        #[arg(short, long, default_value = "bitrouter.yaml")]
-        config: PathBuf,
+        /// Path to `bitrouter.yaml`. When omitted, the binary resolves
+        /// in this order: `./bitrouter.yaml` → `$BITROUTER_HOME/bitrouter.yaml`
+        /// → `~/.bitrouter/bitrouter.yaml` (auto-scaffolded on first run).
+        #[arg(short, long)]
+        config: Option<PathBuf>,
     },
     /// Health-check every configured MCP server with a `tools/list` round-trip.
     Status {
-        /// Path to `bitrouter.yaml`.
-        #[arg(short, long, default_value = "bitrouter.yaml")]
-        config: PathBuf,
+        /// Path to `bitrouter.yaml`. When omitted, the binary resolves
+        /// in this order: `./bitrouter.yaml` → `$BITROUTER_HOME/bitrouter.yaml`
+        /// → `~/.bitrouter/bitrouter.yaml` (auto-scaffolded on first run).
+        #[arg(short, long)]
+        config: Option<PathBuf>,
     },
     /// Connect to one MCP server and print a YAML stub suitable for pasting
     /// into `mcp_servers:`.
     Discover {
         /// Server id (must exist under `mcp_servers` in the config).
         server: String,
-        /// Path to `bitrouter.yaml`.
-        #[arg(short, long, default_value = "bitrouter.yaml")]
-        config: PathBuf,
+        /// Path to `bitrouter.yaml`. When omitted, the binary resolves
+        /// in this order: `./bitrouter.yaml` → `$BITROUTER_HOME/bitrouter.yaml`
+        /// → `~/.bitrouter/bitrouter.yaml` (auto-scaffolded on first run).
+        #[arg(short, long)]
+        config: Option<PathBuf>,
     },
 }
 
@@ -247,9 +265,11 @@ enum PolicyAction {
 enum ProviderAction {
     /// List every configured provider.
     List {
-        /// Path to `bitrouter.yaml`.
-        #[arg(short, long, default_value = "bitrouter.yaml")]
-        config: PathBuf,
+        /// Path to `bitrouter.yaml`. When omitted, the binary resolves
+        /// in this order: `./bitrouter.yaml` → `$BITROUTER_HOME/bitrouter.yaml`
+        /// → `~/.bitrouter/bitrouter.yaml` (auto-scaffolded on first run).
+        #[arg(short, long)]
+        config: Option<PathBuf>,
     },
     /// Select an active provider. v1 has no "current provider" concept (003
     /// §5.2 dropped the v0 DEFAULT_PROVIDER fallback) — this command is a
@@ -271,24 +291,39 @@ async fn main() -> Result<()> {
 
     let cli = Cli::parse();
     match cli.command {
-        Command::Serve { config } => serve(&config).await,
-        Command::Start { config, log } => start(&config, &log).await,
+        Command::Serve { config } => {
+            let config = bitrouter::paths::resolve_config(config.as_deref())?;
+            serve(&config).await
+        }
+        Command::Start { config, log } => {
+            let config = bitrouter::paths::resolve_config(config.as_deref())?;
+            start(&config, &log).await
+        }
         Command::Stop { socket } => stop(&socket).await,
         Command::Restart {
             config,
             socket,
             log,
-        } => restart(&config, &socket, &log).await,
+        } => {
+            let config = bitrouter::paths::resolve_config(config.as_deref())?;
+            restart(&config, &socket, &log).await
+        }
         Command::Reload { socket } => reload(&socket).await,
         Command::Status { socket } => status(&socket).await,
         Command::Route {
             model,
             config,
             socket,
-        } => route(&model, &config, &socket).await,
+        } => {
+            let config = bitrouter::paths::resolve_config(config.as_deref())?;
+            route(&model, &config, &socket).await
+        }
         Command::Init { config } => init(&config).await,
         Command::Key { action } => key(action).await,
-        Command::Models { config, provider } => models(&config, provider.as_deref()).await,
+        Command::Models { config, provider } => {
+            let config = bitrouter::paths::resolve_config(config.as_deref())?;
+            models(&config, provider.as_deref()).await
+        }
         Command::Tools { action } => tools(action).await,
         Command::Policy { action } => policy(action).await,
         Command::Providers { action } => providers(action).await,
@@ -332,7 +367,10 @@ async fn main() -> Result<()> {
             Ok(())
         }
         Command::Agents { action } => agents_cmd(action).await,
-        Command::AgentProxy { agent, config } => agent_proxy_cmd(&agent, &config).await,
+        Command::AgentProxy { agent, config } => {
+            let config = bitrouter::paths::resolve_config(config.as_deref())?;
+            agent_proxy_cmd(&agent, &config).await
+        }
     }
 }
 
@@ -689,6 +727,7 @@ async fn policy(action: PolicyAction) -> Result<()> {
 async fn providers(action: ProviderAction) -> Result<()> {
     match action {
         ProviderAction::List { config } => {
+            let config = bitrouter::paths::resolve_config(config.as_deref())?;
             let cfg = config::load(&config)
                 .await
                 .with_context(|| format!("loading {}", config.display()))?;
@@ -725,6 +764,7 @@ async fn tools(action: ToolsAction) -> Result<()> {
 
     match action {
         ToolsAction::List { config } => {
+            let config = bitrouter::paths::resolve_config(config.as_deref())?;
             let cfg = config::load(&config)
                 .await
                 .with_context(|| format!("loading {}", config.display()))?;
@@ -758,6 +798,7 @@ async fn tools(action: ToolsAction) -> Result<()> {
             Ok(())
         }
         ToolsAction::Status { config } => {
+            let config = bitrouter::paths::resolve_config(config.as_deref())?;
             let cfg = config::load(&config)
                 .await
                 .with_context(|| format!("loading {}", config.display()))?;
@@ -786,6 +827,7 @@ async fn tools(action: ToolsAction) -> Result<()> {
             Ok(())
         }
         ToolsAction::Discover { server, config } => {
+            let config = bitrouter::paths::resolve_config(config.as_deref())?;
             let cfg = config::load(&config)
                 .await
                 .with_context(|| format!("loading {}", config.display()))?;
@@ -812,6 +854,7 @@ async fn agents_cmd(action: AgentsAction) -> Result<()> {
 
     match action {
         AgentsAction::List { config } => {
+            let config = bitrouter::paths::resolve_config(config.as_deref())?;
             let cfg = config::load(&config)
                 .await
                 .with_context(|| format!("loading {}", config.display()))?;
@@ -832,6 +875,7 @@ async fn agents_cmd(action: AgentsAction) -> Result<()> {
             Ok(())
         }
         AgentsAction::Check { config } => {
+            let config = bitrouter::paths::resolve_config(config.as_deref())?;
             let cfg = config::load(&config)
                 .await
                 .with_context(|| format!("loading {}", config.display()))?;
