@@ -66,7 +66,12 @@ impl SettlementRecorder for MeteringRecorder {
     async fn record(&self, ctx: &SettlementContext) -> Result<()> {
         let (estimated_charge_micro_usd, missing_pricing) = self.estimate_charge(ctx);
         if missing_pricing {
-            tracing::warn!(
+            // Demoted from `warn` to `debug` — the per-request "finished"
+            // log already records `cost_usd` (or its absence) for every
+            // call, so an info-level operator stream doesn't need a
+            // duplicate warning on every uncatalogued model. Pricing
+            // gaps are still visible by enabling DEBUG on this module.
+            tracing::debug!(
                 provider = %ctx.provider_id,
                 model = %ctx.model_id,
                 request_id = %ctx.request_id,

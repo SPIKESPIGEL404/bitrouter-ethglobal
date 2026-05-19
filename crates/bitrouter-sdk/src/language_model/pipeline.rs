@@ -16,7 +16,7 @@ use crate::language_model::hooks::{
     RequestOutcome, RouteHook, StreamHook,
 };
 use crate::language_model::routing::{FallbackPolicy, RoutingPrefs, RoutingTable};
-use crate::language_model::settlement::SettlementRecorder;
+use crate::language_model::settlement::{SettlementContext, SettlementRecorder};
 use crate::language_model::stream::{StreamOutcome, StreamProcessor};
 use crate::language_model::types::{
     ExecutionResult, PipelineRequest, PipelineResponse, RoutingTarget, StreamPart,
@@ -92,6 +92,7 @@ impl Pipeline {
 
         // ---- Stage 1: pre-request checks ----
         if let Err(e) = self.run_pre_request(&mut ctx).await {
+            log_request_resolve_failed(&ctx, &e);
             self.observe_end(&ctx, RequestOutcome::Failed(e.clone()))
                 .await;
             return Err(e);
@@ -102,12 +103,14 @@ impl Pipeline {
         let chain = match self.resolve_route(&mut ctx).await {
             Ok(chain) => chain,
             Err(e) => {
+                log_request_resolve_failed(&ctx, &e);
                 self.observe_end(&ctx, RequestOutcome::Failed(e.clone()))
                     .await;
                 return Err(e);
             }
         };
         self.observe_after(Phase::Route, &ctx).await;
+        log_request_received(&ctx, chain.first(), false);
 
         // ---- Stage 3: execution with fallback ----
         match self.execute_with_fallback(&chain, &ctx).await {
@@ -142,11 +145,21 @@ impl Pipeline {
     ) -> Result<Pin<Box<dyn Stream<Item = Result<StreamPart>> + Send>>> {
         let mut ctx = PipelineContext::new(req);
 
-        self.run_pre_request(&mut ctx).await?;
+        if let Err(e) = self.run_pre_request(&mut ctx).await {
+            log_request_resolve_failed(&ctx, &e);
+            return Err(e);
+        }
         self.observe_after(Phase::PreRequest, &ctx).await;
 
-        let chain = self.resolve_route(&mut ctx).await?;
+        let chain = match self.resolve_route(&mut ctx).await {
+            Ok(chain) => chain,
+            Err(e) => {
+                log_request_resolve_failed(&ctx, &e);
+                return Err(e);
+            }
+        };
         self.observe_after(Phase::Route, &ctx).await;
+        log_request_received(&ctx, chain.first(), true);
 
         let upstream = self.execute_stream_with_fallback(&chain, &ctx).await?;
         // A placeholder execution result so Settlement has provider/model ids;
@@ -358,6 +371,12 @@ impl Pipeline {
         settle.streamed = streamed;
         settle.error = error;
 
+        // Emit the canonical "request finished" line before recorders
+        // run. Two-line model (received + finished) matches v0's
+        // operator-facing log shape — see `bitrouter-observe`'s
+        // `ModelSpendObserver` in the v0 tree.
+        log_request_finished(&settle);
+
         for recorder in &self.settlement_recorders {
             if let Err(e) = recorder.record(&settle).await {
                 tracing::error!(error = %e, "SettlementRecorder failed");
@@ -458,5 +477,80 @@ impl Drop for StreamSettlementGuard {
                 }
             }
         }
+    }
+}
+
+// ===== request lifecycle logging =====
+//
+// Two canonical INFO lines per request, mirroring v0's operator log:
+//
+//     "request received"  — once route resolution succeeds.
+//     "request finished"  — once settlement runs (success or failure).
+//
+// An additional "request received (resolution failed)" line covers the
+// pre-request / route-resolution failure path so the operator sees the
+// request even when it never reaches a provider. Fields stay flat
+// (no nested objects) so structured-log collectors can index them.
+
+/// Emit the "request received" log line. Called from `execute` and
+/// `execute_stream` after the route chain is non-empty.
+fn log_request_received(ctx: &PipelineContext, head: Option<&RoutingTarget>, stream: bool) {
+    let (provider, model) = head
+        .map(|t| (t.provider_name.as_str(), t.service_id.as_str()))
+        .unwrap_or(("-", "-"));
+    tracing::info!(
+        request_id = %ctx.request_id(),
+        user_id = ctx.caller().user_id(),
+        route = ctx.model(),
+        provider,
+        model,
+        stream,
+        "request received"
+    );
+}
+
+/// Emit the "request received (resolution failed)" log line — the
+/// pre-request or route-resolution stage rejected the request, so we
+/// never made it to a provider. Recorded so a stream of `info!`s
+/// always carries the request even if it doesn't have a counterpart
+/// "finished" line.
+fn log_request_resolve_failed(ctx: &PipelineContext, error: &BitrouterError) {
+    tracing::info!(
+        request_id = %ctx.request_id(),
+        user_id = ctx.caller().user_id(),
+        route = ctx.model(),
+        error = %error,
+        "request received (resolution failed)"
+    );
+}
+
+/// Emit the "request finished" log line from a [`SettlementContext`].
+/// Carries the canonical accounting fields — token counts, latency,
+/// streamed flag — plus `status` (200 / inferred from error) so a
+/// log-collector can build dashboards without parsing the message.
+fn log_request_finished(settle: &SettlementContext) {
+    match &settle.error {
+        None => tracing::info!(
+            request_id = %settle.request_id,
+            user_id = settle.caller.user_id(),
+            provider = %settle.provider_id,
+            model = %settle.model_id,
+            stream = settle.streamed,
+            status = 200,
+            latency_ms = settle.latency_ms,
+            input_tokens = settle.prompt_tokens,
+            output_tokens = settle.completion_tokens,
+            "request finished"
+        ),
+        Some(err) => tracing::info!(
+            request_id = %settle.request_id,
+            user_id = settle.caller.user_id(),
+            provider = %settle.provider_id,
+            model = %settle.model_id,
+            stream = settle.streamed,
+            latency_ms = settle.latency_ms,
+            error = %err,
+            "request finished"
+        ),
     }
 }
