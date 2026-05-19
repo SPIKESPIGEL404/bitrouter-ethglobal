@@ -46,9 +46,12 @@ enum Command {
         /// Path to `bitrouter.yaml` (passed through to the child).
         #[arg(short, long)]
         config: Option<PathBuf>,
-        /// Path to redirect the daemon's stdout/stderr to.
-        #[arg(long, default_value = "./bitrouter.log")]
-        log: PathBuf,
+        /// Path to redirect the daemon's stdout/stderr to. Defaults to
+        /// `bitrouter.log` inside the config file's directory (e.g.
+        /// `~/.bitrouter/bitrouter.log`) so it lives alongside the
+        /// socket and pid file rather than in the launcher's CWD.
+        #[arg(long)]
+        log: Option<PathBuf>,
     },
     /// Send a `stop` command to a running daemon.
     Stop {
@@ -71,9 +74,10 @@ enum Command {
         /// Explicit control socket path. Overrides the config-derived path.
         #[arg(long)]
         socket: Option<PathBuf>,
-        /// Path to redirect the new daemon's stdout/stderr to.
-        #[arg(long, default_value = "./bitrouter.log")]
-        log: PathBuf,
+        /// Path to redirect the new daemon's stdout/stderr to. Defaults
+        /// to `bitrouter.log` next to the config file.
+        #[arg(long)]
+        log: Option<PathBuf>,
     },
     /// Hot-reload the running daemon's config / routing table.
     Reload {
@@ -322,8 +326,9 @@ async fn run() -> Result<()> {
             serve(&config).await
         }
         Command::Start { config, log } => {
-            let config = bitrouter::paths::resolve_config(config.as_deref())?;
-            start(&config, &log).await
+            let config_path = bitrouter::paths::resolve_config(config.as_deref())?;
+            let log_path = resolve_log_path(&config_path, log.as_deref());
+            start(&config_path, &log_path).await
         }
         Command::Stop { config, socket } => {
             let socket = resolve_client_socket(config.as_deref(), socket.as_deref()).await?;
@@ -336,7 +341,8 @@ async fn run() -> Result<()> {
         } => {
             let config_path = bitrouter::paths::resolve_config(config.as_deref())?;
             let socket = resolve_client_socket_from(&config_path, socket.as_deref()).await?;
-            restart(&config_path, &socket, &log).await
+            let log_path = resolve_log_path(&config_path, log.as_deref());
+            restart(&config_path, &socket, &log_path).await
         }
         Command::Reload { config, socket } => {
             let socket = resolve_client_socket(config.as_deref(), socket.as_deref()).await?;
@@ -435,6 +441,22 @@ async fn resolve_client_socket(config: Option<&Path>, socket: Option<&Path>) -> 
         Err(_) => daemon::DEFAULT_CONTROL_SOCKET.to_string(),
     };
     Ok(daemon::resolve_socket_path(&config_path, &socket_str))
+}
+
+/// Resolve the `bitrouter.log` path for `start` / `restart`. An
+/// explicit `--log` override wins; otherwise we place the log next to
+/// the config file (e.g. `~/.bitrouter/bitrouter.log`) so the daemon's
+/// runtime artefacts — config, socket, pid file, log — all live in one
+/// directory. The legacy default of `./bitrouter.log` would land the
+/// log file in whichever CWD the launcher happened to be in.
+fn resolve_log_path(config_path: &Path, log: Option<&Path>) -> PathBuf {
+    if let Some(l) = log {
+        return l.to_path_buf();
+    }
+    match config_path.parent().filter(|p| !p.as_os_str().is_empty()) {
+        Some(dir) => dir.join("bitrouter.log"),
+        None => PathBuf::from("bitrouter.log"),
+    }
 }
 
 /// Variant of [`resolve_client_socket`] for subcommands (`restart`,
