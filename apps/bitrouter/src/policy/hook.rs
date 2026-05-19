@@ -1,56 +1,45 @@
 //! `PolicyHook` — a `language_model::PreRequestHook` enforcing per-API-key
-//! policy: model allow/deny, spend ceiling, expiry, payment-chain limits,
-//! tool-access rules and request-rate limits.
+//! policy: model allow/deny, spend ceiling, expiry, tool-access rules,
+//! request-rate limits.
 //!
-//! The caller's `policy_id` is read from the `bitrouter-auth` plugin's
-//! `PipelineContext` metadata (not by importing the auth crate's event type).
-//! Spend and rate are read from the injected `MetricsStore`.
+//! The caller's `policy_id` is read from the auth module's `PipelineContext`
+//! metadata (not by importing the auth crate's event type). Spend and rate
+//! are read from the sibling [`crate::metering::MeteringStore`] — a direct
+//! concrete-type call, no SDK trait in between.
 
 use std::sync::Arc;
 
 use async_trait::async_trait;
 
+use bitrouter_sdk::PluginId;
 use bitrouter_sdk::Result;
-use bitrouter_sdk::caller::PaymentMethod;
 use bitrouter_sdk::language_model::{DenyReason, HookDecision, PipelineContext, PreRequestHook};
-use bitrouter_sdk::metrics::{MetricsStore, TimeWindow};
 
-use crate::store::PolicyStore;
+use crate::metering::{MeteringStore, TimeWindow};
+use crate::policy::store::PolicyStore;
 
 /// Enforces per-API-key policy at Stage 1.
 pub struct PolicyHook {
     store: Arc<PolicyStore>,
-    /// Optional — without a `MetricsStore`, spend ceilings cannot be enforced
-    /// (model allow/deny and expiry still are).
-    metrics_store: Option<Arc<dyn MetricsStore>>,
+    /// Optional — without a [`MeteringStore`], spend / rate ceilings cannot
+    /// be enforced (model allow/deny, expiry, and tool-access checks still
+    /// are).
+    metering: Option<MeteringStore>,
 }
 
 impl PolicyHook {
-    /// Build a `PolicyHook` over a policy store, optionally with a metrics
-    /// store for spend enforcement.
-    pub fn new(store: Arc<PolicyStore>, metrics_store: Option<Arc<dyn MetricsStore>>) -> Self {
-        Self {
-            store,
-            metrics_store,
-        }
+    /// Build a `PolicyHook` over a policy store, optionally with a metering
+    /// store for spend + rate enforcement.
+    pub fn new(store: Arc<PolicyStore>, metering: Option<MeteringStore>) -> Self {
+        Self { store, metering }
     }
 
-    /// Read the caller's `policy_id` from the auth plugin's context metadata.
+    /// Read the caller's `policy_id` from the auth module's context metadata.
     fn policy_id(ctx: &PipelineContext) -> Option<String> {
-        ctx.get_metadata(&bitrouter_sdk::PluginId::new("bitrouter-auth"))
+        ctx.get_metadata(&PluginId::new("bitrouter-auth"))
             .and_then(|m| m.get("policy_id"))
             .and_then(|v| v.as_str())
             .map(|s| s.to_string())
-    }
-
-    /// The caller's payment chain, for chain-limit checks. v1.0 supports the
-    /// Tempo MPP channel only, so an MPP caller is on `tempo`;
-    /// non-MPP callers have no chain to gate.
-    fn caller_chain(ctx: &PipelineContext) -> Option<&'static str> {
-        match ctx.caller().payment_method() {
-            PaymentMethod::Mpp => Some("tempo"),
-            _ => None,
-        }
     }
 }
 
@@ -76,18 +65,7 @@ impl PreRequestHook for PolicyHook {
             )));
         }
 
-        // 3. payment-chain limit — only meaningful for chain-funded (MPP) callers
-        if effective.has_chain_restriction() {
-            if let Some(chain) = Self::caller_chain(ctx) {
-                if let Err(violation) = effective.check_chain(chain) {
-                    return Ok(HookDecision::Deny(DenyReason::Forbidden(
-                        violation.to_string(),
-                    )));
-                }
-            }
-        }
-
-        // 4. tool-access rules — checked against the request's declared tools
+        // 3. tool-access rules — checked against the request's declared tools
         if effective.has_tool_restriction() {
             let tools = ctx.prompt().tools.iter().map(|t| t.name.as_str());
             if let Err(violation) = effective.check_tools(tools) {
@@ -97,10 +75,10 @@ impl PreRequestHook for PolicyHook {
             }
         }
 
-        // 5. spend ceiling — only enforceable with a MetricsStore
+        // 4. spend ceiling — only enforceable with a MeteringStore
         if effective.max_spend_micro_usd.is_some() {
-            if let Some(metrics) = &self.metrics_store {
-                let spent = metrics
+            if let Some(metering) = &self.metering {
+                let spent = metering
                     .get_spend(ctx.caller().api_key_id(), TimeWindow::ThisMonth)
                     .await?;
                 if let Err(violation) = effective.check_spend(spent) {
@@ -111,12 +89,12 @@ impl PreRequestHook for PolicyHook {
             }
         }
 
-        // 6. request-rate ceiling — also reads the MetricsStore. A rate
+        // 5. request-rate ceiling — also reads the MeteringStore. A rate
         //    violation maps to 429 (RateLimited) rather than 403, with a
         //    Retry-After hint.
         if effective.max_requests_per_minute.is_some() {
-            if let Some(metrics) = &self.metrics_store {
-                let rate = metrics.get_rate(ctx.caller().api_key_id()).await?;
+            if let Some(metering) = &self.metering {
+                let rate = metering.get_rate(ctx.caller().api_key_id()).await?;
                 let observed = rate.requests_per_minute.round().max(0.0) as u32;
                 if let Err(violation) = effective.check_rate(observed) {
                     tracing::debug!(%violation, "policy rate limit hit");

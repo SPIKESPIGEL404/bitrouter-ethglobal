@@ -19,10 +19,10 @@ use bitrouter_sdk::mcp::{ConfigMcpRoutingTable, RmcpExecutor};
 use bitrouter_auth::AuthHook;
 use bitrouter_guardrails::{Action, GuardrailPreHook, GuardrailRule, GuardrailStreamHook, RuleSet};
 use bitrouter_observe::{OtlpExportHook, PrometheusHook};
-use bitrouter_policy::{PolicyHook, PolicyStore};
 use bitrouter_sdk::MetricsRenderer;
 
 use crate::metering::{MeteringRecorder, MeteringStore, ModelPricing, PricingTable};
+use crate::policy::{PolicyHook, PolicyStore};
 
 /// A running application plus the database pool it was assembled over (the
 /// caller keeps the pool for management commands — key creation, etc.).
@@ -33,8 +33,8 @@ pub struct Assembled {
     pub pool: SqlitePool,
     /// The policy store wired into the language_model pipeline. Held by the
     /// caller (the daemon) so `bitrouter reload` / SIGHUP can call
-    /// [`bitrouter_policy::PolicyStore::reload`] alongside the routing-table
-    /// reload — reload must not affect in-flight requests.
+    /// [`PolicyStore::reload`] alongside the routing-table reload — reload
+    /// must not affect in-flight requests.
     pub policy_store: Arc<PolicyStore>,
 }
 

@@ -348,7 +348,7 @@ async fn main() -> Result<()> {
 /// doesn't mask a fixable routing-table reload.
 struct AppReloader {
     app: Arc<bitrouter_sdk::App>,
-    policy_store: Arc<bitrouter_policy::PolicyStore>,
+    policy_store: Arc<bitrouter::policy::PolicyStore>,
 }
 
 #[async_trait::async_trait]

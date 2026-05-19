@@ -619,7 +619,6 @@ dependencies = [
  "bitrouter-auth",
  "bitrouter-guardrails",
  "bitrouter-observe",
- "bitrouter-policy",
  "bitrouter-providers",
  "bitrouter-sdk",
  "chrono",
@@ -693,20 +692,6 @@ dependencies = [
  "rand 0.9.4",
  "reqwest 0.12.28",
  "serde",
- "serde_json",
- "tokio",
- "tracing",
-]
-
-[[package]]
-name = "bitrouter-policy"
-version = "1.0.0-alpha.1"
-dependencies = [
- "async-trait",
- "bitrouter-sdk",
- "chrono",
- "serde",
- "serde-saphyr",
  "serde_json",
  "tokio",
  "tracing",

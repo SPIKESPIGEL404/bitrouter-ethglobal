@@ -16,6 +16,7 @@ pub mod assemble;
 pub mod commands;
 pub mod daemon;
 pub mod metering;
+pub mod policy;
 pub mod tools;
 
 pub use assemble::{Assembled, build_app, build_app_with_path};

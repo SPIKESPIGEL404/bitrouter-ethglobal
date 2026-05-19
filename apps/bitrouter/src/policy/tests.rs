@@ -1,17 +1,19 @@
-//! Phase-4 policy tests: `PolicyHook` enforcement + combination semantics.
+//! PolicyHook enforcement + combination-semantics tests.
 
 use std::sync::Arc;
 
 use bitrouter_sdk::PluginId;
-use bitrouter_sdk::caller::{CallerContext, PaymentMethod};
+use bitrouter_sdk::caller::CallerContext;
 use bitrouter_sdk::language_model::{
     GenerationParams, HookDecision, Message, PipelineContext, PipelineRequest, PreRequestHook,
-    Prompt, Role,
+    Prompt, Role, Tool,
 };
+use sqlx::SqlitePool;
 
-use crate::hook::PolicyHook;
-use crate::policy::Policy;
-use crate::store::PolicyStore;
+use crate::metering::{MeteringStore, RequestMetric, migrate as metering_migrate};
+use crate::policy::hook::PolicyHook;
+use crate::policy::policy::Policy;
+use crate::policy::store::PolicyStore;
 
 fn ctx(model: &str, policy_id: Option<&str>) -> PipelineContext {
     let prompt = Prompt {
@@ -22,11 +24,7 @@ fn ctx(model: &str, policy_id: Option<&str>) -> PipelineContext {
         params: GenerationParams::default(),
         stream: false,
     };
-    let req = PipelineRequest::new(
-        model,
-        CallerContext::new("k1", "u1", PaymentMethod::Credits),
-        prompt,
-    );
+    let req = PipelineRequest::new(model, CallerContext::new("k1", "u1"), prompt);
     let mut ctx = PipelineContext::new(req);
     // simulate what AuthHook writes into the context metadata
     if let Some(pid) = policy_id {
@@ -36,6 +34,40 @@ fn ctx(model: &str, policy_id: Option<&str>) -> PipelineContext {
         );
     }
     ctx
+}
+
+/// Build a context whose request declares the given tools.
+fn ctx_with_tools(tools: &[&str], policy_id: Option<&str>) -> PipelineContext {
+    let prompt = Prompt {
+        model: "m".to_string(),
+        system: None,
+        messages: vec![Message::text(Role::User, "hi")],
+        tools: tools
+            .iter()
+            .map(|name| Tool {
+                name: name.to_string(),
+                description: None,
+                parameters: serde_json::json!({}),
+            })
+            .collect(),
+        params: GenerationParams::default(),
+        stream: false,
+    };
+    let req = PipelineRequest::new("m", CallerContext::new("k1", "u1"), prompt);
+    let mut ctx = PipelineContext::new(req);
+    if let Some(pid) = policy_id {
+        ctx.set_metadata(
+            &PluginId::new("bitrouter-auth"),
+            serde_json::json!({ "api_key_id": "k1", "user_id": "u1", "policy_id": pid }),
+        );
+    }
+    ctx
+}
+
+async fn fresh_metering() -> MeteringStore {
+    let pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
+    metering_migrate(&pool).await.unwrap();
+    MeteringStore::new(pool)
 }
 
 #[tokio::test]
@@ -132,7 +164,6 @@ async fn store_loads_from_yaml_dir() {
 
 #[tokio::test]
 async fn reload_re_reads_the_policy_dir() {
-    use crate::PolicyStore;
     let dir = std::env::temp_dir().join(format!("brpolicy-reload-{}", uuid_like()));
     tokio::fs::create_dir_all(&dir).await.unwrap();
     tokio::fs::write(
@@ -173,133 +204,6 @@ fn uuid_like() -> u64 {
         .as_nanos() as u64
 }
 
-// ===== chain / tool / rate checks =====
-
-use async_trait::async_trait;
-use bitrouter_sdk::language_model::Tool;
-use bitrouter_sdk::metrics::{MetricsStore, RateMetrics, RequestMetric, TimeWindow, TokenUsage};
-
-/// Build a context for an MPP caller (so chain checks engage) with optional
-/// auth metadata.
-fn mpp_ctx(policy_id: Option<&str>) -> PipelineContext {
-    let prompt = Prompt {
-        model: "m".to_string(),
-        system: None,
-        messages: vec![Message::text(Role::User, "hi")],
-        tools: Vec::new(),
-        params: GenerationParams::default(),
-        stream: false,
-    };
-    let req = PipelineRequest::new(
-        "m",
-        CallerContext::new("sess-1", "u1", PaymentMethod::Mpp),
-        prompt,
-    );
-    let mut ctx = PipelineContext::new(req);
-    if let Some(pid) = policy_id {
-        ctx.set_metadata(
-            &PluginId::new("bitrouter-auth"),
-            serde_json::json!({ "api_key_id": "sess-1", "user_id": "u1", "policy_id": pid }),
-        );
-    }
-    ctx
-}
-
-/// Build a context whose request declares the given tools.
-fn ctx_with_tools(tools: &[&str], policy_id: Option<&str>) -> PipelineContext {
-    let prompt = Prompt {
-        model: "m".to_string(),
-        system: None,
-        messages: vec![Message::text(Role::User, "hi")],
-        tools: tools
-            .iter()
-            .map(|name| Tool {
-                name: name.to_string(),
-                description: None,
-                parameters: serde_json::json!({}),
-            })
-            .collect(),
-        params: GenerationParams::default(),
-        stream: false,
-    };
-    let req = PipelineRequest::new(
-        "m",
-        CallerContext::new("k1", "u1", PaymentMethod::Credits),
-        prompt,
-    );
-    let mut ctx = PipelineContext::new(req);
-    if let Some(pid) = policy_id {
-        ctx.set_metadata(
-            &PluginId::new("bitrouter-auth"),
-            serde_json::json!({ "api_key_id": "k1", "user_id": "u1", "policy_id": pid }),
-        );
-    }
-    ctx
-}
-
-/// A `MetricsStore` mock returning a fixed spend + rate.
-struct MockMetrics {
-    rpm: f64,
-}
-#[async_trait]
-impl MetricsStore for MockMetrics {
-    async fn get_spend(&self, _key: &str, _w: TimeWindow) -> bitrouter_sdk::Result<u64> {
-        Ok(0)
-    }
-    async fn get_request_count(&self, _k: &str, _w: TimeWindow) -> bitrouter_sdk::Result<u64> {
-        Ok(0)
-    }
-    async fn get_token_usage(
-        &self,
-        _k: &str,
-        _m: &str,
-        _w: TimeWindow,
-    ) -> bitrouter_sdk::Result<TokenUsage> {
-        Ok(TokenUsage::default())
-    }
-    async fn get_rate(&self, _key: &str) -> bitrouter_sdk::Result<RateMetrics> {
-        Ok(RateMetrics {
-            requests_per_minute: self.rpm,
-            tokens_per_minute: 0.0,
-        })
-    }
-    async fn record_request(&self, _r: RequestMetric) -> bitrouter_sdk::Result<()> {
-        Ok(())
-    }
-}
-
-#[tokio::test]
-async fn chain_limit_gates_mpp_callers() {
-    // policy allows only `solana`; the v1.0 MPP caller is on `tempo` → denied.
-    let store = Arc::new(PolicyStore::from_policies([Policy {
-        id: "p1".into(),
-        allowed_chains: Some(vec!["solana".into()]),
-        ..Default::default()
-    }]));
-    let hook = PolicyHook::new(store, None);
-    let mut c = mpp_ctx(Some("p1"));
-    match hook.check(&mut c).await.unwrap() {
-        HookDecision::Deny(reason) => {
-            let err: bitrouter_sdk::BitrouterError = reason.into();
-            assert_eq!(err.status(), 403);
-        }
-        HookDecision::Allow => panic!("MPP caller on a disallowed chain must be denied"),
-    }
-
-    // policy allowing `tempo` lets the same caller through.
-    let store_ok = Arc::new(PolicyStore::from_policies([Policy {
-        id: "p1".into(),
-        allowed_chains: Some(vec!["tempo".into()]),
-        ..Default::default()
-    }]));
-    let hook_ok = PolicyHook::new(store_ok, None);
-    let mut c2 = mpp_ctx(Some("p1"));
-    assert!(matches!(
-        hook_ok.check(&mut c2).await.unwrap(),
-        HookDecision::Allow
-    ));
-}
-
 #[tokio::test]
 async fn tool_rules_gate_requested_tools() {
     let store = Arc::new(PolicyStore::from_policies([Policy {
@@ -328,31 +232,113 @@ async fn tool_rules_gate_requested_tools() {
 }
 
 #[tokio::test]
-async fn rate_limit_is_enforced_via_metrics_store() {
+async fn spend_cap_is_enforced_via_metering_store() {
     let store = Arc::new(PolicyStore::from_policies([Policy {
         id: "p1".into(),
-        max_requests_per_minute: Some(60),
+        max_spend_micro_usd: Some(100),
         ..Default::default()
     }]));
+    let metering = fresh_metering().await;
 
-    // under the limit → allowed
-    let under: Arc<dyn MetricsStore> = Arc::new(MockMetrics { rpm: 30.0 });
-    let hook_under = PolicyHook::new(store.clone(), Some(under));
-    let mut c1 = ctx("m", Some("p1"));
+    // Seed an existing 60µ$ row for the caller — under the cap.
+    metering
+        .record_request(RequestMetric {
+            request_id: "r1".into(),
+            user_id: "u1".into(),
+            api_key_id: "k1".into(),
+            model_id: "gpt-5".into(),
+            provider_id: "openai".into(),
+            prompt_tokens: 10,
+            completion_tokens: 5,
+            reasoning_tokens: 0,
+            cache_read_tokens: 0,
+            cache_write_tokens: 0,
+            estimated_charge_micro_usd: 60,
+            latency_ms: 100,
+            generation_time_ms: 80,
+            streamed: false,
+            error: None,
+        })
+        .await
+        .unwrap();
+    let hook = PolicyHook::new(store.clone(), Some(metering.clone()));
+    let mut c = ctx("gpt-5", Some("p1"));
     assert!(matches!(
-        hook_under.check(&mut c1).await.unwrap(),
-        HookDecision::Allow
+        hook.check(&mut c).await.unwrap(),
+        HookDecision::Allow,
+        "60µ$ < 100µ$ cap → allow"
     ));
 
-    // at/over the limit → 429 RateLimited
-    let over: Arc<dyn MetricsStore> = Arc::new(MockMetrics { rpm: 75.0 });
-    let hook_over = PolicyHook::new(store, Some(over));
-    let mut c2 = ctx("m", Some("p1"));
-    match hook_over.check(&mut c2).await.unwrap() {
+    // Push the rolling spend over the cap.
+    metering
+        .record_request(RequestMetric {
+            request_id: "r2".into(),
+            user_id: "u1".into(),
+            api_key_id: "k1".into(),
+            model_id: "gpt-5".into(),
+            provider_id: "openai".into(),
+            prompt_tokens: 10,
+            completion_tokens: 5,
+            reasoning_tokens: 0,
+            cache_read_tokens: 0,
+            cache_write_tokens: 0,
+            estimated_charge_micro_usd: 50,
+            latency_ms: 100,
+            generation_time_ms: 80,
+            streamed: false,
+            error: None,
+        })
+        .await
+        .unwrap();
+    let mut c2 = ctx("gpt-5", Some("p1"));
+    match hook.check(&mut c2).await.unwrap() {
+        HookDecision::Deny(reason) => {
+            let err: bitrouter_sdk::BitrouterError = reason.into();
+            assert_eq!(err.status(), 403);
+        }
+        HookDecision::Allow => panic!("110µ$ > 100µ$ cap should deny"),
+    }
+}
+
+#[tokio::test]
+async fn rate_limit_is_enforced_via_metering_store() {
+    let store = Arc::new(PolicyStore::from_policies([Policy {
+        id: "p1".into(),
+        max_requests_per_minute: Some(2),
+        ..Default::default()
+    }]));
+    let metering = fresh_metering().await;
+
+    // Two requests recorded in the trailing minute (this minute) → at limit.
+    for i in 0..2 {
+        metering
+            .record_request(RequestMetric {
+                request_id: format!("r{i}"),
+                user_id: "u1".into(),
+                api_key_id: "k1".into(),
+                model_id: "gpt-5".into(),
+                provider_id: "openai".into(),
+                prompt_tokens: 1,
+                completion_tokens: 1,
+                reasoning_tokens: 0,
+                cache_read_tokens: 0,
+                cache_write_tokens: 0,
+                estimated_charge_micro_usd: 0,
+                latency_ms: 0,
+                generation_time_ms: 0,
+                streamed: false,
+                error: None,
+            })
+            .await
+            .unwrap();
+    }
+    let hook = PolicyHook::new(store, Some(metering));
+    let mut c = ctx("gpt-5", Some("p1"));
+    match hook.check(&mut c).await.unwrap() {
         HookDecision::Deny(reason) => {
             let err: bitrouter_sdk::BitrouterError = reason.into();
             assert_eq!(err.status(), 429);
         }
-        HookDecision::Allow => panic!("over-rate request must be rate-limited"),
+        HookDecision::Allow => panic!("at-limit request must be rate-limited"),
     }
 }

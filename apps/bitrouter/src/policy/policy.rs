@@ -9,7 +9,6 @@
 //! | model allow   | **intersect** — allowed by *every* policy with a list   |
 //! | spend limit   | **minimum** (AND, strictest)                            |
 //! | expiry        | **earliest** (AND)                                      |
-//! | chain limit   | **intersect** (AND) — allowed by every policy's list    |
 //! | tool access   | **union** (OR) — a tool is OK if *any* policy allows it |
 //! | rate limit    | **minimum** (AND, strictest)                            |
 
@@ -30,9 +29,6 @@ pub struct Policy {
     pub max_spend_micro_usd: Option<u64>,
     /// Hard expiry — requests after this instant are denied.
     pub expires_at: Option<DateTime<Utc>>,
-    /// Allowed payment chains (e.g. `tempo`). `None`/empty = all chains
-    /// allowed. Combined by **intersection** across policies.
-    pub allowed_chains: Option<Vec<String>>,
     /// Allowed tool names. `None` = all tools allowed. Combined by **union**
     /// across policies — a tool is permitted if *any* policy allows it.
     pub allowed_tools: Option<Vec<String>>,
@@ -54,8 +50,6 @@ pub enum PolicyViolation {
     },
     /// The policy has expired.
     Expired,
-    /// The caller's payment chain is not in the allowed set.
-    ChainNotAllowed(String),
     /// A requested tool is not permitted by policy.
     ToolNotAllowed(String),
     /// The requests-per-minute ceiling has been reached.
@@ -77,9 +71,6 @@ impl std::fmt::Display for PolicyViolation {
                 write!(f, "spend limit reached ({spent} / {limit} micro-USD)")
             }
             PolicyViolation::Expired => write!(f, "policy has expired"),
-            PolicyViolation::ChainNotAllowed(c) => {
-                write!(f, "payment chain '{c}' is not permitted by policy")
-            }
             PolicyViolation::ToolNotAllowed(t) => {
                 write!(f, "tool '{t}' is not permitted by policy")
             }
@@ -100,9 +91,6 @@ pub struct EffectivePolicy {
     pub max_spend_micro_usd: Option<u64>,
     /// The effective (earliest) expiry.
     pub expires_at: Option<DateTime<Utc>>,
-    /// The effective allowed-chain set — the **intersection** of every
-    /// policy's chain allowlist. `None` = unrestricted.
-    allowed_chains: Option<Vec<String>>,
     /// The effective allowed-tool set — the **union** of every policy's tool
     /// allowlist. `None` = unrestricted (a policy with no tool list, or no
     /// policies at all, leaves tools unrestricted).
@@ -133,16 +121,6 @@ impl EffectivePolicy {
                 eff.allowed_models = Some(match eff.allowed_models.take() {
                     None => allow.clone(),
                     Some(existing) => existing.into_iter().filter(|m| allow.contains(m)).collect(),
-                });
-            }
-            // chain allowlists intersect (AND)
-            if let Some(chains) = &p.allowed_chains {
-                eff.allowed_chains = Some(match eff.allowed_chains.take() {
-                    None => chains.clone(),
-                    Some(existing) => existing
-                        .into_iter()
-                        .filter(|c| chains.contains(c))
-                        .collect(),
                 });
             }
             // tool allowlists union (OR)
@@ -220,17 +198,6 @@ impl EffectivePolicy {
         }
     }
 
-    /// Check a payment chain against the combined (intersected) allowlist.
-    /// `None`/empty allowlist permits every chain.
-    pub fn check_chain(&self, chain: &str) -> Result<(), PolicyViolation> {
-        match &self.allowed_chains {
-            Some(allow) if !allow.is_empty() && !allow.iter().any(|c| c == chain) => {
-                Err(PolicyViolation::ChainNotAllowed(chain.to_string()))
-            }
-            _ => Ok(()),
-        }
-    }
-
     /// Check a set of requested tool names against the combined (unioned)
     /// allowlist. `None` allowlist permits every tool.
     pub fn check_tools<'t>(
@@ -255,11 +222,6 @@ impl EffectivePolicy {
             }
             _ => Ok(()),
         }
-    }
-
-    /// Whether this effective policy restricts the payment chain.
-    pub fn has_chain_restriction(&self) -> bool {
-        self.allowed_chains.as_ref().is_some_and(|c| !c.is_empty())
     }
 
     /// Whether this effective policy restricts tool access.
@@ -333,57 +295,9 @@ mod tests {
         assert!(eff.check_model("anything").is_ok());
         assert!(eff.check_spend(u64::MAX).is_ok());
         assert!(eff.check_expiry(Utc::now()).is_ok());
-        assert!(eff.check_chain("any-chain").is_ok());
         assert!(eff.check_tools(["any-tool"]).is_ok());
         assert!(eff.check_rate(u32::MAX).is_ok());
-        assert!(!eff.has_chain_restriction());
         assert!(!eff.has_tool_restriction());
-    }
-
-    #[test]
-    fn chain_allowlists_intersect() {
-        let a = Policy {
-            id: "a".into(),
-            allowed_chains: Some(vec!["tempo".into(), "solana".into()]),
-            ..Default::default()
-        };
-        let b = Policy {
-            id: "b".into(),
-            allowed_chains: Some(vec!["tempo".into()]),
-            ..Default::default()
-        };
-        let eff = EffectivePolicy::combine([&a, &b]);
-        // only `tempo` is in both allowlists
-        assert!(eff.check_chain("tempo").is_ok());
-        assert!(eff.check_chain("solana").is_err());
-        assert!(eff.has_chain_restriction());
-    }
-
-    #[test]
-    fn disjoint_chain_allowlists_intersect_to_no_constraint() {
-        // Two policies with non-overlapping chain lists intersect to the empty
-        // set. By the documented convention — an empty chain list means "no
-        // constraint", matching v0's `allowed_chains` semantics ("Empty means
-        // all chains allowed") — the effective policy then imposes no chain
-        // restriction. This is a deliberate "fail open on contradiction"
-        // choice, made explicit here so the behaviour is pinned.
-        let a = Policy {
-            id: "a".into(),
-            allowed_chains: Some(vec!["tempo".into()]),
-            ..Default::default()
-        };
-        let b = Policy {
-            id: "b".into(),
-            allowed_chains: Some(vec!["solana".into()]),
-            ..Default::default()
-        };
-        let eff = EffectivePolicy::combine([&a, &b]);
-        assert!(
-            !eff.has_chain_restriction(),
-            "empty intersection = no constraint"
-        );
-        assert!(eff.check_chain("tempo").is_ok());
-        assert!(eff.check_chain("anything").is_ok());
     }
 
     #[test]
