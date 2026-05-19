@@ -2,7 +2,7 @@
 //!
 //! v1.0: **pure routing, no settlement**. The MCP
 //! pipeline has only `PreRequestHook` / `RouteHook` / `ExecutionHook` — there
-//! is no `ChargeStrategy` / `SettlementRecorder` stage. MCP tool calls are
+//! is no settlement stage. MCP tool calls are
 //! JSON-RPC; the canonical request/response here are JSON.
 //!
 //! these hook traits are **independent** of
@@ -294,7 +294,6 @@ impl PipelineBuilder {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::caller::PaymentMethod;
 
     struct StaticTable;
     #[async_trait]
@@ -343,7 +342,7 @@ mod tests {
             server,
             "tools/list",
             serde_json::json!({}),
-            CallerContext::new("k", "u", PaymentMethod::None),
+            CallerContext::new("k", "u"),
         )
     }
 

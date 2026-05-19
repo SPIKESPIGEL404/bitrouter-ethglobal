@@ -97,16 +97,18 @@
 //! ## What ships in adjacent crates
 //!
 //! The SDK does not include the default plugins; each plugin is its own crate
-//! that implements one or more hook traits from here:
+//! that implements one or more hook traits from here.
 //!
-//! - `bitrouter-auth` — virtual API key (`brvk_…`) auth + optional MPP.
-//! - `bitrouter-policy` — per-key policy: spend ceilings, RPM, model
-//!   allow/deny, tool-access rules.
-//! - `bitrouter-settlement` — credit + BYOK + MPP charge strategies, sqlite
-//!   `MetricsStore`, receipt recorder, model pricing table.
+//! ## Shared library plugins shipped in this repo
+//!
+//! - `bitrouter-observe` — Prometheus exporter + OTLP/HTTP traces.
 //! - `bitrouter-guardrails` — request / response content scanning (block +
 //!   redact).
-//! - `bitrouter-observe` — Prometheus exporter + OTLP/HTTP traces.
+//!
+//! Anything else (auth, policy, charging, metering) is deployment-specific
+//! and lives in the deployment's own code, not as a shared library. The OSS
+//! `apps/bitrouter` binary provides its own implementations under
+//! `apps/bitrouter/src/{auth,policy,metering}/`.
 
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
@@ -117,7 +119,6 @@ pub mod caller;
 pub mod error;
 pub mod event;
 pub mod metrics;
-pub mod mpp;
 pub mod plugin;
 pub mod url_validator;
 
@@ -133,14 +134,11 @@ pub mod language_model;
 pub mod mcp;
 
 pub use app::{App, AppBuilder, Plugin};
-pub use caller::{CallerContext, FundingSource, PaymentMethod};
+pub use caller::CallerContext;
 pub use error::{BitrouterError, Result};
 pub use event::{EventBus, PipelineEvent};
 pub use language_model::{
     FallbackPolicy, HookDecision, PreRequestHook, RoutingTable, RoutingTarget,
 };
-pub use metrics::{
-    MetricsRenderer, MetricsStore, RateMetrics, RequestMetric, TimeWindow, TokenUsage,
-};
-pub use mpp::{MppVerification, MppVerifier};
+pub use metrics::MetricsRenderer;
 pub use plugin::{MigrationContent, MigrationItem, PluginId};

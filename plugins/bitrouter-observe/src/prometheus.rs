@@ -22,8 +22,6 @@ struct Metrics {
     requests_total: HashMap<&'static str, u64>,
     /// Sum of request latencies (ms) — paired with `requests_total` for an avg.
     latency_ms_sum: u64,
-    /// Total micro-USD charged across all requests.
-    charge_micro_usd_sum: i64,
     /// Total stream parts observed.
     stream_parts_total: u64,
 }
@@ -67,12 +65,6 @@ impl PrometheusHook {
             "bitrouter_request_latency_ms_sum {}\n",
             m.latency_ms_sum
         ));
-        out.push_str("# HELP bitrouter_charge_micro_usd_sum Total micro-USD charged.\n");
-        out.push_str("# TYPE bitrouter_charge_micro_usd_sum counter\n");
-        out.push_str(&format!(
-            "bitrouter_charge_micro_usd_sum {}\n",
-            m.charge_micro_usd_sum
-        ));
         out.push_str("# HELP bitrouter_stream_parts_total Total stream parts observed.\n");
         out.push_str("# TYPE bitrouter_stream_parts_total counter\n");
         out.push_str(&format!(
@@ -111,7 +103,6 @@ impl ObserveHook for PrometheusHook {
             if let Some(exec) = &ctx.execution_result {
                 m.latency_ms_sum += exec.latency_ms;
             }
-            m.charge_micro_usd_sum += ctx.final_charge_micro_usd;
         }
     }
 }
@@ -127,7 +118,7 @@ impl MetricsRenderer for PrometheusHook {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use bitrouter_sdk::caller::{CallerContext, PaymentMethod};
+    use bitrouter_sdk::caller::CallerContext;
     use bitrouter_sdk::language_model::{GenerationParams, Message, PipelineRequest, Prompt, Role};
 
     fn ctx() -> PipelineContext {
@@ -141,7 +132,7 @@ mod tests {
         };
         PipelineContext::new(PipelineRequest::new(
             "m",
-            CallerContext::new("k", "u", PaymentMethod::None),
+            CallerContext::new("k", "u"),
             prompt,
         ))
     }

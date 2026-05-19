@@ -450,6 +450,4 @@ pub struct PipelineResponse {
     pub request_id: String,
     /// The generation result.
     pub result: GenerateResult,
-    /// Final charge in micro-USD (0 for BYOK / unsettled).
-    pub final_charge_micro_usd: i64,
 }

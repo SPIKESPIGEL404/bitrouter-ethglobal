@@ -38,7 +38,7 @@ use std::sync::Arc;
 
 use crate::error::Result;
 use crate::language_model::{self, PipelineBuilder};
-use crate::metrics::{MetricsRenderer, MetricsStore};
+use crate::metrics::MetricsRenderer;
 use crate::plugin::{MigrationItem, PluginId};
 use crate::{acp, mcp};
 
@@ -64,8 +64,6 @@ pub struct App {
     language_model: Option<Arc<language_model::Pipeline>>,
     mcp: Option<Arc<mcp::Pipeline>>,
     acp: Option<Arc<acp::Pipeline>>,
-    #[allow(dead_code)]
-    metrics_store: Option<Arc<dyn MetricsStore>>,
     /// Optional Prometheus-style metrics renderer; if set, the HTTP server
     /// exposes `GET /metrics` against it.
     metrics_renderer: Option<Arc<dyn MetricsRenderer>>,
@@ -122,7 +120,6 @@ pub struct AppBuilder {
     language_model: PipelineBuilder,
     mcp: mcp::PipelineBuilder,
     acp: acp::PipelineBuilder,
-    metrics_store: Option<Arc<dyn MetricsStore>>,
     metrics_renderer: Option<Arc<dyn MetricsRenderer>>,
     migrations: Vec<MigrationItem>,
     skip_auth: bool,
@@ -135,7 +132,6 @@ impl AppBuilder {
             language_model: PipelineBuilder::new(),
             mcp: mcp::PipelineBuilder::new(),
             acp: acp::PipelineBuilder::new(),
-            metrics_store: None,
             metrics_renderer: None,
             migrations: Vec::new(),
             skip_auth: false,
@@ -178,13 +174,6 @@ impl AppBuilder {
         F: FnOnce(&mut acp::PipelineBuilder),
     {
         configure(&mut self.acp);
-        self
-    }
-
-    /// Inject the `MetricsStore` infrastructure (read by PreRequest hooks,
-    /// written by `ReceiptRecorder`).
-    pub fn metrics_store(mut self, store: Arc<dyn MetricsStore>) -> Self {
-        self.metrics_store = Some(store);
         self
     }
 
@@ -242,7 +231,6 @@ impl AppBuilder {
             language_model,
             mcp,
             acp,
-            metrics_store: self.metrics_store,
             metrics_renderer: self.metrics_renderer,
             migrations: self.migrations,
             skip_auth: self.skip_auth,

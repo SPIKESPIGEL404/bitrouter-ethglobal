@@ -244,7 +244,7 @@ async fn dispatch(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::caller::{CallerContext, PaymentMethod};
+    use crate::caller::CallerContext;
     use std::collections::HashMap;
 
     fn req(server: &str, method: &str) -> McpRequest {
@@ -252,7 +252,7 @@ mod tests {
             server,
             method,
             serde_json::json!({}),
-            CallerContext::new("k", "u", PaymentMethod::None),
+            CallerContext::new("k", "u"),
         )
     }
 

@@ -575,14 +575,14 @@ fn preview(s: &str, max_chars: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::caller::{CallerContext, PaymentMethod};
+    use crate::caller::CallerContext;
 
     fn req(agent: &str, method: &str) -> AcpRequest {
         AcpRequest::new(
             agent,
             method,
             serde_json::json!({}),
-            CallerContext::new("k", "u", PaymentMethod::None),
+            CallerContext::new("k", "u"),
         )
     }
 

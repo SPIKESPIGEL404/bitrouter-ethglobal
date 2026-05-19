@@ -2,7 +2,7 @@
 
 use std::sync::Arc;
 
-use bitrouter_sdk::caller::{CallerContext, PaymentMethod};
+use bitrouter_sdk::caller::CallerContext;
 use bitrouter_sdk::language_model::{
     ApiProtocol, FinishReason, GenerationParams, Message, MockExecutor, MockResponse,
     PipelineBuilder, PipelineContext, PipelineRequest, PreRequestHook, Prompt, Role, RoutingTarget,
@@ -32,11 +32,7 @@ fn prompt(text: &str, stream: bool) -> Prompt {
 }
 
 fn ctx(text: &str) -> PipelineContext {
-    let req = PipelineRequest::new(
-        "m",
-        CallerContext::new("k", "u", PaymentMethod::None),
-        prompt(text, false),
-    );
+    let req = PipelineRequest::new("m", CallerContext::new("k", "u"), prompt(text, false));
     PipelineContext::new(req)
 }
 
@@ -95,11 +91,7 @@ async fn run_stream(parts: Vec<StreamPart>) -> Vec<bitrouter_sdk::Result<StreamP
         )])))
         .stream_hook(GuardrailStreamHook::new(rules()));
     let pipeline = Arc::new(b.build().unwrap());
-    let req = PipelineRequest::new(
-        "m",
-        CallerContext::new("k", "u", PaymentMethod::None),
-        prompt("go", true),
-    );
+    let req = PipelineRequest::new("m", CallerContext::new("k", "u"), prompt("go", true));
     let stream = pipeline.execute_stream(req).await.unwrap();
     stream.collect().await
 }

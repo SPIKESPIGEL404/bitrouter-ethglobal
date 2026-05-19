@@ -67,7 +67,6 @@ impl RoutingTable for ConfigAcpRoutingTable {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::caller::PaymentMethod;
 
     fn agent(name: &str, cmd: &str) -> (String, AcpAgentConfig) {
         (
@@ -84,7 +83,7 @@ mod tests {
     }
 
     fn caller() -> CallerContext {
-        CallerContext::new("k", "u", PaymentMethod::None)
+        CallerContext::new("k", "u")
     }
 
     #[tokio::test]

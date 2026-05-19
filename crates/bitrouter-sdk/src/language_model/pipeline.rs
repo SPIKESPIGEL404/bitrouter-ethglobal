@@ -16,7 +16,7 @@ use crate::language_model::hooks::{
     RequestOutcome, RouteHook, StreamHook,
 };
 use crate::language_model::routing::{FallbackPolicy, RoutingPrefs, RoutingTable};
-use crate::language_model::settlement::{ChargeOutcome, ChargeStrategy, SettlementRecorder};
+use crate::language_model::settlement::SettlementRecorder;
 use crate::language_model::stream::{StreamOutcome, StreamProcessor};
 use crate::language_model::types::{
     ExecutionResult, PipelineRequest, PipelineResponse, RoutingTarget, StreamPart,
@@ -33,7 +33,6 @@ pub struct Pipeline {
     pub(crate) route_hooks: Vec<Arc<dyn RouteHook>>,
     pub(crate) execution_hooks: Vec<Arc<dyn ExecutionHook>>,
     pub(crate) stream_hooks: Vec<Arc<dyn StreamHook>>,
-    pub(crate) charge_strategies: Vec<Arc<dyn ChargeStrategy>>,
     pub(crate) settlement_recorders: Vec<Arc<dyn SettlementRecorder>>,
     pub(crate) observe_hooks: Vec<Arc<dyn ObserveHook>>,
     pub(crate) routing_table: Arc<dyn RoutingTable>,
@@ -345,8 +344,10 @@ impl Pipeline {
         self.fallback_policy.classify(err, target)
     }
 
-    /// Stage 4 — Settlement. The `ChargeStrategy` chain is mutually exclusive
-    /// (first `Claimed` `break`s); every `SettlementRecorder` always runs.
+    /// Stage 4 — Settlement. Every `SettlementRecorder` runs in registration
+    /// order against the immutable [`SettlementContext`]. Deployments that
+    /// need exclusive-charging semantics implement them inside a single
+    /// recorder (the SDK no longer enforces a charge chain).
     async fn run_settlement(
         &self,
         ctx: &mut PipelineContext,
@@ -357,19 +358,6 @@ impl Pipeline {
         settle.streamed = streamed;
         settle.error = error;
 
-        // 4a — charge decision: first claim wins, chain stops.
-        for strategy in &self.charge_strategies {
-            match strategy.try_charge(&mut settle).await {
-                Ok(ChargeOutcome::Claimed) => break,
-                Ok(ChargeOutcome::Pass) => continue,
-                Err(e) => {
-                    tracing::error!(error = %e, "ChargeStrategy failed; treating as unsettled");
-                    break;
-                }
-            }
-        }
-
-        // 4b — bookkeeping: every recorder runs.
         for recorder in &self.settlement_recorders {
             if let Err(e) = recorder.record(&settle).await {
                 tracing::error!(error = %e, "SettlementRecorder failed");

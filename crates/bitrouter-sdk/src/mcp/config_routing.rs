@@ -72,7 +72,6 @@ impl RoutingTable for ConfigMcpRoutingTable {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::caller::PaymentMethod;
 
     fn server(name: &str, url: &str) -> (String, McpServerConfig) {
         (
@@ -88,7 +87,7 @@ mod tests {
     }
 
     fn caller() -> CallerContext {
-        CallerContext::new("k", "u", PaymentMethod::None)
+        CallerContext::new("k", "u")
     }
 
     #[tokio::test]

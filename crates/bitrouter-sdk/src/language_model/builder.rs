@@ -12,7 +12,7 @@ use crate::language_model::hooks::{
 };
 use crate::language_model::pipeline::{DEFAULT_KEEPALIVE, Pipeline};
 use crate::language_model::routing::{DefaultFallbackPolicy, FallbackPolicy, RoutingTable};
-use crate::language_model::settlement::{ChargeStrategy, SettlementRecorder};
+use crate::language_model::settlement::SettlementRecorder;
 
 /// Builds a [`Pipeline`] for the `language_model` protocol. Every method takes
 /// `&mut self` and returns `&mut Self`, so it composes both inside the
@@ -22,7 +22,6 @@ pub struct PipelineBuilder {
     route_hooks: Vec<Arc<dyn RouteHook>>,
     execution_hooks: Vec<Arc<dyn ExecutionHook>>,
     stream_hooks: Vec<Arc<dyn StreamHook>>,
-    charge_strategies: Vec<Arc<dyn ChargeStrategy>>,
     settlement_recorders: Vec<Arc<dyn SettlementRecorder>>,
     observe_hooks: Vec<Arc<dyn ObserveHook>>,
     routing_table: Option<Arc<dyn RoutingTable>>,
@@ -39,7 +38,6 @@ impl PipelineBuilder {
             route_hooks: Vec::new(),
             execution_hooks: Vec::new(),
             stream_hooks: Vec::new(),
-            charge_strategies: Vec::new(),
             settlement_recorders: Vec::new(),
             observe_hooks: Vec::new(),
             routing_table: None,
@@ -98,13 +96,6 @@ impl PipelineBuilder {
         self
     }
 
-    /// Register a `ChargeStrategy` into the mutually-exclusive responsibility
-    /// chain. Registration order is attempt order; the first `Claimed` stops it.
-    pub fn charge_strategy(&mut self, strategy: impl ChargeStrategy + 'static) -> &mut Self {
-        self.charge_strategies.push(Arc::new(strategy));
-        self
-    }
-
     /// Register a `SettlementRecorder` into the always-run list.
     pub fn settlement_recorder(
         &mut self,
@@ -144,7 +135,6 @@ impl PipelineBuilder {
             route_hooks: self.route_hooks,
             execution_hooks: self.execution_hooks,
             stream_hooks: self.stream_hooks,
-            charge_strategies: self.charge_strategies,
             settlement_recorders: self.settlement_recorders,
             observe_hooks: self.observe_hooks,
             routing_table,

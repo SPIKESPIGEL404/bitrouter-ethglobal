@@ -1,19 +1,24 @@
-//! Settlement for the `language_model` protocol: the `ChargeStrategy`
-//! responsibility chain (mutually exclusive, first-claim-wins) and the
-//! always-run `SettlementRecorder`.
+//! Settlement stage for the `language_model` protocol — the always-run
+//! [`SettlementRecorder`] list.
+//!
+//! The SDK is opinionated only about *pipeline data correctness*: a recorder
+//! receives the final, immutable token / latency / model / error data
+//! the pipeline observed. What a recorder does with that data
+//! (metering, charging, signed receipts, blockchain anchoring, …) is
+//! deployment-specific and lives outside the SDK.
 
 use async_trait::async_trait;
 
-use crate::caller::{CallerContext, FundingSource};
+use crate::caller::CallerContext;
 use crate::error::BitrouterError;
 use crate::error::Result;
 use crate::event::{EventBus, PipelineEvent};
 use crate::language_model::types::RoutingTarget;
 
-/// The Settlement-stage view, borrowed from `PipelineContext`.
-///
-/// `final_charge_micro_usd` / `funding_source` are written by whichever
-/// `ChargeStrategy` claims; if none claims they stay at their defaults.
+/// The Settlement-stage view, borrowed from `PipelineContext`. Carries
+/// pipeline-observed data only — no charging / funding fields. Deployments
+/// that need those compute them inside their own [`SettlementRecorder`]
+/// impls.
 pub struct SettlementContext {
     /// The request id.
     pub request_id: String,
@@ -32,12 +37,12 @@ pub struct SettlementContext {
     /// Reasoning tokens consumed.
     pub reasoning_tokens: u64,
     /// Cache-read prompt tokens — already-cached content served from cache.
-    /// Subset of `prompt_tokens`. Lets a `ChargeStrategy` apply discounted
-    /// pricing (e.g. Anthropic cache-read at 0.1× the prompt rate).
+    /// Subset of `prompt_tokens`. Lets a recorder apply discounted pricing
+    /// (e.g. Anthropic cache-read at 0.1× the prompt rate).
     pub cache_read_tokens: u64,
     /// Cache-write prompt tokens — content written to the cache this turn.
-    /// Subset of `prompt_tokens`. Lets a `ChargeStrategy` apply premium
-    /// pricing (e.g. Anthropic cache-write at 1.25× the prompt rate).
+    /// Subset of `prompt_tokens`. Lets a recorder apply premium pricing
+    /// (e.g. Anthropic cache-write at 1.25× the prompt rate).
     pub cache_write_tokens: u64,
     /// Whether the request was streamed.
     pub streamed: bool,
@@ -45,18 +50,10 @@ pub struct SettlementContext {
     pub latency_ms: u64,
     /// Upstream generation time in milliseconds.
     pub generation_time_ms: u64,
-    /// Final charge in micro-USD. Written by the claiming `ChargeStrategy`;
-    /// stays `0` if the chain is exhausted without a claim.
-    pub final_charge_micro_usd: i64,
-    /// Which funding source settled the request.
-    pub funding_source: FundingSource,
-    /// BYOK marker. Set by `ByokCharge` when it sees the `ByokKeyApplied`
-    /// event — **never** inferred from `target.api_key_override.is_some()`.
-    pub byok_used: bool,
     /// The error, if the request failed (Settlement still runs).
     pub error: Option<BitrouterError>,
-    /// Events carried over from the request lifecycle (so `ChargeStrategy`s can
-    /// read `ByokKeyApplied`, `Authenticated`, etc.).
+    /// Events carried over from the request lifecycle (so recorders can
+    /// inspect events emitted by earlier stages).
     pub(crate) events: EventBus,
 }
 
@@ -82,31 +79,11 @@ impl SettlementContext {
     }
 }
 
-/// The outcome of a `ChargeStrategy` attempt.
-#[derive(Debug, PartialEq, Eq)]
-pub enum ChargeOutcome {
-    /// This strategy handled charging (including "BYOK free, charge = 0"). The
-    /// responsibility chain stops here — no later strategy is tried.
-    Claimed,
-    /// This strategy does not apply; try the next one.
-    Pass,
-}
-
-/// A charging decision. Registered into a **mutually exclusive responsibility
-/// chain**: the pipeline tries strategies in registration order and `break`s on
-/// the first `Claimed`. "Charge at most once" is enforced by that `break`
-/// structure, not by hook-side `is_settled()` etiquette.
-#[async_trait]
-pub trait ChargeStrategy: Send + Sync {
-    /// Attempt to claim and apply charging for this request.
-    async fn try_charge(&self, ctx: &mut SettlementContext) -> Result<ChargeOutcome>;
-}
-
 /// A bookkeeping recorder. Registered into an **always-run** list: every
-/// recorder runs for every request (success or failure, regardless of which
-/// strategy charged).
+/// recorder runs for every request (success or failure). Deployments use
+/// recorders to write metering events, charge ledgers, sign receipts, etc.
 #[async_trait]
 pub trait SettlementRecorder: Send + Sync {
-    /// Record the (already-decided) settlement outcome.
+    /// Record the request outcome.
     async fn record(&self, ctx: &SettlementContext) -> Result<()>;
 }

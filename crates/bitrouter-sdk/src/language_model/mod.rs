@@ -21,11 +21,10 @@
 //!    each [`StreamHook`] sees every canonical [`StreamPart`] and can
 //!    [`Pass`](StreamAction::Pass), [`Replace`](StreamAction::Replace), or
 //!    [`Abort`](StreamAction::Abort) it.
-//! 5. **Settle** — the registered [`ChargeStrategy`]s form a
-//!    responsibility chain; the first one whose
-//!    [`try_charge`](ChargeStrategy::try_charge) returns
-//!    [`Claimed`](ChargeOutcome::Claimed) records the charge and the chain
-//!    stops. Every [`SettlementRecorder`] then always runs.
+//! 5. **Settle** — every registered [`SettlementRecorder`] runs in
+//!    registration order against the immutable [`SettlementContext`].
+//!    Deployments use recorders for metering, charging, signed receipts,
+//!    etc.; the SDK is opinionated only about pipeline-data correctness.
 //! 6. **Observe** — every [`ObserveHook`] sees phase boundaries and the final
 //!    [`RequestOutcome`]; observers are read-only and error-swallowing.
 //!
@@ -94,7 +93,7 @@ pub use routing::{
     DefaultFallbackPolicy, FallbackPolicy, ModelInfo, RoutingPrefs, RoutingTable, SortOrder,
     StaticRoutingTable,
 };
-pub use settlement::{ChargeOutcome, ChargeStrategy, SettlementContext, SettlementRecorder};
+pub use settlement::{SettlementContext, SettlementRecorder};
 pub use stream::{
     SseFrame, SseKeepaliveStream, StreamAction, StreamInterest, StreamOutcome, StreamProcessor,
     UsageAccumulator,

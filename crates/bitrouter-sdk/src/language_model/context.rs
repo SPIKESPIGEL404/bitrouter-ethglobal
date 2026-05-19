@@ -5,7 +5,7 @@
 
 use std::collections::HashMap;
 
-use crate::caller::{CallerContext, FundingSource};
+use crate::caller::CallerContext;
 use crate::event::{EventBus, PipelineEvent};
 use crate::language_model::settlement::SettlementContext;
 use crate::language_model::stream::UsageAccumulator;
@@ -31,10 +31,6 @@ pub struct PipelineContext {
     /// The execution result (Stage 3). Stored here rather than moved out so
     /// Settlement can borrow it without an ownership fight.
     pub execution_result: Option<ExecutionResult>,
-    /// Final charge in micro-USD (Stage 4). Absorbed from `SettlementContext`.
-    pub final_charge_micro_usd: i64,
-    /// Which funding source settled the request (Stage 4).
-    pub funding_source: FundingSource,
 
     // ===== plugin extension data =====
     metadata: HashMap<PluginId, serde_json::Value>,
@@ -54,8 +50,6 @@ impl PipelineContext {
             prompt: req.prompt,
             route_chain: None,
             execution_result: None,
-            final_charge_micro_usd: 0,
-            funding_source: FundingSource::Unsettled,
             metadata: HashMap::new(),
             events: EventBus::new(),
         }
@@ -187,10 +181,9 @@ impl PipelineContext {
         self.events.merge_from(stream.events);
     }
 
-    /// Borrow a `SettlementContext` for the Settlement stage.
-    ///
-    /// Moves the event bus out (so `ChargeStrategy`s can read `ByokKeyApplied`
-    /// etc.); `absorb_settlement` moves it back along with the charge decision.
+    /// Borrow a `SettlementContext` for the Settlement stage. Moves the event
+    /// bus out (so recorders can inspect events emitted by earlier stages);
+    /// `absorb_settlement` moves it back.
     pub fn settlement_context(&mut self) -> SettlementContext {
         let target = self.route_chain.as_ref().and_then(|c| c.first()).cloned();
         let exec = self.execution_result.as_ref();
@@ -209,20 +202,14 @@ impl PipelineContext {
             streamed: false,
             latency_ms: exec.map(|e| e.latency_ms).unwrap_or(0),
             generation_time_ms: exec.map(|e| e.generation_time_ms).unwrap_or(0),
-            final_charge_micro_usd: 0,
-            funding_source: FundingSource::Unsettled,
-            byok_used: false,
             error: None,
             events: std::mem::take(&mut self.events),
         }
     }
 
-    /// Fold a finished `SettlementContext` back in: the charge decision lands
-    /// on the context and the event bus (with any settlement-stage events)
-    /// returns home.
+    /// Fold a finished `SettlementContext` back in: the event bus (with any
+    /// settlement-stage events) returns home.
     pub fn absorb_settlement(&mut self, settle: SettlementContext) {
-        self.final_charge_micro_usd = settle.final_charge_micro_usd;
-        self.funding_source = settle.funding_source;
         self.events = settle.events;
     }
 
@@ -238,7 +225,6 @@ impl PipelineContext {
         PipelineResponse {
             request_id: self.request_id,
             result,
-            final_charge_micro_usd: self.final_charge_micro_usd,
         }
     }
 }

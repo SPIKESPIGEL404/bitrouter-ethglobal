@@ -7,7 +7,7 @@ use async_trait::async_trait;
 use futures::StreamExt;
 use serde::Serialize;
 
-use crate::caller::{CallerContext, FundingSource, PaymentMethod};
+use crate::caller::CallerContext;
 use crate::error::{BitrouterError, Result};
 use crate::event::PipelineEvent;
 use crate::language_model::executor::MockResponse;
@@ -42,11 +42,7 @@ fn request() -> PipelineRequest {
         params: GenerationParams::default(),
         stream: false,
     };
-    PipelineRequest::new(
-        "test-model",
-        CallerContext::new("k1", "u1", PaymentMethod::Credits),
-        prompt,
-    )
+    PipelineRequest::new("test-model", CallerContext::new("k1", "u1"), prompt)
 }
 
 #[derive(Serialize)]
@@ -95,28 +91,6 @@ impl RouteHook for EmitRouteHook {
     ) -> Result<()> {
         ctx.emit(TestRouteEvent);
         Ok(())
-    }
-}
-
-/// A `ChargeStrategy` that records each call and claims (or passes) on demand.
-struct ScriptedCharge {
-    label: &'static str,
-    claim: bool,
-    calls: Arc<AtomicUsize>,
-    log: Arc<std::sync::Mutex<Vec<&'static str>>>,
-}
-#[async_trait]
-impl ChargeStrategy for ScriptedCharge {
-    async fn try_charge(&self, ctx: &mut SettlementContext) -> Result<ChargeOutcome> {
-        self.calls.fetch_add(1, Ordering::SeqCst);
-        self.log.lock().unwrap().push(self.label);
-        if self.claim {
-            ctx.final_charge_micro_usd = 1234;
-            ctx.funding_source = FundingSource::Credits;
-            Ok(ChargeOutcome::Claimed)
-        } else {
-            Ok(ChargeOutcome::Pass)
-        }
     }
 }
 
@@ -222,9 +196,7 @@ fn pipeline_with(
 
 #[tokio::test]
 async fn full_pipeline_runs_all_four_stages() {
-    let calls = Arc::new(AtomicUsize::new(0));
     let recorded = Arc::new(AtomicUsize::new(0));
-    let charge_log = Arc::new(std::sync::Mutex::new(Vec::new()));
 
     let pipeline = pipeline_with(
         routing_table(&["openai"]),
@@ -232,20 +204,12 @@ async fn full_pipeline_runs_all_four_stages() {
         |b| {
             b.pre_request_hook(AllowHook)
                 .route_hook(EmitRouteHook)
-                .charge_strategy(ScriptedCharge {
-                    label: "credit",
-                    claim: true,
-                    calls: calls.clone(),
-                    log: charge_log.clone(),
-                })
                 .settlement_recorder(CountingRecorder(recorded.clone()));
         },
     );
 
     let resp = pipeline.execute(request()).await.expect("request succeeds");
     assert_eq!(resp.result.content.len(), 1);
-    assert_eq!(resp.final_charge_micro_usd, 1234);
-    assert_eq!(calls.load(Ordering::SeqCst), 1, "charge strategy ran");
     assert_eq!(recorded.load(Ordering::SeqCst), 1, "recorder ran");
 }
 
@@ -288,30 +252,30 @@ async fn pre_request_deny_stops_pipeline() {
 }
 
 #[tokio::test]
-async fn charge_chain_is_mutually_exclusive_first_claim_wins() {
-    let calls = Arc::new(AtomicUsize::new(0));
+async fn settlement_recorders_run_in_registration_order() {
     let log = Arc::new(std::sync::Mutex::new(Vec::new()));
+    struct LabelledRecorder {
+        label: &'static str,
+        log: Arc<std::sync::Mutex<Vec<&'static str>>>,
+    }
+    #[async_trait]
+    impl SettlementRecorder for LabelledRecorder {
+        async fn record(&self, _ctx: &SettlementContext) -> Result<()> {
+            self.log.lock().unwrap().push(self.label);
+            Ok(())
+        }
+    }
 
     let pipeline = pipeline_with(
         routing_table(&["openai"]),
         Arc::new(MockExecutor::always_text("x")),
         |b| {
-            b.charge_strategy(ScriptedCharge {
-                label: "byok",
-                claim: false,
-                calls: calls.clone(),
+            b.settlement_recorder(LabelledRecorder {
+                label: "first",
                 log: log.clone(),
             })
-            .charge_strategy(ScriptedCharge {
-                label: "credit",
-                claim: true,
-                calls: calls.clone(),
-                log: log.clone(),
-            })
-            .charge_strategy(ScriptedCharge {
-                label: "mpp",
-                claim: true,
-                calls: calls.clone(),
+            .settlement_recorder(LabelledRecorder {
+                label: "second",
                 log: log.clone(),
             });
         },
@@ -319,38 +283,8 @@ async fn charge_chain_is_mutually_exclusive_first_claim_wins() {
 
     pipeline.execute(request()).await.expect("ok");
 
-    // byok passes, credit claims, mpp must NOT be called.
-    assert_eq!(calls.load(Ordering::SeqCst), 2);
-    assert_eq!(*log.lock().unwrap(), vec!["byok", "credit"]);
-}
-
-#[tokio::test]
-async fn charge_chain_exhausted_leaves_charge_zero() {
-    let calls = Arc::new(AtomicUsize::new(0));
-    let log = Arc::new(std::sync::Mutex::new(Vec::new()));
-
-    let pipeline = pipeline_with(
-        routing_table(&["openai"]),
-        Arc::new(MockExecutor::always_text("x")),
-        |b| {
-            b.charge_strategy(ScriptedCharge {
-                label: "a",
-                claim: false,
-                calls: calls.clone(),
-                log: log.clone(),
-            })
-            .charge_strategy(ScriptedCharge {
-                label: "b",
-                claim: false,
-                calls: calls.clone(),
-                log: log.clone(),
-            });
-        },
-    );
-
-    let resp = pipeline.execute(request()).await.expect("ok");
-    assert_eq!(calls.load(Ordering::SeqCst), 2);
-    assert_eq!(resp.final_charge_micro_usd, 0);
+    // Both recorders ran, in registration order.
+    assert_eq!(*log.lock().unwrap(), vec!["first", "second"]);
 }
 
 #[tokio::test]
@@ -774,17 +708,17 @@ async fn stream_hooks_chain_rewrites() {
 
 #[tokio::test]
 async fn route_hook_event_is_visible_downstream() {
-    // EmitRouteHook emits TestRouteEvent in Stage 2; a charge strategy in
+    // EmitRouteHook emits TestRouteEvent in Stage 2; a settlement recorder in
     // Stage 4 must be able to see it via the carried-over event bus.
-    struct EventAssertCharge;
+    struct EventAssertRecorder;
     #[async_trait]
-    impl ChargeStrategy for EventAssertCharge {
-        async fn try_charge(&self, ctx: &mut SettlementContext) -> Result<ChargeOutcome> {
+    impl SettlementRecorder for EventAssertRecorder {
+        async fn record(&self, ctx: &SettlementContext) -> Result<()> {
             assert!(
                 ctx.has_event::<TestRouteEvent>(),
                 "route-stage event reached settlement"
             );
-            Ok(ChargeOutcome::Pass)
+            Ok(())
         }
     }
 
@@ -793,7 +727,7 @@ async fn route_hook_event_is_visible_downstream() {
         Arc::new(MockExecutor::always_text("x")),
         |b| {
             b.route_hook(EmitRouteHook)
-                .charge_strategy(EventAssertCharge);
+                .settlement_recorder(EventAssertRecorder);
         },
     );
     pipeline.execute(request()).await.expect("ok");

@@ -2,7 +2,7 @@
 //!
 //! v1.0: **pure routing, no settlement**. The ACP
 //! pipeline has only `PreRequestHook` / `RouteHook` / `ExecutionHook` — no
-//! `ChargeStrategy` / `SettlementRecorder` stage.
+//! settlement stage.
 //!
 //! these hook traits are **independent** of both
 //! `language_model`'s and `mcp`'s — protocol isolation is enforced at compile
@@ -282,7 +282,6 @@ impl PipelineBuilder {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::caller::PaymentMethod;
 
     struct StaticTable;
     #[async_trait]
@@ -319,7 +318,7 @@ mod tests {
             agent,
             "session/new",
             serde_json::json!({}),
-            CallerContext::new("k", "u", PaymentMethod::None),
+            CallerContext::new("k", "u"),
         )
     }
 
