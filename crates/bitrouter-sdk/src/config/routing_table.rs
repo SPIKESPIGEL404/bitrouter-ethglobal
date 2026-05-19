@@ -69,6 +69,21 @@ impl ConfigRoutingTable {
     pub fn snapshot_config(&self) -> Config {
         self.config.read().expect("config lock poisoned").clone()
     }
+
+    /// Swap the table's `Config` for `fresh`, running model discovery
+    /// against the new config first. Used by the daemon's reload path
+    /// when there's no source file to re-read from (zero-config mode):
+    /// the caller produces a fresh `Config` from
+    /// `bitrouter_providers::zero_config` and hands it here. Holds the
+    /// same `reload_lock` as [`reload`] so the two paths serialise
+    /// against each other.
+    pub async fn replace_config(&self, fresh: Config) -> Result<()> {
+        let _guard = self.reload_lock.lock().await;
+        let mut fresh = fresh;
+        crate::config::discover_models(&mut fresh).await;
+        *self.config.write().expect("config lock poisoned") = fresh;
+        Ok(())
+    }
 }
 
 fn build_target(

@@ -181,7 +181,7 @@ providers:
 "#;
     tokio::fs::write(&cfg_path, new_yaml).await.unwrap();
 
-    let resp = daemon::send_command(&socket, &DaemonCommand::Reload)
+    let resp = daemon::send_command(&socket, &DaemonCommand::Reload { env: Vec::new() })
         .await
         .unwrap();
     assert!(matches!(resp, DaemonResponse::Ok));
@@ -375,7 +375,7 @@ async fn reload_returns_error_when_the_config_is_broken() {
         .await
         .unwrap();
 
-    let resp = daemon::send_command(&socket, &DaemonCommand::Reload)
+    let resp = daemon::send_command(&socket, &DaemonCommand::Reload { env: Vec::new() })
         .await
         .unwrap();
     match resp {

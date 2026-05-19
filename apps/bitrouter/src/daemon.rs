@@ -45,8 +45,19 @@ impl DaemonReloader for NoopReloader {
 pub enum DaemonCommand {
     /// Stop the daemon — it finishes the response, then exits.
     Stop,
-    /// Hot-reload the config / routing table.
-    Reload,
+    /// Hot-reload the config / routing table. The CLI piggybacks a
+    /// snapshot of API-key-style env vars from its own process so a
+    /// `export OPENAI_API_KEY=…; bitrouter reload` propagates the new
+    /// value into the running daemon without requiring a restart.
+    /// `env` is `#[serde(default)]` for wire-compat with the
+    /// historical unit variant — older clients sending `{"cmd":"reload"}`
+    /// still deserialise as an empty override list.
+    Reload {
+        /// `(name, value)` pairs to apply to the daemon's env-override
+        /// map before reload. Empty list = no override changes.
+        #[serde(default)]
+        env: Vec<(String, String)>,
+    },
     /// Report daemon status.
     Status,
     /// Resolve a model name through the live routing table.
@@ -232,15 +243,27 @@ async fn dispatch(
 ) -> DaemonResponse {
     match command {
         DaemonCommand::Stop => DaemonResponse::Ok,
-        DaemonCommand::Reload => match reloader.reload().await {
-            Ok(()) => {
-                tracing::info!("reload succeeded");
-                DaemonResponse::Ok
+        DaemonCommand::Reload { env } => {
+            // Apply the CLI's env snapshot first so file-mode YAML
+            // `${VAR}` substitution and zero-config's "is this
+            // provider's key set" check see the freshly-exported
+            // values. Empty list = caller didn't ask us to update env;
+            // we keep whatever was already in the override map.
+            if !env.is_empty() {
+                let map: std::collections::HashMap<String, String> = env.into_iter().collect();
+                bitrouter_sdk::config::set_env_overrides(map);
+                tracing::info!("env override map updated by reload");
             }
-            Err(e) => DaemonResponse::Error {
-                message: format!("reload failed: {e}"),
-            },
-        },
+            match reloader.reload().await {
+                Ok(()) => {
+                    tracing::info!("reload succeeded");
+                    DaemonResponse::Ok
+                }
+                Err(e) => DaemonResponse::Error {
+                    message: format!("reload failed: {e}"),
+                },
+            }
+        }
         DaemonCommand::Status => {
             let models = app
                 .language_model()
@@ -345,7 +368,7 @@ mod tests {
     fn commands_round_trip_as_json() {
         for cmd in [
             DaemonCommand::Stop,
-            DaemonCommand::Reload,
+            DaemonCommand::Reload { env: Vec::new() },
             DaemonCommand::Status,
             DaemonCommand::Route {
                 model: "gpt-5".to_string(),
@@ -355,6 +378,35 @@ mod tests {
             let back: DaemonCommand = serde_json::from_str(&json).unwrap();
             // tag-based round trip
             assert_eq!(std::mem::discriminant(&cmd), std::mem::discriminant(&back));
+        }
+    }
+
+    #[test]
+    fn legacy_unit_reload_command_still_deserialises() {
+        // Pre-env wire format: `{"cmd":"reload"}` with no env field.
+        // The `#[serde(default)]` on `env` keeps this working so an
+        // older client (or a script speaking the v1 wire format) can
+        // still issue a no-env reload.
+        let back: DaemonCommand = serde_json::from_str(r#"{"cmd":"reload"}"#).unwrap();
+        match back {
+            DaemonCommand::Reload { env } => assert!(env.is_empty()),
+            other => panic!("expected Reload, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn reload_command_carries_env_overrides() {
+        let cmd = DaemonCommand::Reload {
+            env: vec![("OPENAI_API_KEY".to_string(), "sk-test".to_string())],
+        };
+        let json = serde_json::to_string(&cmd).unwrap();
+        let back: DaemonCommand = serde_json::from_str(&json).unwrap();
+        match back {
+            DaemonCommand::Reload { env } => {
+                assert_eq!(env.len(), 1);
+                assert_eq!(env[0], ("OPENAI_API_KEY".to_string(), "sk-test".to_string()));
+            }
+            other => panic!("expected Reload, got {other:?}"),
         }
     }
 

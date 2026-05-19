@@ -495,6 +495,19 @@ async fn resolve_client_socket_from(
     }
 }
 
+/// Whether the daemon is running against a `bitrouter.yaml` on disk
+/// (re-readable on reload) or a zero-config in-memory default
+/// (rebuilt by re-running [`bitrouter_providers::zero_config`]).
+enum ReloadSource {
+    /// File-backed; the routing table's own `reload` re-reads from
+    /// `path` and re-substitutes `${VAR}` references.
+    File,
+    /// In-memory zero-config; the reloader rebuilds the Config from
+    /// scratch and hands it to the routing table via
+    /// `replace_config`.
+    Default,
+}
+
 /// Fan out a daemon `Reload` (and SIGHUP) to every reloadable subsystem the
 /// running daemon owns. Failures from any single subsystem are accumulated and
 /// reported together so an unrelated subsystem (e.g. a missing policy dir)
@@ -502,16 +515,44 @@ async fn resolve_client_socket_from(
 struct AppReloader {
     app: Arc<bitrouter_sdk::App>,
     policy_store: Arc<bitrouter::policy::PolicyStore>,
+    /// Concrete handle on the routing table, used for zero-config
+    /// rebuilds where the pipeline's `&dyn RoutingTable` can't reach
+    /// `ConfigRoutingTable::replace_config`.
+    routing_table: Arc<bitrouter_sdk::config::ConfigRoutingTable>,
+    source: ReloadSource,
 }
 
 #[async_trait::async_trait]
 impl daemon::DaemonReloader for AppReloader {
     async fn reload(&self) -> anyhow::Result<()> {
         let mut errors: Vec<String> = Vec::new();
-        if let Some(pipeline) = self.app.language_model() {
-            if let Err(e) = pipeline.routing_table().reload().await {
-                errors.push(format!("routing table: {e}"));
+        let routing_outcome = match self.source {
+            // File source: the routing table knows its own path and
+            // re-reads YAML there. `${VAR}` substitution flows through
+            // `env_lookup`, so any env override the CLI just installed
+            // takes effect.
+            ReloadSource::File => {
+                if let Some(pipeline) = self.app.language_model() {
+                    pipeline.routing_table().reload().await
+                } else {
+                    Ok(())
+                }
             }
+            // Default source: no file to re-read. Rebuild a fresh
+            // zero-config `Config` (which goes through `env_lookup`
+            // too), then apply built-in catalog defaults so every
+            // newly-auto-enabled provider has its `api_base` /
+            // `api_protocol` / `api_key` filled — `replace_config`
+            // calls `discover_models`, which needs `api_base` to talk
+            // to `/models`.
+            ReloadSource::Default => {
+                let mut fresh = bitrouter_providers::zero_config();
+                bitrouter_providers::apply_builtin_defaults(&mut fresh);
+                self.routing_table.replace_config(fresh).await
+            }
+        };
+        if let Err(e) = routing_outcome {
+            errors.push(format!("routing table: {e}"));
         }
         if let Err(e) = self.policy_store.reload().await {
             errors.push(format!("policy store: {e}"));
@@ -558,9 +599,16 @@ async fn serve(source: &bitrouter::paths::ConfigSource) -> Result<()> {
     let assembled = bitrouter::build_app_with_path(&cfg, config_path_for_reload).await?;
     let app = Arc::new(assembled.app);
     let policy_store = assembled.policy_store;
+    let reload_source = if source.is_default() {
+        ReloadSource::Default
+    } else {
+        ReloadSource::File
+    };
     let reloader: Arc<dyn daemon::DaemonReloader> = Arc::new(AppReloader {
         app: app.clone(),
         policy_store: policy_store.clone(),
+        routing_table: assembled.routing_table,
+        source: reload_source,
     });
 
     daemon::write_pid_file(&pid_path).await?;
@@ -827,7 +875,23 @@ async fn wait_for_socket_release(socket: &Path, timeout: std::time::Duration) ->
 }
 
 async fn reload(socket: &Path) -> Result<()> {
-    match daemon::send_command(socket, &DaemonCommand::Reload).await? {
+    // Snapshot every env-var-credentialed built-in provider's key from
+    // *this* (CLI) process and hand them to the daemon along with the
+    // reload command, so `export OPENAI_API_KEY=…; bitrouter reload`
+    // propagates the new value into the running daemon instead of
+    // requiring a full stop+start. The daemon writes them into its
+    // env-override map before re-parsing config / re-running
+    // zero-config provider detection.
+    let env: Vec<(String, String)> = bitrouter_providers::zero_config_env_var_providers()
+        .into_iter()
+        .filter_map(|(_, var)| {
+            std::env::var(var)
+                .ok()
+                .filter(|v| !v.is_empty())
+                .map(|v| (var.to_string(), v))
+        })
+        .collect();
+    match daemon::send_command(socket, &DaemonCommand::Reload { env }).await? {
         DaemonResponse::Ok => {
             println!("config reloaded");
             Ok(())

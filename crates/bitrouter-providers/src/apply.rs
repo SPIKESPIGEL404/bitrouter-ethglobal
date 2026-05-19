@@ -7,8 +7,6 @@
 //!
 //! Opt-out: set `inherit_defaults: false` at the top level of the config.
 
-use std::env;
-
 use bitrouter_sdk::config::{Config, Pattern, PatternMap, ProviderConfig};
 use bitrouter_sdk::language_model::types::ApiProtocol;
 
@@ -46,7 +44,15 @@ pub fn zero_config() -> Config {
         let Some(env_var) = entry.auth.env_var() else {
             continue;
         };
-        if env::var(env_var).map(|v| !v.is_empty()).unwrap_or(false) {
+        // Go through `bitrouter_sdk::config::env_lookup` so a daemon-
+        // side override map (installed by the CLI's `bitrouter reload
+        // --env`) takes precedence over `std::env::var`. This is what
+        // lets a newly-exported API key flow into the running daemon's
+        // auto-enabled provider list without a full restart.
+        if bitrouter_sdk::config::env_lookup(env_var)
+            .map(|v| !v.is_empty())
+            .unwrap_or(false)
+        {
             // `auto_discover: true` so the provider's `/models` endpoint
             // populates the routable model list on startup — zero-config
             // users haven't declared any models explicitly.
@@ -99,7 +105,7 @@ pub fn apply_builtin_defaults(config: &mut Config) {
         }
         if provider.api_key.is_empty()
             && let Some(env_var) = builtin.auth.env_var()
-            && let Ok(value) = env::var(env_var)
+            && let Some(value) = bitrouter_sdk::config::env_lookup(env_var)
             && !value.is_empty()
         {
             provider.api_key = value;
@@ -138,6 +144,7 @@ fn protocol_mapping_to_pattern_map(m: &ProtocolMapping) -> PatternMap<ApiProtoco
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::env;
 
     use bitrouter_sdk::config::{Config, ProviderConfig};
 

@@ -396,9 +396,51 @@ where
 }
 
 /// Replace every `${VAR}` occurrence with the value of environment variable
-/// `VAR`. An undefined variable is an error.
+/// `VAR`. An undefined variable is an error. Used by the config loader.
+/// Reads via [`env_lookup`] so daemon-side overrides (installed by the
+/// CLI's `bitrouter reload`) take precedence over the live process env.
 pub fn substitute_env(input: &str) -> Result<String> {
-    substitute_with(input, |name| std::env::var(name).ok())
+    substitute_with(input, env_lookup)
+}
+
+/// Process-global env-var override map. Read by [`env_lookup`] before
+/// falling back to [`std::env::var`]. Written by [`set_env_overrides`]
+/// — the daemon calls that when the CLI sends a `Reload { env }`
+/// command, so a freshly-`export`ed API key in the user's shell
+/// propagates into the running daemon without restarting it.
+///
+/// `RwLock` (not unsafe `set_var`) keeps things `#![forbid(unsafe_code)]`
+/// clean and avoids the cross-thread soundness footgun of mutating the
+/// real process env while other threads might be reading it.
+static ENV_OVERRIDES: std::sync::OnceLock<
+    std::sync::RwLock<std::collections::HashMap<String, String>>,
+> = std::sync::OnceLock::new();
+
+fn overrides() -> &'static std::sync::RwLock<std::collections::HashMap<String, String>> {
+    ENV_OVERRIDES.get_or_init(|| std::sync::RwLock::new(std::collections::HashMap::new()))
+}
+
+/// Replace the in-memory override map atomically. Subsequent
+/// [`env_lookup`] / [`substitute_env`] / [`zero_config`] calls see the
+/// new values. Empty map clears all overrides.
+pub fn set_env_overrides(values: std::collections::HashMap<String, String>) {
+    let mut w = overrides().write().expect("env override lock poisoned");
+    *w = values;
+}
+
+/// Resolve an env var name to a value. Checks the in-memory override
+/// map first; falls back to [`std::env::var`]. Returns `None` for an
+/// unknown name. This is the function every config-loading path goes
+/// through — `${VAR}` substitution in YAML, `zero_config`'s
+/// "is this provider's key set" check, etc.
+pub fn env_lookup(name: &str) -> Option<String> {
+    if let Some(rw) = ENV_OVERRIDES.get()
+        && let Ok(guard) = rw.read()
+        && let Some(value) = guard.get(name)
+    {
+        return Some(value.clone());
+    }
+    std::env::var(name).ok()
 }
 
 /// Parse a config from a YAML string, applying `${VAR}` substitution first.

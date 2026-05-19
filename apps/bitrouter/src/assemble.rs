@@ -39,6 +39,12 @@ pub struct Assembled {
     /// [`PolicyStore::reload`] alongside the routing-table reload — reload
     /// must not affect in-flight requests.
     pub policy_store: Arc<PolicyStore>,
+    /// Concrete handle on the routing table. The pipeline above also
+    /// holds the same `Arc` (via `&dyn RoutingTable`), but reload code
+    /// needs the concrete type to call
+    /// [`ConfigRoutingTable::replace_config`] when there's no source
+    /// file to re-read from (zero-config mode).
+    pub routing_table: Arc<ConfigRoutingTable>,
 }
 
 /// Assemble an [`App`] from a parsed config: connect the database, run every
@@ -103,6 +109,10 @@ pub async fn build_app_with_path(
         Some(path) => ConfigRoutingTable::from_config_with_path(resolved, path),
         None => ConfigRoutingTable::from_config(resolved),
     });
+    // Hand-off clone — the builder closure below moves `routing_table`
+    // into the App pipeline, but the daemon's reloader needs the
+    // concrete type to call `replace_config` in zero-config mode.
+    let routing_table_for_reload = routing_table.clone();
     // Per-provider auth appliers — currently only GitHub Copilot, whose
     // OAuth-driven Bearer is resolved + cached by the applier on every
     // request. Listed only when the user configures the provider, so an
@@ -237,6 +247,7 @@ pub async fn build_app_with_path(
         app,
         pool,
         policy_store: policy_store_for_reload,
+        routing_table: routing_table_for_reload,
     })
 }
 
