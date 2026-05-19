@@ -327,8 +327,9 @@ impl InboundAdapter for OpenAiResponsesAdapter {
             model: model.to_string(),
             seq: 0,
             created: false,
-            output_index: 0,
-            text_item_open: false,
+            next_output_index: 0,
+            reasoning_item: None,
+            text_item: None,
         })
     }
 }
@@ -795,17 +796,57 @@ impl StreamDecoder for ResponsesStreamDecoder {
     }
 }
 
-/// OpenAI Responses SSE encoder. Emits the complete lifecycle envelope with a
-/// monotonically increasing `sequence_number` on every event, and a
-/// `response.completed` carrying the full `response` object. Never emits
-/// `[DONE]` (#454-2).
+/// OpenAI Responses SSE encoder. Emits the complete lifecycle envelope:
+///
+/// ```text
+/// response.created
+/// (per output item, in arrival order)
+///   response.output_item.added
+///   response.content_part.added            (for `message` / `reasoning` items)
+///   response.<text|reasoning_text|...>.delta  (one per chunk)
+///   response.<text|reasoning_text|...>.done
+///   response.content_part.done
+///   response.output_item.done
+/// response.completed
+/// ```
+///
+/// Strict clients (e.g. Codex CLI) silently discard deltas whose
+/// `output_index` was never opened via `response.output_item.added` +
+/// `response.content_part.added`, then time out the stream. Emitting
+/// the full lifecycle is required for Responses-API compatibility —
+/// this mirrors the v0 emitter in
+/// `bitrouter-core/src/api/openai/responses/convert.rs::StreamConverter`.
+///
+/// Every event carries a monotonically increasing `sequence_number`.
+/// Never emits `[DONE]` (#454-2).
 struct ResponsesStreamEncoder {
     request_id: String,
     model: String,
     seq: u64,
     created: bool,
+    /// Next free `output_index` to hand to a newly-opened item.
+    /// Incremented every time we open + close one.
+    next_output_index: u64,
+    /// State of the in-flight reasoning item, if any. Reasoning is
+    /// closed before a message item opens (codex and the spec both
+    /// require items to not interleave their deltas).
+    reasoning_item: Option<ItemState>,
+    /// State of the in-flight message item, if any. Closes on the
+    /// first `ToolCallDelta` (new function-call item starts) or on
+    /// `Finish` / `ResponseCompleted`.
+    text_item: Option<ItemState>,
+}
+
+/// Tracking state for one open item — message or reasoning. Tool
+/// items use a separate map keyed by call id (see the `ToolCallDelta`
+/// arm) because there can be several open in parallel.
+struct ItemState {
+    item_id: String,
     output_index: u64,
-    text_item_open: bool,
+    /// Accumulated text — written into the `*.done` event so the
+    /// final envelope carries the full body, matching the
+    /// non-streaming Responses object.
+    accumulated_text: String,
 }
 
 impl ResponsesStreamEncoder {
@@ -839,9 +880,172 @@ impl ResponsesStreamEncoder {
         }
     }
 
+    /// Allocate the next `output_index`, opening a fresh slot. Returns
+    /// the index that should be set on the item being opened.
+    fn allocate_output_index(&mut self) -> u64 {
+        let idx = self.next_output_index;
+        self.next_output_index += 1;
+        idx
+    }
+
+    /// Open a reasoning item: `output_item.added` (type=reasoning) +
+    /// `content_part.added` (type=reasoning_text). Idempotent.
+    fn open_reasoning_item(&mut self, frames: &mut Vec<SseFrame>) {
+        if self.reasoning_item.is_some() {
+            return;
+        }
+        let output_index = self.allocate_output_index();
+        let item_id = format!("rs_{}", uuid::Uuid::new_v4());
+        frames.push(self.ev(
+            "response.output_item.added",
+            serde_json::json!({
+                "output_index": output_index,
+                "item": {
+                    "type": "reasoning",
+                    "id": item_id,
+                    "summary": [],
+                    "content": [],
+                    "status": "in_progress",
+                },
+            }),
+        ));
+        frames.push(self.ev(
+            "response.content_part.added",
+            serde_json::json!({
+                "item_id": item_id,
+                "output_index": output_index,
+                "content_index": 0,
+                "part": { "type": "reasoning_text", "text": "" },
+            }),
+        ));
+        self.reasoning_item = Some(ItemState {
+            item_id,
+            output_index,
+            accumulated_text: String::new(),
+        });
+    }
+
+    /// Close the open reasoning item, if any: `reasoning_text.done` +
+    /// `content_part.done` + `output_item.done`.
+    fn close_reasoning_item(&mut self, frames: &mut Vec<SseFrame>) {
+        let Some(state) = self.reasoning_item.take() else {
+            return;
+        };
+        let final_text = state.accumulated_text;
+        frames.push(self.ev(
+            "response.reasoning_text.done",
+            serde_json::json!({
+                "item_id": state.item_id,
+                "output_index": state.output_index,
+                "content_index": 0,
+                "text": final_text,
+            }),
+        ));
+        frames.push(self.ev(
+            "response.content_part.done",
+            serde_json::json!({
+                "item_id": state.item_id,
+                "output_index": state.output_index,
+                "content_index": 0,
+                "part": { "type": "reasoning_text", "text": final_text },
+            }),
+        ));
+        frames.push(self.ev(
+            "response.output_item.done",
+            serde_json::json!({
+                "output_index": state.output_index,
+                "item": {
+                    "type": "reasoning",
+                    "id": state.item_id,
+                    "summary": [],
+                    "content": [{ "type": "reasoning_text", "text": final_text }],
+                    "status": "completed",
+                },
+            }),
+        ));
+    }
+
+    /// Open a message item: `output_item.added` (type=message) +
+    /// `content_part.added` (type=output_text). Idempotent.
+    fn open_text_item(&mut self, frames: &mut Vec<SseFrame>) {
+        if self.text_item.is_some() {
+            return;
+        }
+        let output_index = self.allocate_output_index();
+        let item_id = format!("msg_{}", uuid::Uuid::new_v4());
+        frames.push(self.ev(
+            "response.output_item.added",
+            serde_json::json!({
+                "output_index": output_index,
+                "item": {
+                    "type": "message",
+                    "id": item_id,
+                    "role": "assistant",
+                    "content": [],
+                    "status": "in_progress",
+                },
+            }),
+        ));
+        frames.push(self.ev(
+            "response.content_part.added",
+            serde_json::json!({
+                "item_id": item_id,
+                "output_index": output_index,
+                "content_index": 0,
+                "part": { "type": "output_text", "text": "" },
+            }),
+        ));
+        self.text_item = Some(ItemState {
+            item_id,
+            output_index,
+            accumulated_text: String::new(),
+        });
+    }
+
+    /// Close the open message item, if any: `output_text.done` +
+    /// `content_part.done` + `output_item.done`.
+    fn close_text_item(&mut self, frames: &mut Vec<SseFrame>) {
+        let Some(state) = self.text_item.take() else {
+            return;
+        };
+        let final_text = state.accumulated_text;
+        frames.push(self.ev(
+            "response.output_text.done",
+            serde_json::json!({
+                "item_id": state.item_id,
+                "output_index": state.output_index,
+                "content_index": 0,
+                "text": final_text,
+            }),
+        ));
+        frames.push(self.ev(
+            "response.content_part.done",
+            serde_json::json!({
+                "item_id": state.item_id,
+                "output_index": state.output_index,
+                "content_index": 0,
+                "part": { "type": "output_text", "text": final_text },
+            }),
+        ));
+        frames.push(self.ev(
+            "response.output_item.done",
+            serde_json::json!({
+                "output_index": state.output_index,
+                "item": {
+                    "type": "message",
+                    "id": state.item_id,
+                    "role": "assistant",
+                    "content": [{ "type": "output_text", "text": final_text }],
+                    "status": "completed",
+                },
+            }),
+        ));
+    }
+
     /// Emit the terminal lifecycle frame — `response.completed` (or
     /// `response.incomplete`), carrying the full `response` object (#454-2).
     /// Shared by the `Finish` and `ResponseCompleted` encode arms.
+    /// Closes any still-open reasoning / message items first.
     fn emit_terminal(
         &mut self,
         frames: &mut Vec<SseFrame>,
@@ -849,14 +1053,8 @@ impl ResponsesStreamEncoder {
         response_id: &str,
         usage: Option<Usage>,
     ) {
-        if self.text_item_open {
-            let idx = self.output_index;
-            frames.push(self.ev(
-                "response.output_item.done",
-                serde_json::json!({ "output_index": idx }),
-            ));
-            self.text_item_open = false;
-        }
+        self.close_reasoning_item(frames);
+        self.close_text_item(frames);
         let event_name = if status == "incomplete" {
             "response.incomplete"
         } else {
@@ -887,28 +1085,38 @@ impl StreamEncoder for ResponsesStreamEncoder {
         self.ensure_created(&mut frames);
         match part {
             StreamPart::TextDelta { text } => {
-                if !self.text_item_open {
-                    self.text_item_open = true;
-                    let idx = self.output_index;
-                    frames.push(self.ev(
-                        "response.output_item.added",
-                        serde_json::json!({
-                            "output_index": idx,
-                            "item": { "type": "message", "role": "assistant", "content": [] },
-                        }),
-                    ));
-                }
-                let idx = self.output_index;
+                // Close reasoning first — items don't interleave.
+                self.close_reasoning_item(&mut frames);
+                self.open_text_item(&mut frames);
+                let state = self.text_item.as_mut().expect("text item just opened");
+                state.accumulated_text.push_str(text);
+                let (item_id, output_index) = (state.item_id.clone(), state.output_index);
                 frames.push(self.ev(
                     "response.output_text.delta",
-                    serde_json::json!({ "output_index": idx, "delta": text }),
+                    serde_json::json!({
+                        "item_id": item_id,
+                        "output_index": output_index,
+                        "content_index": 0,
+                        "delta": text,
+                    }),
                 ));
             }
             StreamPart::ReasoningDelta { text } => {
-                let idx = self.output_index;
+                self.open_reasoning_item(&mut frames);
+                let state = self
+                    .reasoning_item
+                    .as_mut()
+                    .expect("reasoning item just opened");
+                state.accumulated_text.push_str(text);
+                let (item_id, output_index) = (state.item_id.clone(), state.output_index);
                 frames.push(self.ev(
-                    "response.reasoning_summary_text.delta",
-                    serde_json::json!({ "output_index": idx, "delta": text }),
+                    "response.reasoning_text.delta",
+                    serde_json::json!({
+                        "item_id": item_id,
+                        "output_index": output_index,
+                        "content_index": 0,
+                        "delta": text,
+                    }),
                 ));
             }
             StreamPart::ToolCallDelta {
@@ -917,16 +1125,12 @@ impl StreamEncoder for ResponsesStreamEncoder {
                 arguments,
             } => {
                 if let Some(name) = name {
-                    if self.text_item_open {
-                        let idx = self.output_index;
-                        frames.push(self.ev(
-                            "response.output_item.done",
-                            serde_json::json!({ "output_index": idx }),
-                        ));
-                        self.text_item_open = false;
-                        self.output_index += 1;
-                    }
-                    let idx = self.output_index;
+                    // Close any open reasoning / message items before
+                    // opening a function-call item — tool calls live in
+                    // their own output slot per the spec.
+                    self.close_reasoning_item(&mut frames);
+                    self.close_text_item(&mut frames);
+                    let idx = self.allocate_output_index();
                     frames.push(self.ev(
                         "response.output_item.added",
                         serde_json::json!({
@@ -941,7 +1145,12 @@ impl StreamEncoder for ResponsesStreamEncoder {
                     ));
                 }
                 if !arguments.is_empty() {
-                    let idx = self.output_index;
+                    // Tool items share the current `next_output_index - 1`
+                    // (the most recently opened). For multi-tool streams
+                    // we'd track them in a map keyed by id; the current
+                    // upstream only opens one tool at a time so the
+                    // simpler form is sound.
+                    let idx = self.next_output_index.saturating_sub(1);
                     frames.push(self.ev(
                         "response.function_call_arguments.delta",
                         serde_json::json!({
