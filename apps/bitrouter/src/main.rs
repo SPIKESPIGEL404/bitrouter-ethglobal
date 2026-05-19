@@ -37,7 +37,8 @@ enum Command {
     Serve {
         /// Path to `bitrouter.yaml`. When omitted, the binary resolves
         /// in this order: `./bitrouter.yaml` → `$BITROUTER_HOME/bitrouter.yaml`
-        /// → `~/.bitrouter/bitrouter.yaml` (auto-scaffolded on first run).
+        /// → `~/.bitrouter/bitrouter.yaml` → zero-config in-memory defaults
+        /// (`bitrouter init` is the explicit way to scaffold a file).
         #[arg(short, long)]
         config: Option<PathBuf>,
     },
@@ -68,7 +69,8 @@ enum Command {
     Restart {
         /// Path to `bitrouter.yaml`. When omitted, the binary resolves
         /// in this order: `./bitrouter.yaml` → `$BITROUTER_HOME/bitrouter.yaml`
-        /// → `~/.bitrouter/bitrouter.yaml` (auto-scaffolded on first run).
+        /// → `~/.bitrouter/bitrouter.yaml` → zero-config in-memory defaults
+        /// (`bitrouter init` is the explicit way to scaffold a file).
         #[arg(short, long)]
         config: Option<PathBuf>,
         /// Explicit control socket path. Overrides the config-derived path.
@@ -126,7 +128,8 @@ enum Command {
     Models {
         /// Path to `bitrouter.yaml`. When omitted, the binary resolves
         /// in this order: `./bitrouter.yaml` → `$BITROUTER_HOME/bitrouter.yaml`
-        /// → `~/.bitrouter/bitrouter.yaml` (auto-scaffolded on first run).
+        /// → `~/.bitrouter/bitrouter.yaml` → zero-config in-memory defaults
+        /// (`bitrouter init` is the explicit way to scaffold a file).
         #[arg(short, long)]
         config: Option<PathBuf>,
         /// Show only models declared by this provider.
@@ -185,7 +188,8 @@ enum Command {
         agent: String,
         /// Path to `bitrouter.yaml`. When omitted, the binary resolves
         /// in this order: `./bitrouter.yaml` → `$BITROUTER_HOME/bitrouter.yaml`
-        /// → `~/.bitrouter/bitrouter.yaml` (auto-scaffolded on first run).
+        /// → `~/.bitrouter/bitrouter.yaml` → zero-config in-memory defaults
+        /// (`bitrouter init` is the explicit way to scaffold a file).
         #[arg(short, long)]
         config: Option<PathBuf>,
     },
@@ -198,7 +202,8 @@ enum AgentsAction {
     List {
         /// Path to `bitrouter.yaml`. When omitted, the binary resolves
         /// in this order: `./bitrouter.yaml` → `$BITROUTER_HOME/bitrouter.yaml`
-        /// → `~/.bitrouter/bitrouter.yaml` (auto-scaffolded on first run).
+        /// → `~/.bitrouter/bitrouter.yaml` → zero-config in-memory defaults
+        /// (`bitrouter init` is the explicit way to scaffold a file).
         #[arg(short, long)]
         config: Option<PathBuf>,
     },
@@ -206,7 +211,8 @@ enum AgentsAction {
     Check {
         /// Path to `bitrouter.yaml`. When omitted, the binary resolves
         /// in this order: `./bitrouter.yaml` → `$BITROUTER_HOME/bitrouter.yaml`
-        /// → `~/.bitrouter/bitrouter.yaml` (auto-scaffolded on first run).
+        /// → `~/.bitrouter/bitrouter.yaml` → zero-config in-memory defaults
+        /// (`bitrouter init` is the explicit way to scaffold a file).
         #[arg(short, long)]
         config: Option<PathBuf>,
     },
@@ -224,7 +230,8 @@ enum ToolsAction {
     List {
         /// Path to `bitrouter.yaml`. When omitted, the binary resolves
         /// in this order: `./bitrouter.yaml` → `$BITROUTER_HOME/bitrouter.yaml`
-        /// → `~/.bitrouter/bitrouter.yaml` (auto-scaffolded on first run).
+        /// → `~/.bitrouter/bitrouter.yaml` → zero-config in-memory defaults
+        /// (`bitrouter init` is the explicit way to scaffold a file).
         #[arg(short, long)]
         config: Option<PathBuf>,
     },
@@ -232,7 +239,8 @@ enum ToolsAction {
     Status {
         /// Path to `bitrouter.yaml`. When omitted, the binary resolves
         /// in this order: `./bitrouter.yaml` → `$BITROUTER_HOME/bitrouter.yaml`
-        /// → `~/.bitrouter/bitrouter.yaml` (auto-scaffolded on first run).
+        /// → `~/.bitrouter/bitrouter.yaml` → zero-config in-memory defaults
+        /// (`bitrouter init` is the explicit way to scaffold a file).
         #[arg(short, long)]
         config: Option<PathBuf>,
     },
@@ -243,7 +251,8 @@ enum ToolsAction {
         server: String,
         /// Path to `bitrouter.yaml`. When omitted, the binary resolves
         /// in this order: `./bitrouter.yaml` → `$BITROUTER_HOME/bitrouter.yaml`
-        /// → `~/.bitrouter/bitrouter.yaml` (auto-scaffolded on first run).
+        /// → `~/.bitrouter/bitrouter.yaml` → zero-config in-memory defaults
+        /// (`bitrouter init` is the explicit way to scaffold a file).
         #[arg(short, long)]
         config: Option<PathBuf>,
     },
@@ -284,7 +293,8 @@ enum ProviderAction {
     List {
         /// Path to `bitrouter.yaml`. When omitted, the binary resolves
         /// in this order: `./bitrouter.yaml` → `$BITROUTER_HOME/bitrouter.yaml`
-        /// → `~/.bitrouter/bitrouter.yaml` (auto-scaffolded on first run).
+        /// → `~/.bitrouter/bitrouter.yaml` → zero-config in-memory defaults
+        /// (`bitrouter init` is the explicit way to scaffold a file).
         #[arg(short, long)]
         config: Option<PathBuf>,
     },
@@ -322,13 +332,13 @@ async fn run() -> Result<()> {
     let cli = Cli::parse();
     match cli.command {
         Command::Serve { config } => {
-            let config = bitrouter::paths::resolve_config(config.as_deref())?;
-            serve(&config).await
+            let source = bitrouter::paths::resolve_config(config.as_deref())?;
+            serve(&source).await
         }
         Command::Start { config, log } => {
-            let config_path = bitrouter::paths::resolve_config(config.as_deref())?;
-            let log_path = resolve_log_path(&config_path, log.as_deref());
-            start(&config_path, &log_path).await
+            let source = bitrouter::paths::resolve_config(config.as_deref())?;
+            let log_path = resolve_log_path(source.home(), log.as_deref());
+            start(&source, &log_path).await
         }
         Command::Stop { config, socket } => {
             let socket = resolve_client_socket(config.as_deref(), socket.as_deref()).await?;
@@ -339,10 +349,10 @@ async fn run() -> Result<()> {
             socket,
             log,
         } => {
-            let config_path = bitrouter::paths::resolve_config(config.as_deref())?;
-            let socket = resolve_client_socket_from(&config_path, socket.as_deref()).await?;
-            let log_path = resolve_log_path(&config_path, log.as_deref());
-            restart(&config_path, &socket, &log_path).await
+            let source = bitrouter::paths::resolve_config(config.as_deref())?;
+            let socket = resolve_client_socket_from(&source, socket.as_deref()).await?;
+            let log_path = resolve_log_path(source.home(), log.as_deref());
+            restart(&source, &socket, &log_path).await
         }
         Command::Reload { config, socket } => {
             let socket = resolve_client_socket(config.as_deref(), socket.as_deref()).await?;
@@ -357,15 +367,15 @@ async fn run() -> Result<()> {
             config,
             socket,
         } => {
-            let config_path = bitrouter::paths::resolve_config(config.as_deref())?;
-            let socket = resolve_client_socket_from(&config_path, socket.as_deref()).await?;
-            route(&model, &config_path, &socket).await
+            let source = bitrouter::paths::resolve_config(config.as_deref())?;
+            let socket = resolve_client_socket_from(&source, socket.as_deref()).await?;
+            route(&model, &source, &socket).await
         }
         Command::Init { config } => init(&config).await,
         Command::Key { action } => key(action).await,
         Command::Models { config, provider } => {
-            let config = bitrouter::paths::resolve_config(config.as_deref())?;
-            models(&config, provider.as_deref()).await
+            let source = bitrouter::paths::resolve_config(config.as_deref())?;
+            models(&source, provider.as_deref()).await
         }
         Command::Tools { action } => tools(action).await,
         Command::Policy { action } => policy(action).await,
@@ -411,8 +421,8 @@ async fn run() -> Result<()> {
         }
         Command::Agents { action } => agents_cmd(action).await,
         Command::AgentProxy { agent, config } => {
-            let config = bitrouter::paths::resolve_config(config.as_deref())?;
-            agent_proxy_cmd(&agent, &config).await
+            let source = bitrouter::paths::resolve_config(config.as_deref())?;
+            agent_proxy_cmd(&agent, &source).await
         }
     }
 }
@@ -435,12 +445,17 @@ async fn resolve_client_socket(config: Option<&Path>, socket: Option<&Path>) -> 
     if let Some(s) = socket {
         return Ok(s.to_path_buf());
     }
-    let config_path = bitrouter::paths::resolve_config(config)?;
-    let socket_str = match config::load(&config_path).await {
-        Ok(cfg) => cfg.server.control_socket,
-        Err(_) => daemon::DEFAULT_CONTROL_SOCKET.to_string(),
-    };
-    Ok(daemon::resolve_socket_path(&config_path, &socket_str))
+    let source = bitrouter::paths::resolve_config(config)?;
+    match &source {
+        bitrouter::paths::ConfigSource::File(path) => {
+            let socket_str = match config::load(path).await {
+                Ok(cfg) => cfg.server.control_socket,
+                Err(_) => daemon::DEFAULT_CONTROL_SOCKET.to_string(),
+            };
+            Ok(daemon::resolve_socket_path(path, &socket_str))
+        }
+        bitrouter::paths::ConfigSource::Default { home } => Ok(home.join("bitrouter.sock")),
+    }
 }
 
 /// Resolve the `bitrouter.log` path for `start` / `restart`. An
@@ -449,30 +464,35 @@ async fn resolve_client_socket(config: Option<&Path>, socket: Option<&Path>) -> 
 /// runtime artefacts — config, socket, pid file, log — all live in one
 /// directory. The legacy default of `./bitrouter.log` would land the
 /// log file in whichever CWD the launcher happened to be in.
-fn resolve_log_path(config_path: &Path, log: Option<&Path>) -> PathBuf {
+fn resolve_log_path(home: &Path, log: Option<&Path>) -> PathBuf {
     if let Some(l) = log {
         return l.to_path_buf();
     }
-    match config_path.parent().filter(|p| !p.as_os_str().is_empty()) {
-        Some(dir) => dir.join("bitrouter.log"),
-        None => PathBuf::from("bitrouter.log"),
-    }
+    home.join("bitrouter.log")
 }
 
 /// Variant of [`resolve_client_socket`] for subcommands (`restart`,
 /// `route`) that load the config for other reasons anyway, so a config
 /// failure is a real error worth surfacing.
-async fn resolve_client_socket_from(config_path: &Path, socket: Option<&Path>) -> Result<PathBuf> {
+async fn resolve_client_socket_from(
+    source: &bitrouter::paths::ConfigSource,
+    socket: Option<&Path>,
+) -> Result<PathBuf> {
     if let Some(s) = socket {
         return Ok(s.to_path_buf());
     }
-    let cfg = config::load(config_path)
-        .await
-        .with_context(|| format!("loading {}", config_path.display()))?;
-    Ok(daemon::resolve_socket_path(
-        config_path,
-        &cfg.server.control_socket,
-    ))
+    match source {
+        bitrouter::paths::ConfigSource::File(path) => {
+            let cfg = config::load(path)
+                .await
+                .with_context(|| format!("loading {}", path.display()))?;
+            Ok(daemon::resolve_socket_path(
+                path,
+                &cfg.server.control_socket,
+            ))
+        }
+        bitrouter::paths::ConfigSource::Default { home } => Ok(home.join("bitrouter.sock")),
+    }
 }
 
 /// Fan out a daemon `Reload` (and SIGHUP) to every reloadable subsystem the
@@ -504,28 +524,38 @@ impl daemon::DaemonReloader for AppReloader {
     }
 }
 
-async fn serve(config_path: &Path) -> Result<()> {
-    // Chdir to the bitrouter home directory (the config file's parent)
-    // so every relative path in the config — `database.url`,
+async fn serve(source: &bitrouter::paths::ConfigSource) -> Result<()> {
+    // Ensure the bitrouter home directory exists (zero-config first-run
+    // creates `~/.bitrouter` on demand) and chdir into it. Every
+    // relative path in the config — `database.url`,
     // `server.control_socket`, policy / agent / mcp file references —
-    // interprets relative to one stable location instead of whichever
-    // CWD the launcher happened to be in. The daemon's runtime
-    // artefacts (db, socket, pid, log) all land alongside the config.
-    // `paths::resolve_config` returned an absolute path, so this is
-    // safe even when the user passed `-c ./foo.yaml`.
-    if let Some(home) = config_path.parent().filter(|p| !p.as_os_str().is_empty()) {
-        std::env::set_current_dir(home)
-            .with_context(|| format!("chdir to bitrouter home {}", home.display()))?;
-    }
+    // then interprets relative to one stable location instead of
+    // whichever CWD the launcher happened to be in. The daemon's
+    // runtime artefacts (db, socket, pid, log) all land in the home.
+    let home = source.home();
+    bitrouter::paths::ensure_home_directory(home)?;
+    std::env::set_current_dir(home)
+        .with_context(|| format!("chdir to bitrouter home {}", home.display()))?;
 
-    let cfg = config::load(config_path)
-        .await
-        .with_context(|| format!("loading {}", config_path.display()))?;
+    let cfg = bitrouter::paths::load_config(source).await?;
+    announce_zero_config(source, &cfg);
     let listen = cfg.server.listen.clone();
-    let socket_path = daemon::resolve_socket_path(config_path, &cfg.server.control_socket);
+    // For a `File` source we resolve the socket against the config
+    // file's directory (preserves any user override). For `Default`
+    // the socket lives at `<home>/bitrouter.sock` directly.
+    let socket_path = match source {
+        bitrouter::paths::ConfigSource::File(path) => {
+            daemon::resolve_socket_path(path, &cfg.server.control_socket)
+        }
+        bitrouter::paths::ConfigSource::Default { home } => home.join("bitrouter.sock"),
+    };
     let pid_path = pid_path_for(&socket_path);
 
-    let assembled = bitrouter::build_app_with_path(&cfg, Some(config_path)).await?;
+    let config_path_for_reload = match source {
+        bitrouter::paths::ConfigSource::File(path) => Some(path.as_path()),
+        bitrouter::paths::ConfigSource::Default { .. } => None,
+    };
+    let assembled = bitrouter::build_app_with_path(&cfg, config_path_for_reload).await?;
     let app = Arc::new(assembled.app);
     let policy_store = assembled.policy_store;
     let reloader: Arc<dyn daemon::DaemonReloader> = Arc::new(AppReloader {
@@ -585,16 +615,24 @@ async fn serve(config_path: &Path) -> Result<()> {
     result
 }
 
-async fn start(config_path: &Path, log_path: &Path) -> Result<()> {
+async fn start(source: &bitrouter::paths::ConfigSource, log_path: &Path) -> Result<()> {
+    // Make sure the bitrouter home exists *before* we open the log
+    // file inside it. (Zero-config first-run lands here with the home
+    // not yet created on disk.)
+    bitrouter::paths::ensure_home_directory(source.home())?;
+
     // Refuse to start a second daemon on top of a live one — silent overlap
     // would race two `serve`s for the same socket and one would die into the
     // log file (the user wouldn't see it).
-    let cfg_socket_path = match config::load(config_path).await {
-        Ok(cfg) => Some(daemon::resolve_socket_path(
-            config_path,
-            &cfg.server.control_socket,
-        )),
-        Err(_) => None,
+    let cfg_socket_path: Option<PathBuf> = match source {
+        bitrouter::paths::ConfigSource::File(path) => match config::load(path).await {
+            Ok(cfg) => Some(daemon::resolve_socket_path(
+                path,
+                &cfg.server.control_socket,
+            )),
+            Err(_) => None,
+        },
+        bitrouter::paths::ConfigSource::Default { home } => Some(home.join("bitrouter.sock")),
     };
     if let Some(socket) = &cfg_socket_path {
         let pid_path = pid_path_for(socket);
@@ -628,10 +666,17 @@ async fn start(config_path: &Path, log_path: &Path) -> Result<()> {
     // tab would kill the daemon. Pattern from
     // https://doc.rust-lang.org/std/os/unix/process/trait.CommandExt.html#tymethod.process_group
     use std::os::unix::process::CommandExt;
-    let mut child = std::process::Command::new(&exe)
-        .arg("serve")
-        .arg("--config")
-        .arg(config_path)
+    let mut cmd = std::process::Command::new(&exe);
+    cmd.arg("serve");
+    // For a `File` source pass `--config <abs path>` so the child
+    // loads the same file even though it'll chdir to the home. For
+    // `Default` (zero-config) skip the flag — the child re-runs
+    // `resolve_config`, finds no file, and arrives at the same
+    // zero-config state.
+    if let bitrouter::paths::ConfigSource::File(path) = source {
+        cmd.arg("--config").arg(path);
+    }
+    let mut child = cmd
         .stdout(std::process::Stdio::from(log))
         .stderr(std::process::Stdio::from(log_err))
         .stdin(std::process::Stdio::null())
@@ -654,6 +699,34 @@ async fn start(config_path: &Path, log_path: &Path) -> Result<()> {
         log_path.display()
     );
     Ok(())
+}
+
+/// Tell the operator they're running zero-config — and exactly which
+/// providers auto-enabled from the environment, so the absence of a
+/// model later doesn't read as a bug. No-op for a `File` source.
+fn announce_zero_config(
+    source: &bitrouter::paths::ConfigSource,
+    cfg: &bitrouter_sdk::config::Config,
+) {
+    if !source.is_default() {
+        return;
+    }
+    let enabled: Vec<&str> = cfg.providers.keys().map(String::as_str).collect();
+    if enabled.is_empty() {
+        let hint: Vec<String> = bitrouter_providers::zero_config_env_var_providers()
+            .into_iter()
+            .map(|(_, env)| env.to_string())
+            .collect();
+        bitrouter::error_report::info(format_args!(
+            "zero-config mode — no provider env vars set (try {})",
+            hint.join(" / ")
+        ));
+    } else {
+        bitrouter::error_report::info(format_args!(
+            "zero-config mode — auto-enabled providers: {}",
+            enabled.join(", ")
+        ));
+    }
 }
 
 /// Read the daemon log from `offset` to end. Used to recover the
@@ -707,7 +780,11 @@ async fn stop(socket: &Path) -> Result<()> {
     }
 }
 
-async fn restart(config_path: &Path, socket: &Path, log_path: &Path) -> Result<()> {
+async fn restart(
+    source: &bitrouter::paths::ConfigSource,
+    socket: &Path,
+    log_path: &Path,
+) -> Result<()> {
     // Stop is best-effort — a missing daemon is fine, we just go straight to
     // start. Any other error from the running daemon is fatal.
     if socket.exists() {
@@ -733,7 +810,7 @@ async fn restart(config_path: &Path, socket: &Path, log_path: &Path) -> Result<(
             daemon::remove_pid_file(&pid_path).await;
         }
     }
-    start(config_path, log_path).await
+    start(source, log_path).await
 }
 
 /// Poll until the socket file is gone (the old daemon removes it on exit), up
@@ -839,7 +916,7 @@ fn print_status_row(p: &bitrouter::style::Palette, label: &str, value: &str) {
     );
 }
 
-async fn route(model: &str, config_path: &Path, socket: &Path) -> Result<()> {
+async fn route(model: &str, source: &bitrouter::paths::ConfigSource, socket: &Path) -> Result<()> {
     // Try the running daemon first — its routing table reflects any `reload`s.
     if socket.exists() {
         match daemon::send_command(
@@ -863,11 +940,14 @@ async fn route(model: &str, config_path: &Path, socket: &Path) -> Result<()> {
             }
         }
     }
-    let cfg = config::load(config_path)
-        .await
-        .with_context(|| format!("loading {}", config_path.display()))?;
+    let cfg = bitrouter::paths::load_config(source).await?;
     let chain = commands::resolve_route(&cfg, model).await?;
-    print_route_chain(model, &chain, "config");
+    let label = if source.is_default() {
+        "zero-config"
+    } else {
+        "config"
+    };
+    print_route_chain(model, &chain, label);
     Ok(())
 }
 
@@ -911,18 +991,16 @@ async fn key(action: KeyAction) -> Result<()> {
     }
 }
 
-async fn models(config_path: &Path, provider: Option<&str>) -> Result<()> {
-    let cfg = config::load(config_path)
-        .await
-        .with_context(|| format!("loading {}", config_path.display()))?;
+async fn models(source: &bitrouter::paths::ConfigSource, provider: Option<&str>) -> Result<()> {
+    let cfg = bitrouter::paths::load_config(source).await?;
     let models = commands::list_models(&cfg, provider).await?;
     if models.is_empty() {
-        match provider {
-            Some(p) => println!("(no routable models for provider '{p}')"),
-            None => println!(
-                "(no routable models — configure providers in {})",
-                config_path.display()
-            ),
+        match (provider, source.is_default()) {
+            (Some(p), _) => println!("(no routable models for provider '{p}')"),
+            (None, true) => {
+                println!("(no routable models — zero-config mode and no provider env vars are set)")
+            }
+            (None, false) => println!("(no routable models — configure providers in your config)"),
         }
     }
     for (id, providers) in models {
@@ -946,13 +1024,15 @@ async fn policy(action: PolicyAction) -> Result<()> {
 async fn providers(action: ProviderAction) -> Result<()> {
     match action {
         ProviderAction::List { config } => {
-            let config = bitrouter::paths::resolve_config(config.as_deref())?;
-            let cfg = config::load(&config)
-                .await
-                .with_context(|| format!("loading {}", config.display()))?;
+            let source = bitrouter::paths::resolve_config(config.as_deref())?;
+            let cfg = bitrouter::paths::load_config(&source).await?;
             let providers = commands::list_providers(&cfg);
             if providers.is_empty() {
-                println!("(no providers configured in {})", config.display());
+                if source.is_default() {
+                    println!("(no providers — zero-config mode and no provider env vars set)");
+                } else {
+                    println!("(no providers configured)");
+                }
                 return Ok(());
             }
             // header
@@ -983,14 +1063,13 @@ async fn tools(action: ToolsAction) -> Result<()> {
 
     match action {
         ToolsAction::List { config } => {
-            let config = bitrouter::paths::resolve_config(config.as_deref())?;
-            let cfg = config::load(&config)
-                .await
-                .with_context(|| format!("loading {}", config.display()))?;
+            let source = bitrouter::paths::resolve_config(config.as_deref())?;
+            let cfg = bitrouter::paths::load_config(&source).await?;
             if cfg.mcp_servers.is_empty() {
-                println!("(no MCP servers configured in {})", config.display());
-                println!("  add a `mcp_servers:` block — see the commented stub in the");
-                println!("  starter config written by `bitrouter init`.");
+                println!("(no MCP servers configured)");
+                println!("  add an `mcp_servers:` block to your bitrouter.yaml —");
+                println!("  see the commented stub in the starter config written by");
+                println!("  `bitrouter init`.");
                 return Ok(());
             }
             let rows = tools_cmd::list(&cfg).await;
@@ -1017,10 +1096,8 @@ async fn tools(action: ToolsAction) -> Result<()> {
             Ok(())
         }
         ToolsAction::Status { config } => {
-            let config = bitrouter::paths::resolve_config(config.as_deref())?;
-            let cfg = config::load(&config)
-                .await
-                .with_context(|| format!("loading {}", config.display()))?;
+            let source = bitrouter::paths::resolve_config(config.as_deref())?;
+            let cfg = bitrouter::paths::load_config(&source).await?;
             if cfg.mcp_servers.is_empty() {
                 println!("(no MCP servers configured)");
                 return Ok(());
@@ -1046,10 +1123,8 @@ async fn tools(action: ToolsAction) -> Result<()> {
             Ok(())
         }
         ToolsAction::Discover { server, config } => {
-            let config = bitrouter::paths::resolve_config(config.as_deref())?;
-            let cfg = config::load(&config)
-                .await
-                .with_context(|| format!("loading {}", config.display()))?;
+            let source = bitrouter::paths::resolve_config(config.as_deref())?;
+            let cfg = bitrouter::paths::load_config(&source).await?;
             match tools_cmd::discover(&cfg, &server).await {
                 Ok(yaml) => {
                     print!("{yaml}");
@@ -1061,10 +1136,8 @@ async fn tools(action: ToolsAction) -> Result<()> {
     }
 }
 
-async fn agent_proxy_cmd(agent: &str, config_path: &Path) -> Result<()> {
-    let cfg = config::load(config_path)
-        .await
-        .with_context(|| format!("loading {}", config_path.display()))?;
+async fn agent_proxy_cmd(agent: &str, source: &bitrouter::paths::ConfigSource) -> Result<()> {
+    let cfg = bitrouter::paths::load_config(source).await?;
     bitrouter::agent_proxy::run(cfg, agent).await
 }
 
@@ -1073,10 +1146,8 @@ async fn agents_cmd(action: AgentsAction) -> Result<()> {
 
     match action {
         AgentsAction::List { config } => {
-            let config = bitrouter::paths::resolve_config(config.as_deref())?;
-            let cfg = config::load(&config)
-                .await
-                .with_context(|| format!("loading {}", config.display()))?;
+            let source = bitrouter::paths::resolve_config(config.as_deref())?;
+            let cfg = bitrouter::paths::load_config(&source).await?;
             let rows = agents_cmd::list(&cfg);
             println!(
                 "{:<16} {:<12} {:<10} DESCRIPTION",
@@ -1094,10 +1165,8 @@ async fn agents_cmd(action: AgentsAction) -> Result<()> {
             Ok(())
         }
         AgentsAction::Check { config } => {
-            let config = bitrouter::paths::resolve_config(config.as_deref())?;
-            let cfg = config::load(&config)
-                .await
-                .with_context(|| format!("loading {}", config.display()))?;
+            let source = bitrouter::paths::resolve_config(config.as_deref())?;
+            let cfg = bitrouter::paths::load_config(&source).await?;
             if cfg.agents.is_empty() {
                 println!("(no agents configured)");
                 println!("  install one with: bitrouter agents install <id>");

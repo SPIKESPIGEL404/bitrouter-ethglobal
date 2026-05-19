@@ -9,11 +9,68 @@
 
 use std::env;
 
-use bitrouter_sdk::config::{Config, Pattern, PatternMap};
+use bitrouter_sdk::config::{Config, Pattern, PatternMap, ProviderConfig};
 use bitrouter_sdk::language_model::types::ApiProtocol;
 
 use crate::builtin;
 use crate::entry::ProtocolMapping;
+
+/// Build the in-memory **zero-config** [`Config`] used when the user
+/// runs `bitrouter serve` with no `bitrouter.yaml` anywhere on the
+/// resolution chain. Every env-var-based built-in provider whose
+/// credential is set in the environment lands in `config.providers` as
+/// an empty entry — [`apply_builtin_defaults`] then fills it from the
+/// catalog at assembly time. Providers without a credential are left
+/// out entirely so the routing table starts empty rather than
+/// populated with unusable entries.
+///
+/// Other zero-config defaults:
+/// - `server.listen = "127.0.0.1:4356"` — bind localhost only, since
+///   `skip_auth = true` would otherwise expose the gateway with no
+///   credential check.
+/// - `server.skip_auth = true` — local-first; flip in a written
+///   config for multi-tenant use.
+/// - `inherit_defaults = true` — built-in catalog fills empty fields.
+///
+/// `github-copilot` is intentionally *not* auto-enabled: it requires a
+/// prior `bitrouter login github-copilot` OAuth flow, which the user
+/// has to run explicitly.
+pub fn zero_config() -> Config {
+    let mut config = Config::default();
+    config.server.listen = "127.0.0.1:4356".to_string();
+    config.server.skip_auth = true;
+    config.inherit_defaults = true;
+    for entry in builtin::all() {
+        // Only consider env-var-credentialed built-ins. OAuth-only
+        // providers (github-copilot) need an explicit user action.
+        let Some(env_var) = entry.auth.env_var() else {
+            continue;
+        };
+        if env::var(env_var).map(|v| !v.is_empty()).unwrap_or(false) {
+            // `auto_discover: true` so the provider's `/models` endpoint
+            // populates the routable model list on startup — zero-config
+            // users haven't declared any models explicitly.
+            config.providers.insert(
+                entry.id.clone(),
+                ProviderConfig {
+                    auto_discover: true,
+                    ..ProviderConfig::default()
+                },
+            );
+        }
+    }
+    config
+}
+
+/// The set of env-var-credentialed built-in provider ids — the ones
+/// that participate in [`zero_config`]'s auto-enable check. Stable
+/// order so callers can render a human-readable hint.
+pub fn zero_config_env_var_providers() -> Vec<(&'static str, &'static str)> {
+    builtin::all()
+        .iter()
+        .filter_map(|e| e.auth.env_var().map(|v| (e.id.as_str(), v)))
+        .collect()
+}
 
 /// Fill every empty field on each `providers.<id>` entry whose id matches a
 /// built-in. No-op when `config.inherit_defaults` is `false`. No-op for
@@ -47,6 +104,17 @@ pub fn apply_builtin_defaults(config: &mut Config) {
         {
             provider.api_key = value;
         }
+        // Bearer / header auth without a key is unusable — mark the
+        // provider inactive so it falls out of the routing table
+        // instead of producing requests with an empty `Authorization`
+        // line that the upstream rejects. This is what powers the
+        // zero-config story: an absent env var doesn't break startup,
+        // it just narrows the routable surface to providers the user
+        // actually has credentials for. `github-copilot` uses OAuth
+        // (no `env_var`), so this guard doesn't touch it.
+        if provider.api_key.is_empty() && builtin.auth.env_var().is_some() {
+            provider.active = false;
+        }
     }
 }
 
@@ -77,25 +145,45 @@ mod tests {
     /// run env-var cases serially under a `Mutex` and always set/unset in a
     /// guarded block. The unsafety on `set_var`/`remove_var` is the std API's
     /// reminder that the env table is shared mutable state.
-    fn with_env<R>(key: &str, value: Option<&str>, f: impl FnOnce() -> R) -> R {
+    fn env_lock() -> std::sync::MutexGuard<'static, ()> {
         use std::sync::{Mutex, OnceLock};
         static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-        let _g = LOCK.get_or_init(|| Mutex::new(())).lock().unwrap();
-        let prev = env::var(key).ok();
+        LOCK.get_or_init(|| Mutex::new(())).lock().unwrap()
+    }
+
+    /// Run `f` with `key` set to `value` (or unset if `None`), restoring
+    /// the previous value on exit. Serialises with other env-touching
+    /// tests via [`env_lock`].
+    fn with_env<R>(key: &str, value: Option<&str>, f: impl FnOnce() -> R) -> R {
+        with_envs(&[(key, value)], f)
+    }
+
+    /// Multi-variable variant of [`with_env`]. Sets every pair, runs
+    /// `f`, restores every pair. One lock acquisition covers them all,
+    /// so callers can't deadlock by trying to nest env-tweak helpers.
+    fn with_envs<R>(pairs: &[(&str, Option<&str>)], f: impl FnOnce() -> R) -> R {
+        let _g = env_lock();
+        let prev: Vec<(String, Option<String>)> = pairs
+            .iter()
+            .map(|(k, _)| ((*k).to_string(), env::var(k).ok()))
+            .collect();
         // SAFETY: the test process owns its env; the mutex serialises access.
         unsafe {
-            if let Some(v) = value {
-                env::set_var(key, v);
-            } else {
-                env::remove_var(key);
+            for (k, v) in pairs {
+                match v {
+                    Some(val) => env::set_var(k, val),
+                    None => env::remove_var(k),
+                }
             }
         }
         let result = f();
-        // SAFETY: same as above; restore previous value.
+        // SAFETY: same as above; restore previous values.
         unsafe {
-            match prev {
-                Some(v) => env::set_var(key, v),
-                None => env::remove_var(key),
+            for (k, p) in &prev {
+                match p {
+                    Some(v) => env::set_var(k, v),
+                    None => env::remove_var(k),
+                }
             }
         }
         result
@@ -184,6 +272,77 @@ mod tests {
                 p.api_protocol.resolve("claude-opus-4-1"),
                 Some(&ApiProtocol::Anthropic)
             );
+        });
+    }
+
+    #[test]
+    fn marks_provider_inactive_when_env_key_missing() {
+        // The zero-config story relies on this: a built-in entry with
+        // no usable credential drops out of routing instead of
+        // generating broken upstream requests.
+        with_env("OPENAI_API_KEY", None, || {
+            let mut config = config_with("openai", ProviderConfig::default());
+            apply_builtin_defaults(&mut config);
+            assert!(!config.providers["openai"].active);
+        });
+    }
+
+    #[test]
+    fn keeps_provider_active_when_user_supplied_key() {
+        // A user who hard-codes `api_key` in YAML should stay active
+        // regardless of env state.
+        with_env("OPENAI_API_KEY", None, || {
+            let p = ProviderConfig {
+                api_key: "sk-hardcoded".to_string(),
+                ..ProviderConfig::default()
+            };
+            let mut config = config_with("openai", p);
+            apply_builtin_defaults(&mut config);
+            assert!(config.providers["openai"].active);
+        });
+    }
+
+    #[test]
+    fn zero_config_skips_providers_without_env_vars() {
+        // Clear every env-var-credentialed built-in; result must be a
+        // Config with no providers at all (still valid — just routes
+        // nothing).
+        let pairs: Vec<(&str, Option<&str>)> = zero_config_env_var_providers()
+            .into_iter()
+            .map(|(_, var)| (var, None))
+            .collect();
+        with_envs(&pairs, || {
+            let cfg = zero_config();
+            assert!(cfg.server.skip_auth);
+            assert!(cfg.inherit_defaults);
+            assert_eq!(cfg.server.listen, "127.0.0.1:4356");
+            assert!(
+                cfg.providers.is_empty(),
+                "expected no providers, got: {:?}",
+                cfg.providers.keys().collect::<Vec<_>>()
+            );
+        });
+    }
+
+    #[test]
+    fn zero_config_auto_enables_providers_with_env_vars() {
+        // Wipe everyone, then set OPENAI_API_KEY.
+        let mut pairs: Vec<(&str, Option<&str>)> = zero_config_env_var_providers()
+            .into_iter()
+            .map(|(_, var)| (var, None))
+            .collect();
+        pairs.push(("OPENAI_API_KEY", Some("sk-from-env")));
+        with_envs(&pairs, || {
+            let mut cfg = zero_config();
+            assert!(cfg.providers.contains_key("openai"));
+            assert!(!cfg.providers.contains_key("anthropic"));
+            // After `apply_builtin_defaults` the inserted entry has its
+            // catalog defaults filled in.
+            apply_builtin_defaults(&mut cfg);
+            let p = &cfg.providers["openai"];
+            assert_eq!(p.api_key, "sk-from-env");
+            assert_eq!(p.api_base, "https://api.openai.com/v1");
+            assert!(p.active);
         });
     }
 }

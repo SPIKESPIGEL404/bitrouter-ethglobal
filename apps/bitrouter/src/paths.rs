@@ -1,23 +1,29 @@
-//! Config file resolution for the OSS binary — v0-compatible.
+//! Config source resolution for the OSS binary.
 //!
 //! When a CLI subcommand doesn't pass `-c <path>` explicitly, the
 //! binary walks a fixed resolution order so it can be run from anywhere:
 //!
 //! 1. **Explicit `-c <path>`** — handed in by the caller. Used as-is. If
-//!    the file is missing, we surface a clear error (do **not** auto-
-//!    scaffold over an explicit user choice).
+//!    the file is missing, we surface a clear error (do **not** silently
+//!    fall through to zero-config — an explicit user choice deserves a
+//!    real failure).
 //! 2. **`./bitrouter.yaml`** in the current working directory.
 //! 3. **`$BITROUTER_HOME/bitrouter.yaml`** — if the env var is set and
 //!    points at a directory containing the file.
-//! 4. **`~/.bitrouter/bitrouter.yaml`** — auto-scaffolded with
-//!    [`crate::commands::STARTER_CONFIG`] the first time the binary
-//!    needs a config and finds none. Mirrors v0's behaviour at
-//!    `bitrouter/src/runtime/paths.rs::resolve_home`.
+//! 4. **`~/.bitrouter/bitrouter.yaml`** — used as-is if present.
+//! 5. **Zero-config in-memory defaults** — used when nothing on steps
+//!    2-4 exists, with `~/.bitrouter` as the implicit home for the
+//!    daemon's runtime artefacts (socket, pid, log, db). No file is
+//!    written; `bitrouter init` is the explicit way to scaffold a YAML.
 //!
-//! On Windows / non-Unix without `$HOME`, the last step degrades to a
-//! clear error pointing at `$BITROUTER_HOME`. Tests should always pass
-//! `-c <path>` explicitly so they never trigger the scaffold side
-//! effect.
+//! The two outcomes are surfaced as [`ConfigSource`] variants
+//! ([`ConfigSource::File`] / [`ConfigSource::Default`]) so each
+//! subcommand can decide whether to load from disk or build from
+//! [`bitrouter_providers::zero_config`].
+//!
+//! On Windows / non-Unix without `$HOME`, step 5 degrades to a clear
+//! error pointing at `$BITROUTER_HOME`. Tests should always pass
+//! `-c <path>` explicitly so they never depend on the live env.
 
 use std::path::{Path, PathBuf};
 
@@ -26,13 +32,55 @@ use anyhow::{Context, Result};
 /// The fixed config filename inside any home directory.
 const CONFIG_FILENAME: &str = "bitrouter.yaml";
 
-/// Resolve the config file path according to the documented order. Reads
-/// the live environment (`current_dir`, `$BITROUTER_HOME`, `$HOME`) and
-/// auto-scaffolds `~/.bitrouter/bitrouter.yaml` if step 4 fires.
+/// Where a config comes from. Returned by [`resolve_config`].
+///
+/// - [`ConfigSource::File`] — a real `bitrouter.yaml` exists. Load it
+///   via `config::load`.
+/// - [`ConfigSource::Default`] — no file found. Build an in-memory
+///   `Config` via [`bitrouter_providers::zero_config`]. The associated
+///   `home` is the directory where the daemon should place its
+///   runtime artefacts (socket / pid / log / db).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ConfigSource {
+    /// A `bitrouter.yaml` resolved from one of cwd / `$BITROUTER_HOME` /
+    /// `~/.bitrouter`. Path is absolute.
+    File(PathBuf),
+    /// No config file found; use zero-config defaults. The contained
+    /// path is the implicit bitrouter home (typically `~/.bitrouter`)
+    /// — created on demand by the daemon when it chdirs there.
+    Default {
+        /// The implicit home directory.
+        home: PathBuf,
+    },
+}
+
+impl ConfigSource {
+    /// The home directory associated with this source — for `File` it's
+    /// the config file's parent; for `Default` it's the implicit
+    /// `~/.bitrouter` home. The daemon chdirs here on startup so the
+    /// socket / pid / log / db all land in one place.
+    pub fn home(&self) -> &Path {
+        match self {
+            Self::File(path) => path.parent().unwrap_or(Path::new(".")),
+            Self::Default { home } => home,
+        }
+    }
+
+    /// True if no file was found and zero-config defaults will be used.
+    pub fn is_default(&self) -> bool {
+        matches!(self, Self::Default { .. })
+    }
+}
+
+/// Resolve the config source according to the documented order. Reads
+/// the live environment (`current_dir`, `$BITROUTER_HOME`, `$HOME`).
+/// Does **not** write anything to disk — the [`ConfigSource::Default`]
+/// branch is purely in-memory until a caller (typically `serve`) chdirs
+/// into the implicit home.
 ///
 /// For testable / dependency-injected resolution see
 /// [`resolve_config_with`].
-pub fn resolve_config(explicit: Option<&Path>) -> Result<PathBuf> {
+pub fn resolve_config(explicit: Option<&Path>) -> Result<ConfigSource> {
     let cwd = std::env::current_dir().ok();
     let bitrouter_home = std::env::var_os("BITROUTER_HOME").filter(|v| !v.is_empty());
     let home = std::env::var_os("HOME").filter(|v| !v.is_empty());
@@ -42,24 +90,17 @@ pub fn resolve_config(explicit: Option<&Path>) -> Result<PathBuf> {
         bitrouter_home.as_deref().map(Path::new),
         home.as_deref().map(Path::new),
     )?;
-    let path = match outcome {
-        Resolution::Existing(path) => path,
-        Resolution::ScaffoldDefault { home, config_file } => {
-            scaffold_default_home(&home, &config_file)
-                .with_context(|| format!("scaffolding default home at {}", home.display()))?;
-            crate::error_report::info(format_args!(
-                "no config found in cwd or $BITROUTER_HOME; scaffolded a starter config at {}",
-                config_file.display()
-            ));
-            config_file
-        }
-    };
-    // Always hand back an absolute path. Downstream code chdirs to the
-    // bitrouter home (the config file's parent) so the daemon doesn't
-    // depend on the launcher's CWD; a relative `-c ./foo.yaml` would
-    // get lost once the chdir happens. Absolutising here without
-    // following symlinks keeps the displayed path readable.
-    Ok(absolutize(path))
+    // Always hand back absolute paths. Downstream code chdirs to the
+    // bitrouter home so the daemon doesn't depend on the launcher's
+    // CWD; a relative `-c ./foo.yaml` would get lost once the chdir
+    // happens. Absolutising without following symlinks keeps the
+    // displayed path readable.
+    Ok(match outcome {
+        ConfigSource::File(path) => ConfigSource::File(absolutize(path)),
+        ConfigSource::Default { home } => ConfigSource::Default {
+            home: absolutize(home),
+        },
+    })
 }
 
 /// Make `path` absolute by joining it onto the current working
@@ -76,24 +117,6 @@ fn absolutize(path: PathBuf) -> PathBuf {
     }
 }
 
-/// What `resolve_config_with` decided. Split out from the side-effectful
-/// outer entry so tests can drive the pure resolution logic with
-/// controlled inputs and assert on the outcome — including the "would
-/// scaffold here" case — without ever touching `$HOME`.
-#[derive(Debug, PartialEq, Eq)]
-pub enum Resolution {
-    /// A config file that already exists. Use it as-is.
-    Existing(PathBuf),
-    /// Step 4 fired — caller should write `STARTER_CONFIG` to
-    /// `config_file` (creating `home` first).
-    ScaffoldDefault {
-        /// The `~/.bitrouter` directory.
-        home: PathBuf,
-        /// The `~/.bitrouter/bitrouter.yaml` path to write.
-        config_file: PathBuf,
-    },
-}
-
 /// Pure resolution logic. Takes the cwd / env-var values that the live
 /// version reads from the process, returns the resolution decision
 /// without performing any side effects.
@@ -102,7 +125,7 @@ pub fn resolve_config_with(
     cwd: Option<&Path>,
     bitrouter_home_env: Option<&Path>,
     home_env: Option<&Path>,
-) -> Result<Resolution> {
+) -> Result<ConfigSource> {
     // 1. explicit -c path — use as-is, surface a clear error if missing.
     if let Some(path) = explicit {
         let p = path.to_path_buf();
@@ -110,60 +133,77 @@ pub fn resolve_config_with(
             anyhow::bail!(
                 "config file '{}' does not exist (passed via -c). \
                  Drop the flag to fall back to the resolution order \
-                 (cwd → $BITROUTER_HOME → ~/.bitrouter).",
+                 (cwd → $BITROUTER_HOME → ~/.bitrouter → zero-config).",
                 p.display()
             );
         }
-        return Ok(Resolution::Existing(p));
+        return Ok(ConfigSource::File(p));
     }
 
     // 2. cwd / bitrouter.yaml
     if let Some(cwd) = cwd {
         let candidate = cwd.join(CONFIG_FILENAME);
         if candidate.is_file() {
-            return Ok(Resolution::Existing(candidate));
+            return Ok(ConfigSource::File(candidate));
         }
     }
 
     // 3. $BITROUTER_HOME / bitrouter.yaml. If the env var is set, that
     // directory must contain the file — fail loudly otherwise rather
-    // than silently falling through to the scaffold path. An operator
-    // who set BITROUTER_HOME intended that directory to win.
+    // than silently falling through to zero-config. An operator who
+    // set BITROUTER_HOME intended that directory to win.
     if let Some(env_home) = bitrouter_home_env {
         let candidate = env_home.join(CONFIG_FILENAME);
         if candidate.is_file() {
-            return Ok(Resolution::Existing(candidate));
+            return Ok(ConfigSource::File(candidate));
         }
         anyhow::bail!(
             "BITROUTER_HOME is set to '{}' but '{}' is missing there. \
-             Either drop the env var or create the file.",
+             Either drop the env var or create the file (e.g. \
+             `bitrouter init -c $BITROUTER_HOME/{}`).",
             env_home.display(),
-            CONFIG_FILENAME
+            CONFIG_FILENAME,
+            CONFIG_FILENAME,
         );
     }
 
-    // 4. ~/.bitrouter / bitrouter.yaml — scaffold the home + config on
-    // first run. The actual fs write is done by the caller so this
-    // function stays pure.
+    // 4. ~/.bitrouter / bitrouter.yaml — used as-is if present.
+    // 5. Otherwise zero-config in-memory defaults with `~/.bitrouter`
+    //    as the implicit home (created on demand by the daemon).
     let home = home_env.context(
         "could not determine home directory (no $HOME set); set $BITROUTER_HOME or pass -c <path>",
     )?;
     let home = home.join(".bitrouter");
     let candidate = home.join(CONFIG_FILENAME);
     if candidate.is_file() {
-        return Ok(Resolution::Existing(candidate));
+        return Ok(ConfigSource::File(candidate));
     }
-    Ok(Resolution::ScaffoldDefault {
-        home,
-        config_file: candidate,
-    })
+    Ok(ConfigSource::Default { home })
 }
 
-/// Create the default home directory and write the starter config.
-/// Tightens the home dir to `0o700` on Unix because the operator may
-/// drop secrets in `<home>/.env` later. Idempotent: a partial home
-/// (directory exists but config is missing) is filled in.
-fn scaffold_default_home(home: &Path, config_file: &Path) -> Result<()> {
+/// Load a [`bitrouter_sdk::config::Config`] from a [`ConfigSource`].
+/// `ConfigSource::File` reads from disk via the SDK's loader;
+/// `ConfigSource::Default` builds the zero-config in-memory default
+/// from [`bitrouter_providers::zero_config`].
+///
+/// This is the one place `serve` / `start` / `models` / `route` etc.
+/// reach for a `Config` — every call site goes through here so the
+/// zero-config story is wired in uniformly.
+pub async fn load_config(source: &ConfigSource) -> Result<bitrouter_sdk::config::Config> {
+    match source {
+        ConfigSource::File(path) => bitrouter_sdk::config::load(path)
+            .await
+            .with_context(|| format!("loading {}", path.display())),
+        ConfigSource::Default { .. } => Ok(bitrouter_providers::zero_config()),
+    }
+}
+
+/// Ensure the bitrouter home directory exists, creating it with `0o700`
+/// permissions on Unix (the operator may drop secrets like `<home>/.env`
+/// inside later). Idempotent. Called by the daemon on entry when
+/// running zero-config so the runtime artefacts have a stable place to
+/// live, and by `bitrouter init` before writing the starter file.
+pub fn ensure_home_directory(home: &Path) -> Result<()> {
     std::fs::create_dir_all(home).with_context(|| format!("creating {}", home.display()))?;
     #[cfg(unix)]
     {
@@ -174,8 +214,6 @@ fn scaffold_default_home(home: &Path, config_file: &Path) -> Result<()> {
             let _ = std::fs::set_permissions(home, perms);
         }
     }
-    std::fs::write(config_file, crate::commands::STARTER_CONFIG)
-        .with_context(|| format!("writing {}", config_file.display()))?;
     Ok(())
 }
 
@@ -201,7 +239,7 @@ mod tests {
         let path = dir.join("bitrouter.yaml");
         std::fs::write(&path, "server: {listen: '127.0.0.1:0'}").unwrap();
         let resolved = resolve_config_with(Some(&path), None, None, None).unwrap();
-        assert_eq!(resolved, Resolution::Existing(path));
+        assert_eq!(resolved, ConfigSource::File(path));
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -219,13 +257,11 @@ mod tests {
         let cwd = unique_tmp("cwd-hit");
         let path = cwd.join("bitrouter.yaml");
         std::fs::write(&path, "server: {listen: '127.0.0.1:0'}").unwrap();
-        // Even with both env values set, the cwd hit wins because step 2
-        // runs before step 3.
         let env_home = unique_tmp("env-distractor");
         let home_env = unique_tmp("home-distractor");
         let resolved =
             resolve_config_with(None, Some(&cwd), Some(&env_home), Some(&home_env)).unwrap();
-        assert_eq!(resolved, Resolution::Existing(path));
+        assert_eq!(resolved, ConfigSource::File(path));
         let _ = std::fs::remove_dir_all(&cwd);
         let _ = std::fs::remove_dir_all(&env_home);
         let _ = std::fs::remove_dir_all(&home_env);
@@ -238,7 +274,7 @@ mod tests {
         std::fs::write(&path, "server: {listen: '127.0.0.1:0'}").unwrap();
         let cwd = unique_tmp("env-parking");
         let resolved = resolve_config_with(None, Some(&cwd), Some(&env_home), None).unwrap();
-        assert_eq!(resolved, Resolution::Existing(path));
+        assert_eq!(resolved, ConfigSource::File(path));
         let _ = std::fs::remove_dir_all(&env_home);
         let _ = std::fs::remove_dir_all(&cwd);
     }
@@ -258,34 +294,47 @@ mod tests {
     }
 
     #[test]
-    fn falls_back_to_dot_bitrouter_scaffold_when_nothing_else_matches() {
+    fn falls_back_to_zero_config_when_nothing_else_matches() {
         let home_root = unique_tmp("home-fallback");
-        // No cwd, no env — and the ~/.bitrouter/bitrouter.yaml file
-        // doesn't exist yet, so resolution decides to scaffold.
+        // No cwd, no env, and ~/.bitrouter/bitrouter.yaml doesn't exist.
+        // Resolution decides on zero-config defaults with the implicit
+        // home pointing at ~/.bitrouter.
         let resolved = resolve_config_with(None, None, None, Some(&home_root)).unwrap();
         match resolved {
-            Resolution::ScaffoldDefault { home, config_file } => {
+            ConfigSource::Default { home } => {
                 assert_eq!(home, home_root.join(".bitrouter"));
-                assert_eq!(
-                    config_file,
-                    home_root.join(".bitrouter").join("bitrouter.yaml")
-                );
             }
-            other => panic!("expected ScaffoldDefault, got {other:?}"),
+            other => panic!("expected ConfigSource::Default, got {other:?}"),
         }
         let _ = std::fs::remove_dir_all(&home_root);
     }
 
     #[test]
-    fn dot_bitrouter_existing_config_is_used_without_scaffolding() {
+    fn dot_bitrouter_existing_config_is_used_directly() {
         let home_root = unique_tmp("home-existing");
         let dot = home_root.join(".bitrouter");
         std::fs::create_dir_all(&dot).unwrap();
         let path = dot.join("bitrouter.yaml");
         std::fs::write(&path, "server: {listen: '127.0.0.1:0'}").unwrap();
         let resolved = resolve_config_with(None, None, None, Some(&home_root)).unwrap();
-        assert_eq!(resolved, Resolution::Existing(path));
+        assert_eq!(resolved, ConfigSource::File(path));
         let _ = std::fs::remove_dir_all(&home_root);
+    }
+
+    #[test]
+    fn config_source_default_reports_its_home() {
+        let source = ConfigSource::Default {
+            home: PathBuf::from("/tmp/x"),
+        };
+        assert_eq!(source.home(), Path::new("/tmp/x"));
+        assert!(source.is_default());
+    }
+
+    #[test]
+    fn config_source_file_reports_parent_as_home() {
+        let source = ConfigSource::File(PathBuf::from("/tmp/x/bitrouter.yaml"));
+        assert_eq!(source.home(), Path::new("/tmp/x"));
+        assert!(!source.is_default());
     }
 
     #[test]
