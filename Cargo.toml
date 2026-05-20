@@ -1,22 +1,107 @@
 [workspace]
 resolver = "3"
-members = ["bitrouter", "bitrouter-*"]
+members = ["crates/*", "plugins/*", "apps/*"]
 
 [workspace.package]
-version = "0.33.0"
+version = "1.0.0-alpha.1"
+edition = "2024"
+license = "Apache-2.0"
+authors = ["Archer <archer@bitrouter.ai>"]
+repository = "https://github.com/bitrouter/bitrouter"
+# MSRV — the oldest toolchain the dependency tree actually compiles on.
+# Floor set by `aws-sdk-sts` (needs 1.88) pulled in via bitrouter-bedrock;
+# `process-wrap` needs 1.87. The `msrv` CI job pins this exact version.
+rust-version = "1.88"
 
 [workspace.dependencies]
-bitrouter-accounts = { path = "bitrouter-accounts", version = "0.33", default-features = false }
-bitrouter-api = { path = "bitrouter-api", version = "0.33", default-features = false }
-bitrouter-blob = { path = "bitrouter-blob", version = "0.33" }
-bitrouter-config = { path = "bitrouter-config", version = "0.33" }
-bitrouter-core = { path = "bitrouter-core", version = "0.33" }
-bitrouter-guardrails = { path = "bitrouter-guardrails", version = "0.33" }
-bitrouter-observe = { path = "bitrouter-observe", version = "0.33", default-features = false }
-bitrouter-providers = { path = "bitrouter-providers", version = "0.33" }
-bitrouter-tui = { path = "bitrouter-tui", version = "0.33" }
+# internal crates
+bitrouter-sdk = { path = "crates/bitrouter-sdk", version = "1.0.0-alpha.1", default-features = false }
+bitrouter-bedrock = { path = "crates/bitrouter-bedrock", version = "1.0.0-alpha.1" }
+bitrouter-providers = { path = "crates/bitrouter-providers", version = "1.0.0-alpha.1" }
+bitrouter-guardrails = { path = "plugins/bitrouter-guardrails", version = "1.0.0-alpha.1" }
+bitrouter-observe = { path = "plugins/bitrouter-observe", version = "1.0.0-alpha.1", default-features = false }
 
-# The profile that 'dist' will build with
+# shared third-party
+async-trait = "0.1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+futures = "0.3"
+futures-core = "0.3"
+tokio = { version = "1", default-features = false }
+tokio-stream = "0.1"
+tokio-util = "0.7"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+http = "1"
+bytes = "1"
+pin-project-lite = "0.2"
+async-stream = "0.3"
+
+# http server (sdk `server` feature)
+axum = { version = "0.8", features = ["json"] }
+tower = "0.5"
+tower-http = { version = "0.6", features = ["trace"] }
+
+# http client
+reqwest = { version = "0.12", default-features = false, features = [
+    "json",
+    "stream",
+    "rustls-tls",
+] }
+eventsource-stream = "0.2"
+url = "2"
+
+# config (sdk `config_file` feature)
+serde-saphyr = "0.0.26"
+toml = "0.8"
+
+# MCP (sdk `mcp` feature) — official Rust MCP SDK.
+# Source: <https://github.com/modelcontextprotocol/rust-sdk>
+rmcp = { version = "1.7", default-features = false, features = [
+    "client",
+    "reqwest",
+    "transport-streamable-http-client-reqwest",
+    "transport-child-process",
+] }
+
+# ACP (sdk `acp` feature): v1 implements ACP as a pure JSON-RPC router over
+# newline-delimited stdio per the spec — the official Rust SDK
+# (<https://github.com/agentclientprotocol/rust-sdk>) is shaped around
+# typed `connect_with(|cx| …)` session callbacks that don't fit a
+# request-response `Executor` trait, so we don't pull it in. The spec is the
+# source of truth: <https://agentclientprotocol.com/protocol/schema> +
+# <https://agentclientprotocol.com/protocol/transports>.
+
+# database (used by apps/bitrouter's auth + metering modules)
+sqlx = { version = "0.8", default-features = false, features = [
+    "runtime-tokio",
+    "macros",
+    "chrono",
+] }
+
+# crypto / encoding
+sha2 = "0.10"
+base64 = "0.22"
+rand = "0.9"
+hex = "0.4"
+chrono = { version = "0.4", default-features = false, features = [
+    "std",
+    "clock",
+    "serde",
+] }
+uuid = { version = "1", features = ["v4", "serde"] }
+regex = "1"
+
+# cli / tui
+clap = { version = "4", features = ["derive"] }
+ratatui = "0.29"
+crossterm = "0.28"
+
+[profile.release]
+lto = "thin"
+
+# The profile that `dist` builds release artifacts under (see dist-workspace.toml).
 [profile.dist]
 inherits = "release"
 lto = "thin"

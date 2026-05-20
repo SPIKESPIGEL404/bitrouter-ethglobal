@@ -11,14 +11,12 @@ pr_labels = ["release"]           # add the `release` label to the release Pull 
 name = "bitrouter"
 changelog_path = "CHANGELOG.md" # Single changelog at the repository root
 changelog_update = true
-changelog_include = [           # Include commits from all sub-crates in the bitrouter changelog
-    "bitrouter-core",
-    "bitrouter-providers",
-    "bitrouter-config",
-    "bitrouter-api",
+changelog_include = [           # Include commits from the SDK and built-in plugins in the bitrouter changelog
+    "bitrouter-sdk",
     "bitrouter-guardrails",
+    "bitrouter-observe",
 ]
-git_tag_name = "v{{ version }}"     # Customize the git tag name (e.g. v0.1.5 instead of bitrouter-v0.1.5)
+git_tag_name = "v{{ version }}"     # Customize the git tag name (e.g. v1.0.0 instead of bitrouter-v1.0.0)
 git_release_name = "v{{ version }}" # Match the tag name for the GitHub release title
 git_tag_enable = true                # Enable git tags for this package
 git_release_enable = true            # Enable git releases for this package

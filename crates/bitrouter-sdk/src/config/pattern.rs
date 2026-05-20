@@ -1,0 +1,164 @@
+//! Glob-prefix pattern matching for the registry-style provider schema.
+//!
+//! A provider's `api_protocol` / `rate_limits` are lists of `(pattern, value)`
+//! where `pattern` is a **glob-prefix** — `*`, `prefix*`, or an exact literal
+//!. Glob-prefix (not full regex) is chosen deliberately: "longest
+//! literal prefix wins" gives a clean, total specificity ordering, which full
+//! regex does not.
+//!
+//! Precedence for a model name: exact literal > longest `prefix*` > `*`.
+
+use serde::Deserialize;
+
+/// A single glob-prefix pattern.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Pattern {
+    /// `*` — matches anything; lowest specificity.
+    Wildcard,
+    /// `prefix*` — matches names starting with `prefix`; specificity = prefix length.
+    Prefix(String),
+    /// An exact literal — highest specificity.
+    Exact(String),
+}
+
+impl Pattern {
+    /// Parse a pattern string.
+    pub fn parse(s: &str) -> Self {
+        if s == "*" {
+            Pattern::Wildcard
+        } else if let Some(prefix) = s.strip_suffix('*') {
+            Pattern::Prefix(prefix.to_string())
+        } else {
+            Pattern::Exact(s.to_string())
+        }
+    }
+
+    /// Whether this pattern matches `name`.
+    pub fn matches(&self, name: &str) -> bool {
+        match self {
+            Pattern::Wildcard => true,
+            Pattern::Prefix(p) => name.starts_with(p.as_str()),
+            Pattern::Exact(e) => e == name,
+        }
+    }
+
+    /// Specificity score — higher wins. Exact beats any prefix; a longer prefix
+    /// beats a shorter one; `*` is lowest.
+    pub fn specificity(&self) -> usize {
+        match self {
+            Pattern::Wildcard => 0,
+            // +1 so a zero-length prefix (`""*`, i.e. `*` written oddly) still
+            // outranks Wildcard but stays below any real prefix.
+            Pattern::Prefix(p) => p.len() + 1,
+            Pattern::Exact(_) => usize::MAX,
+        }
+    }
+}
+
+/// An ordered list of `(pattern, value)` entries. Resolution picks the
+/// most-specific matching pattern.
+#[derive(Debug, Clone, Default)]
+pub struct PatternMap<T> {
+    entries: Vec<(Pattern, T)>,
+}
+
+impl<T> PatternMap<T> {
+    /// An empty map.
+    pub fn new() -> Self {
+        Self {
+            entries: Vec::new(),
+        }
+    }
+
+    /// Append a `(pattern, value)` entry.
+    pub fn push(&mut self, pattern: Pattern, value: T) {
+        self.entries.push((pattern, value));
+    }
+
+    /// Resolve `name` to the value of its most-specific matching pattern.
+    pub fn resolve(&self, name: &str) -> Option<&T> {
+        self.entries
+            .iter()
+            .filter(|(p, _)| p.matches(name))
+            .max_by_key(|(p, _)| p.specificity())
+            .map(|(_, v)| v)
+    }
+
+    /// The most-specific matching pattern for `name` (used as the rate-limit
+    /// bucket key — limits are keyed per `(provider, matched pattern)`).
+    pub fn matched_pattern(&self, name: &str) -> Option<&Pattern> {
+        self.entries
+            .iter()
+            .filter(|(p, _)| p.matches(name))
+            .max_by_key(|(p, _)| p.specificity())
+            .map(|(p, _)| p)
+    }
+
+    /// Whether the map has no entries.
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+}
+
+/// YAML shape for a pattern list: `[ { "pattern": value }, ... ]`. Each map in
+/// the list has exactly one key (the pattern) — order is preserved.
+impl<'de, T> Deserialize<'de> for PatternMap<T>
+where
+    T: Deserialize<'de>,
+{
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let raw: Vec<std::collections::BTreeMap<String, T>> = Vec::deserialize(deserializer)?;
+        let mut map = PatternMap::new();
+        for entry in raw {
+            for (pattern, value) in entry {
+                map.push(Pattern::parse(&pattern), value);
+            }
+        }
+        Ok(map)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_classifies_patterns() {
+        assert_eq!(Pattern::parse("*"), Pattern::Wildcard);
+        assert_eq!(Pattern::parse("gpt-5*"), Pattern::Prefix("gpt-5".into()));
+        assert_eq!(
+            Pattern::parse("claude-sonnet-4-6"),
+            Pattern::Exact("claude-sonnet-4-6".into())
+        );
+    }
+
+    #[test]
+    fn resolve_picks_most_specific() {
+        let mut map: PatternMap<&str> = PatternMap::new();
+        map.push(Pattern::Wildcard, "default");
+        map.push(Pattern::parse("gpt-*"), "gpt");
+        map.push(Pattern::parse("gpt-5*"), "gpt5");
+        map.push(Pattern::parse("gpt-5-turbo"), "exact");
+
+        assert_eq!(map.resolve("gpt-5-turbo"), Some(&"exact"));
+        assert_eq!(map.resolve("gpt-5-mini"), Some(&"gpt5"));
+        assert_eq!(map.resolve("gpt-4o"), Some(&"gpt"));
+        assert_eq!(map.resolve("claude-x"), Some(&"default"));
+    }
+
+    #[test]
+    fn matched_pattern_is_the_bucket_key() {
+        let mut map: PatternMap<u32> = PatternMap::new();
+        map.push(Pattern::Wildcard, 60);
+        map.push(Pattern::parse("gpt-5*"), 10);
+        // distinct buckets: `gpt-5*` models key on the prefix pattern, others on `*`
+        assert_eq!(
+            map.matched_pattern("gpt-5-mini"),
+            Some(&Pattern::Prefix("gpt-5".into()))
+        );
+        assert_eq!(map.matched_pattern("claude"), Some(&Pattern::Wildcard));
+    }
+}
