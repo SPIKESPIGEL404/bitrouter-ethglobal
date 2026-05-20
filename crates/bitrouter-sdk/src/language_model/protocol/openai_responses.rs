@@ -330,6 +330,8 @@ impl InboundAdapter for OpenAiResponsesAdapter {
             next_output_index: 0,
             reasoning_item: None,
             text_item: None,
+            tool_item: None,
+            completed_items: Vec::new(),
         })
     }
 }
@@ -835,11 +837,18 @@ struct ResponsesStreamEncoder {
     /// first `ToolCallDelta` (new function-call item starts) or on
     /// `Finish` / `ResponseCompleted`.
     text_item: Option<ItemState>,
+    /// State of the in-flight function-call item, if any. Closes on the
+    /// next item of any kind, or on the terminal part.
+    tool_item: Option<ToolItemState>,
+    /// Every closed output item, as its final JSON, in emission order.
+    /// Replayed into `response.completed.response.output` so the
+    /// terminal envelope mirrors the non-streaming Responses object —
+    /// Codex CLI reconstructs the assistant turn from this array, so an
+    /// empty `output` renders as a blank turn (the symptom this fixes).
+    completed_items: Vec<serde_json::Value>,
 }
 
-/// Tracking state for one open item — message or reasoning. Tool
-/// items use a separate map keyed by call id (see the `ToolCallDelta`
-/// arm) because there can be several open in parallel.
+/// Tracking state for one open message / reasoning item.
 struct ItemState {
     item_id: String,
     output_index: u64,
@@ -847,6 +856,17 @@ struct ItemState {
     /// final envelope carries the full body, matching the
     /// non-streaming Responses object.
     accumulated_text: String,
+}
+
+/// Tracking state for one open function-call item.
+struct ToolItemState {
+    /// The upstream tool-call id (`call_id`).
+    call_id: String,
+    item_id: String,
+    output_index: u64,
+    tool_name: String,
+    /// Accumulated argument JSON fragments.
+    accumulated_args: String,
 }
 
 impl ResponsesStreamEncoder {
@@ -873,8 +893,16 @@ impl ResponsesStreamEncoder {
                 "status": "in_progress",
                 "output": [],
             });
+            // The OpenAI Responses stream opens with `response.created`
+            // *then* `response.in_progress`. Codex CLI's state machine
+            // waits for `in_progress` before it starts consuming output
+            // items — emit both.
             frames.push(self.ev(
                 "response.created",
+                serde_json::json!({ "response": response.clone() }),
+            ));
+            frames.push(self.ev(
+                "response.in_progress",
                 serde_json::json!({ "response": response }),
             ));
         }
@@ -889,11 +917,14 @@ impl ResponsesStreamEncoder {
     }
 
     /// Open a reasoning item: `output_item.added` (type=reasoning) +
-    /// `content_part.added` (type=reasoning_text). Idempotent.
+    /// `content_part.added` (type=reasoning_text). Idempotent — closes
+    /// any open message / tool item first so items never interleave.
     fn open_reasoning_item(&mut self, frames: &mut Vec<SseFrame>) {
         if self.reasoning_item.is_some() {
             return;
         }
+        self.close_text_item(frames);
+        self.close_tool_item(frames);
         let output_index = self.allocate_output_index();
         let item_id = format!("rs_{}", uuid::Uuid::new_v4());
         frames.push(self.ev(
@@ -950,27 +981,32 @@ impl ResponsesStreamEncoder {
                 "part": { "type": "reasoning_text", "text": final_text },
             }),
         ));
+        let item = serde_json::json!({
+            "type": "reasoning",
+            "id": state.item_id,
+            "summary": [],
+            "content": [{ "type": "reasoning_text", "text": final_text }],
+            "status": "completed",
+        });
         frames.push(self.ev(
             "response.output_item.done",
             serde_json::json!({
                 "output_index": state.output_index,
-                "item": {
-                    "type": "reasoning",
-                    "id": state.item_id,
-                    "summary": [],
-                    "content": [{ "type": "reasoning_text", "text": final_text }],
-                    "status": "completed",
-                },
+                "item": item.clone(),
             }),
         ));
+        self.completed_items.push(item);
     }
 
     /// Open a message item: `output_item.added` (type=message) +
-    /// `content_part.added` (type=output_text). Idempotent.
+    /// `content_part.added` (type=output_text). Idempotent — closes any
+    /// open reasoning / tool item first so items never interleave.
     fn open_text_item(&mut self, frames: &mut Vec<SseFrame>) {
         if self.text_item.is_some() {
             return;
         }
+        self.close_reasoning_item(frames);
+        self.close_tool_item(frames);
         let output_index = self.allocate_output_index();
         let item_id = format!("msg_{}", uuid::Uuid::new_v4());
         frames.push(self.ev(
@@ -1027,25 +1063,94 @@ impl ResponsesStreamEncoder {
                 "part": { "type": "output_text", "text": final_text },
             }),
         ));
+        let item = serde_json::json!({
+            "type": "message",
+            "id": state.item_id,
+            "role": "assistant",
+            "content": [{ "type": "output_text", "text": final_text }],
+            "status": "completed",
+        });
         frames.push(self.ev(
             "response.output_item.done",
             serde_json::json!({
                 "output_index": state.output_index,
+                "item": item.clone(),
+            }),
+        ));
+        self.completed_items.push(item);
+    }
+
+    /// Open a function-call item: `output_item.added` (type=function_call).
+    /// Closes any other open item first. Idempotent for the same call.
+    fn open_tool_item(&mut self, frames: &mut Vec<SseFrame>, call_id: &str, name: &str) {
+        self.close_reasoning_item(frames);
+        self.close_text_item(frames);
+        self.close_tool_item(frames);
+        let output_index = self.allocate_output_index();
+        let item_id = format!("fc_{}", uuid::Uuid::new_v4());
+        frames.push(self.ev(
+            "response.output_item.added",
+            serde_json::json!({
+                "output_index": output_index,
                 "item": {
-                    "type": "message",
-                    "id": state.item_id,
-                    "role": "assistant",
-                    "content": [{ "type": "output_text", "text": final_text }],
-                    "status": "completed",
+                    "type": "function_call",
+                    "id": item_id,
+                    "call_id": call_id,
+                    "name": name,
+                    "arguments": "",
+                    "status": "in_progress",
                 },
             }),
         ));
+        self.tool_item = Some(ToolItemState {
+            call_id: call_id.to_string(),
+            item_id,
+            output_index,
+            tool_name: name.to_string(),
+            accumulated_args: String::new(),
+        });
+    }
+
+    /// Close the open function-call item, if any:
+    /// `function_call_arguments.done` + `output_item.done`.
+    fn close_tool_item(&mut self, frames: &mut Vec<SseFrame>) {
+        let Some(state) = self.tool_item.take() else {
+            return;
+        };
+        let final_args = state.accumulated_args;
+        frames.push(self.ev(
+            "response.function_call_arguments.done",
+            serde_json::json!({
+                "item_id": state.item_id,
+                "output_index": state.output_index,
+                "arguments": final_args,
+            }),
+        ));
+        let item = serde_json::json!({
+            "type": "function_call",
+            "id": state.item_id,
+            "call_id": state.call_id,
+            "name": state.tool_name,
+            "arguments": final_args,
+            "status": "completed",
+        });
+        frames.push(self.ev(
+            "response.output_item.done",
+            serde_json::json!({
+                "output_index": state.output_index,
+                "item": item.clone(),
+            }),
+        ));
+        self.completed_items.push(item);
     }
 
     /// Emit the terminal lifecycle frame — `response.completed` (or
     /// `response.incomplete`), carrying the full `response` object (#454-2).
     /// Shared by the `Finish` and `ResponseCompleted` encode arms.
-    /// Closes any still-open reasoning / message items first.
+    /// Closes any still-open reasoning / message / tool items first, and
+    /// replays every closed item into `response.output` so the terminal
+    /// envelope mirrors the non-streaming Responses object — Codex CLI
+    /// reconstructs the assistant turn from this array.
     fn emit_terminal(
         &mut self,
         frames: &mut Vec<SseFrame>,
@@ -1055,6 +1160,7 @@ impl ResponsesStreamEncoder {
     ) {
         self.close_reasoning_item(frames);
         self.close_text_item(frames);
+        self.close_tool_item(frames);
         let event_name = if status == "incomplete" {
             "response.incomplete"
         } else {
@@ -1065,6 +1171,7 @@ impl ResponsesStreamEncoder {
             "object": "response",
             "model": self.model,
             "status": status,
+            "output": std::mem::take(&mut self.completed_items),
         });
         if let Some(u) = usage {
             // #454-5: numeric, never null; absent stays absent.
@@ -1085,8 +1192,8 @@ impl StreamEncoder for ResponsesStreamEncoder {
         self.ensure_created(&mut frames);
         match part {
             StreamPart::TextDelta { text } => {
-                // Close reasoning first — items don't interleave.
-                self.close_reasoning_item(&mut frames);
+                // `open_text_item` closes any open reasoning / tool item
+                // first — items never interleave their deltas.
                 self.open_text_item(&mut frames);
                 let state = self.text_item.as_mut().expect("text item just opened");
                 state.accumulated_text.push_str(text);
@@ -1124,38 +1231,29 @@ impl StreamEncoder for ResponsesStreamEncoder {
                 name,
                 arguments,
             } => {
+                // A delta carrying a `name` starts a new function-call
+                // item. `open_tool_item` closes any previously-open item
+                // (reasoning / message / prior tool) first, so each tool
+                // call lands in its own output slot.
                 if let Some(name) = name {
-                    // Close any open reasoning / message items before
-                    // opening a function-call item — tool calls live in
-                    // their own output slot per the spec.
-                    self.close_reasoning_item(&mut frames);
-                    self.close_text_item(&mut frames);
-                    let idx = self.allocate_output_index();
-                    frames.push(self.ev(
-                        "response.output_item.added",
-                        serde_json::json!({
-                            "output_index": idx,
-                            "item": {
-                                "type": "function_call",
-                                "id": id,
-                                "call_id": id,
-                                "name": name,
-                            },
-                        }),
-                    ));
+                    self.open_tool_item(&mut frames, id, name);
                 }
                 if !arguments.is_empty() {
-                    // Tool items share the current `next_output_index - 1`
-                    // (the most recently opened). For multi-tool streams
-                    // we'd track them in a map keyed by id; the current
-                    // upstream only opens one tool at a time so the
-                    // simpler form is sound.
-                    let idx = self.next_output_index.saturating_sub(1);
+                    // Append to the in-flight tool item. If a stray
+                    // arguments delta arrives with no opened item (the
+                    // upstream omitted the name), open one with an empty
+                    // name rather than dropping the delta.
+                    if self.tool_item.is_none() {
+                        self.open_tool_item(&mut frames, id, "");
+                    }
+                    let state = self.tool_item.as_mut().expect("tool item just opened");
+                    state.accumulated_args.push_str(arguments);
+                    let (item_id, output_index) = (state.item_id.clone(), state.output_index);
                     frames.push(self.ev(
                         "response.function_call_arguments.delta",
                         serde_json::json!({
-                            "output_index": idx,
-                            "item_id": id,
+                            "item_id": item_id,
+                            "output_index": output_index,
                             "delta": arguments,
                         }),
                     ));

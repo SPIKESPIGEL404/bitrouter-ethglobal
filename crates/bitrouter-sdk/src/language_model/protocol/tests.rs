@@ -1105,6 +1105,140 @@ fn regression_454_2_responses_stream_envelope() {
     );
 }
 
+/// Codex-hang regression: the Responses stream must emit
+/// `response.in_progress` after `response.created`, and the terminal
+/// `response.completed` must carry the full `output` array (every
+/// closed reasoning / message / tool item). Codex CLI reconstructs the
+/// assistant turn from `response.completed.response.output` — an empty
+/// array renders as a blank turn even though the deltas streamed fine.
+#[test]
+fn responses_stream_completed_carries_output_array() {
+    let adapter = adapter_for(ApiProtocol::Responses);
+    let mut encoder = adapter.stream_encoder("resp_h", "gpt-5");
+    let mut frames = Vec::new();
+    frames.extend(
+        encoder
+            .encode(&StreamPart::ReasoningDelta {
+                text: "think".to_string(),
+            })
+            .unwrap(),
+    );
+    frames.extend(
+        encoder
+            .encode(&StreamPart::TextDelta {
+                text: "answer".to_string(),
+            })
+            .unwrap(),
+    );
+    frames.extend(
+        encoder
+            .encode(&StreamPart::Finish {
+                reason: FinishReason::Stop,
+            })
+            .unwrap(),
+    );
+
+    let event_names: Vec<&str> = frames
+        .iter()
+        .filter_map(|f| match f {
+            SseFrame::Event { event, .. } => event.as_deref(),
+            _ => None,
+        })
+        .collect();
+    // created → in_progress preamble.
+    assert_eq!(event_names.first(), Some(&"response.created"));
+    assert_eq!(event_names.get(1), Some(&"response.in_progress"));
+    // reasoning + message items each fully bracketed.
+    assert!(event_names.contains(&"response.output_item.added"));
+    assert!(event_names.contains(&"response.content_part.added"));
+    assert!(event_names.contains(&"response.reasoning_text.delta"));
+    assert!(event_names.contains(&"response.output_text.delta"));
+    assert!(event_names.contains(&"response.output_item.done"));
+
+    // response.completed carries both items in `output`.
+    let completed = frames
+        .iter()
+        .find_map(|f| match f {
+            SseFrame::Event { event, data } if event.as_deref() == Some("response.completed") => {
+                Some(serde_json::from_str::<serde_json::Value>(data).unwrap())
+            }
+            _ => None,
+        })
+        .expect("response.completed present");
+    let output = completed["response"]["output"]
+        .as_array()
+        .expect("output is an array");
+    assert_eq!(output.len(), 2, "reasoning + message items: {output:?}");
+    assert_eq!(output[0]["type"], "reasoning");
+    assert_eq!(output[1]["type"], "message");
+    assert_eq!(output[1]["content"][0]["text"], "answer");
+}
+
+/// Codex tool-use regression: a `ToolCallDelta` stream produces a fully
+/// bracketed `function_call` item — `output_item.added` →
+/// `function_call_arguments.delta` → `function_call_arguments.done` →
+/// `output_item.done` — and the item lands in `response.completed`'s
+/// `output` array with its accumulated arguments.
+#[test]
+fn responses_stream_tool_call_lifecycle() {
+    let adapter = adapter_for(ApiProtocol::Responses);
+    let mut encoder = adapter.stream_encoder("resp_t", "gpt-5");
+    let mut frames = Vec::new();
+    frames.extend(
+        encoder
+            .encode(&StreamPart::ToolCallDelta {
+                id: "call_1".to_string(),
+                name: Some("shell".to_string()),
+                arguments: "{\"cmd\":".to_string(),
+            })
+            .unwrap(),
+    );
+    frames.extend(
+        encoder
+            .encode(&StreamPart::ToolCallDelta {
+                id: "call_1".to_string(),
+                name: None,
+                arguments: "\"ls\"}".to_string(),
+            })
+            .unwrap(),
+    );
+    frames.extend(
+        encoder
+            .encode(&StreamPart::Finish {
+                reason: FinishReason::ToolCalls,
+            })
+            .unwrap(),
+    );
+
+    let event_names: Vec<&str> = frames
+        .iter()
+        .filter_map(|f| match f {
+            SseFrame::Event { event, .. } => event.as_deref(),
+            _ => None,
+        })
+        .collect();
+    assert!(event_names.contains(&"response.function_call_arguments.delta"));
+    assert!(event_names.contains(&"response.function_call_arguments.done"));
+
+    let completed = frames
+        .iter()
+        .find_map(|f| match f {
+            SseFrame::Event { event, data } if event.as_deref() == Some("response.completed") => {
+                Some(serde_json::from_str::<serde_json::Value>(data).unwrap())
+            }
+            _ => None,
+        })
+        .expect("response.completed present");
+    let output = completed["response"]["output"]
+        .as_array()
+        .expect("output is an array");
+    assert_eq!(output.len(), 1, "one function_call item: {output:?}");
+    assert_eq!(output[0]["type"], "function_call");
+    assert_eq!(output[0]["call_id"], "call_1");
+    assert_eq!(output[0]["name"], "shell");
+    assert_eq!(output[0]["arguments"], "{\"cmd\":\"ls\"}");
+}
+
 ///.3 — `response.completed` decodes to the dedicated `ResponseCompleted`
 /// part, preserving the response id + status + usage that a bare `Finish` would
 /// have lost; and that part re-encodes to a `response.completed` event carrying
