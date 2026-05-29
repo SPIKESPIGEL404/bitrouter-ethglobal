@@ -1194,6 +1194,128 @@ fn openai_responses_stream_error_maps_to_proper_http_status() {
 }
 
 #[test]
+fn streaming_decoders_emit_response_started_once() {
+    // The 3 streaming protocols whose canonical IR previously dropped the
+    // upstream response id now surface it as a one-shot `ResponseStarted`,
+    // so observability can stamp `gen_ai.response.id` on the trace. OpenAI
+    // Responses is unaffected (it carries the id on `ResponseCompleted`).
+
+    // OpenAI Chat: top-level `id` repeats on every chunk → emit once.
+    let adapter = adapter_for(ApiProtocol::Openai);
+    let mut dec = adapter.stream_decoder();
+    let first = dec
+        .decode(&SseEvent {
+            event: None,
+            data: serde_json::json!({
+                "id": "chatcmpl-stream1",
+                "object": "chat.completion.chunk",
+                "choices": [{"index": 0, "delta": {"role": "assistant", "content": "hi"}, "finish_reason": null}],
+            })
+            .to_string(),
+        })
+        .unwrap();
+    assert!(
+        first
+            .iter()
+            .any(|p| matches!(p, StreamPart::ResponseStarted { id } if id == "chatcmpl-stream1")),
+        "OpenAI Chat first chunk emits ResponseStarted; got {first:?}"
+    );
+    let second = dec
+        .decode(&SseEvent {
+            event: None,
+            data: serde_json::json!({
+                "id": "chatcmpl-stream1",
+                "choices": [{"index": 0, "delta": {"content": " there"}, "finish_reason": null}],
+            })
+            .to_string(),
+        })
+        .unwrap();
+    assert!(
+        !second
+            .iter()
+            .any(|p| matches!(p, StreamPart::ResponseStarted { .. })),
+        "ResponseStarted is emitted only once per stream; got {second:?}"
+    );
+
+    // Anthropic: `message_start` carries `message.id` (fires once).
+    let adapter = adapter_for(ApiProtocol::Anthropic);
+    let mut dec = adapter.stream_decoder();
+    let parts = dec
+        .decode(&SseEvent {
+            event: Some("message_start".to_string()),
+            data: serde_json::json!({
+                "type": "message_start",
+                "message": {"id": "msg_stream1", "usage": {"input_tokens": 3, "output_tokens": 0}}
+            })
+            .to_string(),
+        })
+        .unwrap();
+    assert!(
+        parts
+            .iter()
+            .any(|p| matches!(p, StreamPart::ResponseStarted { id } if id == "msg_stream1")),
+        "Anthropic message_start emits ResponseStarted; got {parts:?}"
+    );
+
+    // Google: top-level `responseId` repeats on every chunk → emit once.
+    let adapter = adapter_for(ApiProtocol::Google);
+    let mut dec = adapter.stream_decoder();
+    let parts = dec
+        .decode(&SseEvent {
+            event: None,
+            data: serde_json::json!({
+                "responseId": "google-stream1",
+                "candidates": [{"content": {"role": "model", "parts": [{"text": "hi"}]}}]
+            })
+            .to_string(),
+        })
+        .unwrap();
+    assert!(
+        parts
+            .iter()
+            .any(|p| matches!(p, StreamPart::ResponseStarted { id } if id == "google-stream1")),
+        "Google first chunk emits ResponseStarted; got {parts:?}"
+    );
+}
+
+#[test]
+fn chat_encoder_role_survives_leading_response_started() {
+    // Regression: a leading `ResponseStarted` (now emitted first by the
+    // OpenAI Chat / Google decoders) must NOT consume the one-shot
+    // `role: assistant` marker. The role has to ride the first real
+    // content chunk; otherwise an OpenAI-Chat client never sees it.
+    let adapter = adapter_for(ApiProtocol::Openai);
+    let mut enc = adapter.stream_encoder("chatcmpl-x", "gpt-5");
+
+    // ResponseStarted arrives first — must emit no frames.
+    let started = enc
+        .encode(&StreamPart::ResponseStarted {
+            id: "chatcmpl-upstream".to_string(),
+        })
+        .unwrap();
+    assert!(
+        started.is_empty(),
+        "ResponseStarted must not emit a client frame; got {started:?}"
+    );
+
+    // The first content chunk must still carry `role: assistant`.
+    let frames = enc
+        .encode(&StreamPart::TextDelta {
+            text: "hi".to_string(),
+        })
+        .unwrap();
+    let SseFrame::Event { data, .. } = frames.first().expect("a content frame") else {
+        panic!("expected an SSE event frame");
+    };
+    let chunk: serde_json::Value = serde_json::from_str(data).unwrap();
+    assert_eq!(
+        chunk["choices"][0]["delta"]["role"], "assistant",
+        "role must ride the first content chunk even after a leading ResponseStarted; got {chunk}"
+    );
+    assert_eq!(chunk["choices"][0]["delta"]["content"], "hi");
+}
+
+#[test]
 fn openai_responses_omits_usage_when_none() {
     // v0 #6ae55b2 — when upstream reported no token counts, the wire shape
     // omits the `usage` key entirely. Mirrors the streaming `emit_terminal`.

@@ -760,6 +760,9 @@ struct ChatStreamDecoder {
     /// `ToolCallDelta.id` is stable across chunks.
     tool_ids: Vec<(String, String)>,
     done: bool,
+    /// Whether the one-shot [`StreamPart::ResponseStarted`] has been emitted.
+    /// Every chunk repeats the top-level `id`; we surface it only once.
+    response_started_emitted: bool,
 }
 
 impl StreamDecoder for ChatStreamDecoder {
@@ -779,6 +782,20 @@ impl StreamDecoder for ChatStreamDecoder {
         };
 
         let mut parts = Vec::new();
+        // Surface the upstream response id once, before any deltas. Every
+        // chunk repeats the top-level `id` (`chatcmpl-...`); we emit it a
+        // single time for observability. Not in the OpenAI Chat object's
+        // delta — purely the envelope id.
+        // <https://platform.openai.com/docs/api-reference/chat/streaming>
+        if !self.response_started_emitted
+            && let Some(id) = chunk
+                .get("id")
+                .and_then(|v| v.as_str())
+                .filter(|s| !s.is_empty())
+        {
+            self.response_started_emitted = true;
+            parts.push(StreamPart::ResponseStarted { id: id.to_string() });
+        }
         if let Some(choice) = chunk
             .get("choices")
             .and_then(|c| c.as_array())
@@ -888,21 +905,32 @@ impl ChatStreamEncoder {
     }
 }
 
-impl StreamEncoder for ChatStreamEncoder {
-    fn encode(&mut self, part: &StreamPart) -> Result<Vec<SseFrame>> {
-        let mut frames = Vec::new();
-        // The first chunk carries the role; subsequent chunks omit it.
+impl ChatStreamEncoder {
+    /// Build a fresh `delta` map, injecting the one-shot `role: assistant`
+    /// marker on the first call. Only the arms that actually emit a chunk
+    /// call this, so a no-op part (`Usage` / `ResponseStarted`) never
+    /// consumes the role marker — it must ride the first real content chunk.
+    fn open_delta(&mut self) -> serde_json::Map<String, serde_json::Value> {
         let mut delta = serde_json::Map::new();
         if !self.role_sent {
             delta.insert("role".into(), "assistant".into());
             self.role_sent = true;
         }
+        delta
+    }
+}
+
+impl StreamEncoder for ChatStreamEncoder {
+    fn encode(&mut self, part: &StreamPart) -> Result<Vec<SseFrame>> {
+        let mut frames = Vec::new();
         match part {
             StreamPart::TextDelta { text } => {
+                let mut delta = self.open_delta();
                 delta.insert("content".into(), text.clone().into());
                 frames.push(self.chunk(serde_json::Value::Object(delta), None));
             }
             StreamPart::ReasoningDelta { text } => {
+                let mut delta = self.open_delta();
                 delta.insert("reasoning_content".into(), text.clone().into());
                 frames.push(self.chunk(serde_json::Value::Object(delta), None));
             }
@@ -917,6 +945,7 @@ impl StreamEncoder for ChatStreamEncoder {
                     function.insert("name".into(), name.clone().into());
                 }
                 function.insert("arguments".into(), arguments.clone().into());
+                let mut delta = self.open_delta();
                 delta.insert(
                     "tool_calls".into(),
                     serde_json::json!([{
@@ -931,7 +960,14 @@ impl StreamEncoder for ChatStreamEncoder {
             StreamPart::Usage { .. } => {
                 // usage is attached to the Finish chunk below; nothing here.
             }
+            StreamPart::ResponseStarted { .. } => {
+                // Observability-only metadata (upstream response id); not
+                // forwarded to the client. Crucially this arm does NOT call
+                // `open_delta`, so the role marker still rides the first real
+                // content chunk even when `ResponseStarted` arrives first.
+            }
             StreamPart::Finish { reason } => {
+                let delta = self.open_delta();
                 let reason_str = finish_reason_str(reason);
                 frames.push(self.chunk(serde_json::Value::Object(delta), Some(&reason_str)));
             }
@@ -943,6 +979,7 @@ impl StreamEncoder for ChatStreamEncoder {
                 } else {
                     FinishReason::Stop
                 };
+                let delta = self.open_delta();
                 let reason_str = finish_reason_str(&reason);
                 frames.push(self.chunk(serde_json::Value::Object(delta), Some(&reason_str)));
             }
