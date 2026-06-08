@@ -206,6 +206,79 @@ fn content_text(value: &serde_json::Value) -> String {
     }
 }
 
+/// Parse an OpenAI `content` value (string, or array of content parts) into
+/// ordered canonical content. Text + media parts are preserved in order; other
+/// part shapes are skipped.
+fn parse_chat_content(value: &serde_json::Value) -> Vec<Content> {
+    match value {
+        serde_json::Value::String(s) if !s.is_empty() => vec![Content::Text { text: s.clone() }],
+        serde_json::Value::Array(parts) => parts.iter().filter_map(parse_chat_part).collect(),
+        _ => Vec::new(),
+    }
+}
+
+/// Parse one OpenAI content part into canonical content.
+fn parse_chat_part(part: &serde_json::Value) -> Option<Content> {
+    match part.get("type").and_then(|t| t.as_str())? {
+        "text" => {
+            let text = part.get("text").and_then(|t| t.as_str())?.to_string();
+            (!text.is_empty()).then_some(Content::Text { text })
+        }
+        // <https://platform.openai.com/docs/guides/vision>
+        "image_url" => {
+            let url = part
+                .get("image_url")
+                .and_then(|i| i.get("url"))
+                .and_then(|u| u.as_str())?;
+            let (media_type, data) = DataContent::from_url(url);
+            Some(Content::File {
+                media_type: media_type.unwrap_or_else(|| "image/*".to_string()),
+                data,
+                filename: None,
+                extra: Default::default(),
+            })
+        }
+        // <https://platform.openai.com/docs/guides/audio>
+        "input_audio" => {
+            let audio = part.get("input_audio")?;
+            let format = audio
+                .get("format")
+                .and_then(|f| f.as_str())
+                .unwrap_or("mp3");
+            let data = if let Some(d) = audio.get("data").and_then(|d| d.as_str()) {
+                DataContent::Base64 {
+                    data: d.to_string(),
+                }
+            } else {
+                DataContent::Url {
+                    url: audio.get("url").and_then(|u| u.as_str())?.to_string(),
+                }
+            };
+            Some(Content::File {
+                media_type: format!("audio/{format}"),
+                data,
+                filename: None,
+                extra: Default::default(),
+            })
+        }
+        "file" => {
+            let file = part.get("file")?;
+            let file_data = file.get("file_data").and_then(|d| d.as_str())?;
+            let (media_type, data) = DataContent::from_url(file_data);
+            Some(Content::File {
+                media_type: media_type.unwrap_or_else(|| "application/octet-stream".to_string()),
+                data,
+                filename: file
+                    .get("filename")
+                    .and_then(|f| f.as_str())
+                    .map(str::to_string),
+                extra: Default::default(),
+            })
+        }
+        _ => None,
+    }
+}
+
 impl InboundAdapter for ChatCompletionsAdapter {
     fn protocol(&self) -> ApiProtocol {
         ApiProtocol::ChatCompletions
@@ -246,11 +319,8 @@ impl InboundAdapter for ChatCompletionsAdapter {
                     content: result,
                 });
             } else {
-                if let Some(text) = &m.content {
-                    let text = content_text(text);
-                    if !text.is_empty() {
-                        content.push(Content::Text { text });
-                    }
+                if let Some(value) = &m.content {
+                    content.extend(parse_chat_content(value));
                 }
                 for tc in m.tool_calls {
                     content.push(Content::ToolCall {

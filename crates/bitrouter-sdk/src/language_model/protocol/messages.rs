@@ -199,6 +199,50 @@ fn parse_content(value: &serde_json::Value) -> Result<Vec<Content>> {
                             .map(tool_result_text)
                             .unwrap_or_default(),
                     }),
+                    // image/* and documents (PDF, …) -> a canonical File part.
+                    // <https://docs.anthropic.com/en/docs/build-with-claude/vision>
+                    "image" | "document" => {
+                        let source = block.get("source");
+                        let media_type = source
+                            .and_then(|s| s.get("media_type"))
+                            .and_then(|m| m.as_str())
+                            .map(str::to_string)
+                            .unwrap_or_else(|| {
+                                // A `url` source carries no media type; derive a
+                                // prefix from the block kind so modality detection
+                                // still works.
+                                if block_type == "image" {
+                                    "image/".to_string()
+                                } else {
+                                    "application/".to_string()
+                                }
+                            });
+                        let data = if source.and_then(|s| s.get("type")).and_then(|t| t.as_str())
+                            == Some("url")
+                        {
+                            DataContent::Url {
+                                url: source
+                                    .and_then(|s| s.get("url"))
+                                    .and_then(|u| u.as_str())
+                                    .unwrap_or_default()
+                                    .to_string(),
+                            }
+                        } else {
+                            DataContent::Base64 {
+                                data: source
+                                    .and_then(|s| s.get("data"))
+                                    .and_then(|d| d.as_str())
+                                    .unwrap_or_default()
+                                    .to_string(),
+                            }
+                        };
+                        out.push(Content::File {
+                            media_type,
+                            data,
+                            filename: None,
+                            extra: Default::default(),
+                        });
+                    }
                     // Unknown block types are skipped, not fatal — forward
                     // compatibility (an explicit decision, not a catch-all bug).
                     other => {

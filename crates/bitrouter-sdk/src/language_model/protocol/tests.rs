@@ -2733,3 +2733,232 @@ fn extra_passthrough_field_is_not_in_schema() {
         "ResponsesRequest schema must not expose `extra` (pass-through field)",
     );
 }
+
+// ===== multimodal (file) content =====
+
+const IMG_B64: &str = "iVBORw0KGgoAAAANSUhEUg==";
+
+/// A canonical prompt whose single user message is one image file part.
+fn image_file_prompt() -> Prompt {
+    Prompt {
+        model: "test-model".to_string(),
+        system: None,
+        messages: vec![Message {
+            role: Role::User,
+            content: vec![Content::File {
+                media_type: "image/png".to_string(),
+                data: DataContent::Base64 {
+                    data: IMG_B64.to_string(),
+                },
+                filename: None,
+                extra: Default::default(),
+            }],
+        }],
+        tools: vec![],
+        params: GenerationParams {
+            max_tokens: Some(256),
+            ..Default::default()
+        },
+        response_format: None,
+        stream: false,
+    }
+}
+
+/// The first file part `(media_type, data)` in a parsed prompt.
+fn first_file(prompt: &Prompt) -> (&str, &DataContent) {
+    prompt
+        .messages
+        .iter()
+        .flat_map(|m| &m.content)
+        .find_map(|c| match c {
+            Content::File {
+                media_type, data, ..
+            } => Some((media_type.as_str(), data)),
+            _ => None,
+        })
+        .expect("prompt should carry a file part")
+}
+
+#[test]
+fn image_parses_to_file_in_every_protocol() {
+    let base64 = DataContent::Base64 {
+        data: IMG_B64.to_string(),
+    };
+    let cases = [
+        (
+            ApiProtocol::ChatCompletions,
+            serde_json::json!({
+                "model": "m",
+                "messages": [{ "role": "user", "content": [
+                    { "type": "image_url", "image_url": { "url": format!("data:image/png;base64,{IMG_B64}") } }
+                ]}]
+            }),
+        ),
+        (
+            ApiProtocol::Messages,
+            serde_json::json!({
+                "model": "m", "max_tokens": 16,
+                "messages": [{ "role": "user", "content": [
+                    { "type": "image", "source": { "type": "base64", "media_type": "image/png", "data": IMG_B64 } }
+                ]}]
+            }),
+        ),
+        (
+            ApiProtocol::Responses,
+            serde_json::json!({
+                "model": "m",
+                "input": [{ "type": "message", "role": "user", "content": [
+                    { "type": "input_image", "image_url": format!("data:image/png;base64,{IMG_B64}") }
+                ]}]
+            }),
+        ),
+        (
+            ApiProtocol::GenerateContent,
+            serde_json::json!({
+                "contents": [{ "role": "user", "parts": [
+                    { "inlineData": { "mimeType": "image/png", "data": IMG_B64 } }
+                ]}]
+            }),
+        ),
+    ];
+    for (protocol, body) in cases {
+        let prompt = adapter_for(protocol.clone())
+            .parse_request(body)
+            .unwrap_or_else(|e| panic!("{protocol:?} parse failed: {e:?}"));
+        let (media_type, data) = first_file(&prompt);
+        assert_eq!(media_type, "image/png", "{protocol:?} media type");
+        assert_eq!(data, &base64, "{protocol:?} image data");
+        assert!(
+            prompt
+                .required_capabilities()
+                .contains(&Capability::ImageInput),
+            "{protocol:?} must require image_input"
+        );
+    }
+}
+
+#[test]
+fn image_file_survives_cross_protocol_round_trip() {
+    // The 4x4 guarantee: a canonical image renders to each protocol's native
+    // shape and parses back to the same canonical file part.
+    let base64 = DataContent::Base64 {
+        data: IMG_B64.to_string(),
+    };
+    for protocol in all_protocols() {
+        let adapter = adapter_for(protocol.clone());
+        let rendered = adapter.render_request(&image_file_prompt()).unwrap();
+        let reparsed = adapter.parse_request(rendered).unwrap_or_else(|e| {
+            panic!("{protocol:?} could not re-parse its rendered image: {e:?}")
+        });
+        let (media_type, data) = first_file(&reparsed);
+        assert_eq!(media_type, "image/png", "{protocol:?} lost media type");
+        assert_eq!(data, &base64, "{protocol:?} lost image data");
+    }
+}
+
+#[test]
+fn image_file_renders_to_chat_image_url() {
+    let req = adapter_for(ApiProtocol::ChatCompletions)
+        .render_request(&image_file_prompt())
+        .unwrap();
+    let part = &req["messages"][0]["content"][0];
+    assert_eq!(part["type"], "image_url");
+    assert_eq!(
+        part["image_url"]["url"],
+        format!("data:image/png;base64,{IMG_B64}")
+    );
+}
+
+#[test]
+fn image_file_renders_to_messages_image_block() {
+    let req = adapter_for(ApiProtocol::Messages)
+        .render_request(&image_file_prompt())
+        .unwrap();
+    let block = &req["messages"][0]["content"][0];
+    assert_eq!(block["type"], "image");
+    assert_eq!(block["source"]["type"], "base64");
+    assert_eq!(block["source"]["media_type"], "image/png");
+    assert_eq!(block["source"]["data"], IMG_B64);
+}
+
+#[test]
+fn image_file_renders_to_generate_content_inline_data() {
+    let req = adapter_for(ApiProtocol::GenerateContent)
+        .render_request(&image_file_prompt())
+        .unwrap();
+    let part = &req["contents"][0]["parts"][0];
+    assert_eq!(part["inlineData"]["mimeType"], "image/png");
+    assert_eq!(part["inlineData"]["data"], IMG_B64);
+}
+
+#[test]
+fn audio_round_trips_through_chat_completions() {
+    let body = serde_json::json!({
+        "model": "m",
+        "messages": [{ "role": "user", "content": [
+            { "type": "input_audio", "input_audio": { "data": IMG_B64, "format": "mp3" } }
+        ]}]
+    });
+    let adapter = adapter_for(ApiProtocol::ChatCompletions);
+    let prompt = adapter.parse_request(body).unwrap();
+    let (media_type, _) = first_file(&prompt);
+    assert_eq!(media_type, "audio/mp3");
+    assert!(
+        prompt
+            .required_capabilities()
+            .contains(&Capability::AudioInput)
+    );
+    let req = adapter.render_request(&prompt).unwrap();
+    let part = &req["messages"][0]["content"][0];
+    assert_eq!(part["type"], "input_audio");
+    assert_eq!(part["input_audio"]["format"], "mp3");
+    assert_eq!(part["input_audio"]["data"], IMG_B64);
+}
+
+#[test]
+fn pdf_file_renders_to_messages_document_block() {
+    let mut prompt = image_file_prompt();
+    prompt.messages = vec![Message {
+        role: Role::User,
+        content: vec![Content::File {
+            media_type: "application/pdf".to_string(),
+            data: DataContent::Base64 {
+                data: IMG_B64.to_string(),
+            },
+            filename: Some("doc.pdf".to_string()),
+            extra: Default::default(),
+        }],
+    }];
+    assert!(
+        prompt
+            .required_capabilities()
+            .contains(&Capability::FileInput)
+    );
+    let req = adapter_for(ApiProtocol::Messages)
+        .render_request(&prompt)
+        .unwrap();
+    let block = &req["messages"][0]["content"][0];
+    assert_eq!(block["type"], "document");
+    assert_eq!(block["source"]["media_type"], "application/pdf");
+    assert_eq!(block["source"]["data"], IMG_B64);
+}
+
+#[test]
+fn image_url_parses_to_url_data_content() {
+    let body = serde_json::json!({
+        "model": "m",
+        "messages": [{ "role": "user", "content": [
+            { "type": "image_url", "image_url": { "url": "https://example.invalid/a.png" } }
+        ]}]
+    });
+    let prompt = adapter_for(ApiProtocol::ChatCompletions)
+        .parse_request(body)
+        .unwrap();
+    let (_, data) = first_file(&prompt);
+    assert_eq!(
+        data,
+        &DataContent::Url {
+            url: "https://example.invalid/a.png".to_string(),
+        }
+    );
+}

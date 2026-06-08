@@ -28,8 +28,8 @@ use crate::language_model::protocol::{
 };
 use crate::language_model::stream::SseFrame;
 use crate::language_model::types::{
-    ApiProtocol, Content, FinishReason, GenerateResult, GenerationParams, Message, Prompt,
-    ResponseFormat, Role, RoutingTarget, StreamPart, Usage,
+    ApiProtocol, Content, DataContent, FinishReason, GenerateResult, GenerationParams, Message,
+    Prompt, ResponseFormat, Role, RoutingTarget, StreamPart, Usage,
 };
 
 /// The Responses protocol adapter.
@@ -162,17 +162,49 @@ fn role_str(role: Role) -> &'static str {
     }
 }
 
-/// Extract text from a Responses `content` value: a string, or an array of
-/// `{type:"input_text"|"output_text"|"text", text}` parts.
-fn content_text(value: &serde_json::Value) -> String {
+/// Parse a Responses `content` value (string or array of content parts) into
+/// ordered canonical content.
+fn parse_responses_content(value: Option<&serde_json::Value>) -> Vec<Content> {
     match value {
-        serde_json::Value::String(s) => s.clone(),
-        serde_json::Value::Array(parts) => parts
-            .iter()
-            .filter_map(|p| p.get("text").and_then(|t| t.as_str()))
-            .collect::<Vec<_>>()
-            .join(""),
-        _ => String::new(),
+        Some(serde_json::Value::String(s)) => vec![Content::Text { text: s.clone() }],
+        Some(serde_json::Value::Array(parts)) => {
+            parts.iter().filter_map(parse_responses_part).collect()
+        }
+        _ => Vec::new(),
+    }
+}
+
+/// Parse one Responses content part into canonical content.
+/// <https://platform.openai.com/docs/api-reference/responses/create>
+fn parse_responses_part(part: &serde_json::Value) -> Option<Content> {
+    match part.get("type").and_then(|t| t.as_str())? {
+        "input_text" | "output_text" | "text" => Some(Content::Text {
+            text: part.get("text").and_then(|t| t.as_str())?.to_string(),
+        }),
+        "input_image" => {
+            let url = part.get("image_url").and_then(|u| u.as_str())?;
+            let (media_type, data) = DataContent::from_url(url);
+            Some(Content::File {
+                media_type: media_type.unwrap_or_else(|| "image/*".to_string()),
+                data,
+                filename: None,
+                extra: Default::default(),
+            })
+        }
+        "input_file" => {
+            let file_data = part.get("file_data").and_then(|d| d.as_str())?;
+            let (media_type, data) = DataContent::from_url(file_data);
+            Some(Content::File {
+                media_type: media_type.unwrap_or_else(|| "application/octet-stream".to_string()),
+                data,
+                filename: part
+                    .get("filename")
+                    .and_then(|f| f.as_str())
+                    .map(str::to_string),
+                extra: Default::default(),
+            })
+        }
+        _ => None,
     }
 }
 
@@ -191,13 +223,14 @@ fn parse_input(value: &serde_json::Value) -> Result<Vec<Message>> {
                     Some("message") | None => {
                         if let Some(role) = item.get("role").and_then(|r| r.as_str()) {
                             let role = parse_role(role)?;
-                            let text = item.get("content").map(content_text).unwrap_or_default();
-                            messages.push(Message::text(role, text));
+                            let content = parse_responses_content(item.get("content"));
+                            messages.push(Message { role, content });
                         }
                     }
                     Some("function_call") => {
                         messages.push(Message {
                             role: Role::Assistant,
+                            // tool calls are single-part assistant turns
                             content: vec![Content::ToolCall {
                                 id: item
                                     .get("call_id")

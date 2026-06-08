@@ -188,6 +188,42 @@ fn parse_parts(parts: &[serde_json::Value]) -> Vec<Content> {
                     .map(|r| r.to_string())
                     .unwrap_or_default(),
             });
+        } else if let Some(inline) = part.get("inlineData") {
+            // Inline base64 media. <https://ai.google.dev/gemini-api/docs/image-understanding>
+            out.push(Content::File {
+                media_type: inline
+                    .get("mimeType")
+                    .and_then(|m| m.as_str())
+                    .unwrap_or_default()
+                    .to_string(),
+                data: DataContent::Base64 {
+                    data: inline
+                        .get("data")
+                        .and_then(|d| d.as_str())
+                        .unwrap_or_default()
+                        .to_string(),
+                },
+                filename: None,
+                extra: Default::default(),
+            });
+        } else if let Some(file) = part.get("fileData") {
+            // A URI the model fetches.
+            out.push(Content::File {
+                media_type: file
+                    .get("mimeType")
+                    .and_then(|m| m.as_str())
+                    .unwrap_or_default()
+                    .to_string(),
+                data: DataContent::Url {
+                    url: file
+                        .get("fileUri")
+                        .and_then(|u| u.as_str())
+                        .unwrap_or_default()
+                        .to_string(),
+                },
+                filename: None,
+                extra: Default::default(),
+            });
         } else if let Some(text) = part.get("text").and_then(|t| t.as_str()) {
             let is_thought = part
                 .get("thought")
@@ -203,7 +239,6 @@ fn parse_parts(parts: &[serde_json::Value]) -> Vec<Content> {
                 });
             }
         }
-        // parts of other shapes (inlineData, fileData…) are skipped for now
     }
     out
 }
