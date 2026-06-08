@@ -2962,3 +2962,49 @@ fn image_url_parses_to_url_data_content() {
         }
     );
 }
+
+#[test]
+fn response_modalities_round_trip_through_chat_completions() {
+    let body = serde_json::json!({
+        "model": "m",
+        "messages": [{ "role": "user", "content": "draw a cat" }],
+        "modalities": ["text", "image"]
+    });
+    let adapter = adapter_for(ApiProtocol::ChatCompletions);
+    let prompt = adapter.parse_request(body).unwrap();
+    assert_eq!(
+        prompt.params.response_modalities,
+        vec![Modality::Text, Modality::Image]
+    );
+    assert!(
+        prompt
+            .required_capabilities()
+            .contains(&Capability::ImageOutput)
+    );
+    let req = adapter.render_request(&prompt).unwrap();
+    assert_eq!(req["modalities"], serde_json::json!(["text", "image"]));
+}
+
+#[test]
+fn response_modalities_round_trip_through_generate_content() {
+    let body = serde_json::json!({
+        "contents": [{ "role": "user", "parts": [{ "text": "draw a cat" }] }],
+        "generationConfig": { "responseModalities": ["TEXT", "IMAGE"] }
+    });
+    let adapter = adapter_for(ApiProtocol::GenerateContent);
+    let prompt = adapter.parse_request(body).unwrap();
+    assert_eq!(
+        prompt.params.response_modalities,
+        vec![Modality::Text, Modality::Image]
+    );
+    assert!(
+        prompt
+            .required_capabilities()
+            .contains(&Capability::ImageOutput)
+    );
+    let req = adapter.render_request(&prompt).unwrap();
+    assert_eq!(
+        req["generationConfig"]["responseModalities"],
+        serde_json::json!(["TEXT", "IMAGE"])
+    );
+}

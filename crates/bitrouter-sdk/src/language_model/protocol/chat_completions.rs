@@ -20,7 +20,7 @@ use crate::language_model::protocol::{
 use crate::language_model::stream::SseFrame;
 use crate::language_model::types::{
     ApiProtocol, Content, DataContent, FinishReason, GenerateResult, GenerationParams, Message,
-    Prompt, ResponseFormat, Role, RoutingTarget, StreamPart, Usage,
+    Modality, Prompt, ResponseFormat, Role, RoutingTarget, StreamPart, Usage,
 };
 
 /// The Chat Completions inbound + outbound protocol adapter.
@@ -365,6 +365,14 @@ impl InboundAdapter for ChatCompletionsAdapter {
             None => None,
         };
 
+        // Output modalities (OpenAI `modalities`, e.g. ["text","audio"]). Promote
+        // to the typed slot so capability detection sees them; remove from extra
+        // so they are not double-rendered.
+        let response_modalities = extra
+            .remove("modalities")
+            .and_then(|v| serde_json::from_value::<Vec<Modality>>(v).ok())
+            .unwrap_or_default();
+
         Ok(Prompt {
             model: req.model,
             system,
@@ -375,7 +383,7 @@ impl InboundAdapter for ChatCompletionsAdapter {
                 top_p: req.top_p,
                 max_tokens: req.max_tokens.or(req.max_completion_tokens),
                 reasoning_effort: req.reasoning_effort,
-                response_modalities: Vec::new(),
+                response_modalities,
                 // Every Chat Completions field without a typed slot — tool_choice,
                 // stop / stop_sequences, seed, n, presence/frequency_penalty,
                 // logit_bias, … — rides in `extra` and is splatted back on render.
@@ -522,6 +530,12 @@ impl OutboundAdapter for ChatCompletionsAdapter {
         // other params are handled).
         if let Some(rf) = &prompt.response_format {
             req.insert("response_format".into(), render_chat_response_format(rf));
+        }
+        // Output modalities -> OpenAI `modalities`.
+        if !prompt.params.response_modalities.is_empty()
+            && let Ok(value) = serde_json::to_value(&prompt.params.response_modalities)
+        {
+            req.insert("modalities".into(), value);
         }
         // Splat the extras back into the outbound request — this is how
         // `tool_choice`, `stop`, `seed`, etc. survive the round trip. Typed

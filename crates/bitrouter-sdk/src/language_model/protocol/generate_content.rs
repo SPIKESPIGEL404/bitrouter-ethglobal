@@ -20,7 +20,7 @@ use crate::language_model::protocol::{
 use crate::language_model::stream::SseFrame;
 use crate::language_model::types::{
     ApiProtocol, Content, DataContent, FinishReason, GenerateResult, GenerationParams, Message,
-    Prompt, ResponseFormat, Role, RoutingTarget, StreamPart, Usage,
+    Modality, Prompt, ResponseFormat, Role, RoutingTarget, StreamPart, Usage,
 };
 
 /// The Generate Content protocol adapter.
@@ -152,6 +152,44 @@ fn role_str(role: Role) -> &'static str {
         // Generate Content has only user/model; tool results ride in a user turn.
         Role::User | Role::System | Role::Tool => "user",
     }
+}
+
+/// Map a Google `responseModalities` token (uppercase) to a canonical [`Modality`].
+fn modality_from_gemini(token: &str) -> Option<Modality> {
+    match token {
+        "TEXT" => Some(Modality::Text),
+        "IMAGE" => Some(Modality::Image),
+        "AUDIO" => Some(Modality::Audio),
+        _ => None,
+    }
+}
+
+/// The Google `responseModalities` token (uppercase) for a canonical [`Modality`].
+fn modality_to_gemini(modality: &Modality) -> &'static str {
+    match modality {
+        Modality::Text => "TEXT",
+        Modality::Image => "IMAGE",
+        Modality::Audio => "AUDIO",
+    }
+}
+
+/// Take `responseModalities` out of a generation-config extras map, mapping the
+/// uppercase Google tokens to canonical modalities.
+fn take_gemini_modalities(
+    extra: &mut std::collections::HashMap<String, serde_json::Value>,
+) -> Vec<Modality> {
+    extra
+        .remove("responseModalities")
+        .and_then(|v| {
+            v.as_array().map(|tokens| {
+                tokens
+                    .iter()
+                    .filter_map(|t| t.as_str())
+                    .filter_map(modality_from_gemini)
+                    .collect()
+            })
+        })
+        .unwrap_or_default()
 }
 
 /// Parse one Google `parts[]` array into ordered canonical content. Order is
@@ -349,13 +387,14 @@ impl InboundAdapter for GenerateContentAdapter {
                         None
                     }
                 };
+                let response_modalities = take_gemini_modalities(&mut extra);
                 (
                     GenerationParams {
                         temperature,
                         top_p,
                         max_tokens: max_output_tokens,
                         reasoning_effort: None,
-                        response_modalities: Vec::new(),
+                        response_modalities,
                         extra,
                     },
                     response_format,
@@ -461,6 +500,16 @@ impl OutboundAdapter for GenerateContentAdapter {
             let ResponseFormat::JsonSchema { schema, .. } = rf;
             gen_config.insert("responseMimeType".into(), "application/json".into());
             gen_config.insert("responseSchema".into(), schema.clone());
+        }
+        // Output modalities -> Google `responseModalities` (uppercase tokens).
+        if !prompt.params.response_modalities.is_empty() {
+            let tokens: Vec<serde_json::Value> = prompt
+                .params
+                .response_modalities
+                .iter()
+                .map(|m| modality_to_gemini(m).into())
+                .collect();
+            gen_config.insert("responseModalities".into(), tokens.into());
         }
         // Splat Google generation-config extras (stopSequences, topK, seed, …)
         // back into the outbound config. Typed fields above win over a same-named
