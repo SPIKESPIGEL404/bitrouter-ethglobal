@@ -84,6 +84,8 @@ impl StreamInterest {
             StreamPart::ReasoningDelta { .. } => Self::REASONING_DELTA,
             StreamPart::ToolCallDelta { .. } => Self::TOOL_CALL_DELTA,
             StreamPart::Usage { .. } => Self::USAGE,
+            // No hook subscribes to file parts yet; they pass through unfiltered.
+            StreamPart::File { .. } => 0,
             StreamPart::ResponseStarted { .. } => Self::RESPONSE_STARTED,
             // `ResponseCompleted` is a terminal part — a hook interested in
             // `Finish` is, by construction, also interested in it.

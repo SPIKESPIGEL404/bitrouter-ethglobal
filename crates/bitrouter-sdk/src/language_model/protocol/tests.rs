@@ -3008,3 +3008,105 @@ fn response_modalities_round_trip_through_generate_content() {
         serde_json::json!(["TEXT", "IMAGE"])
     );
 }
+
+#[test]
+fn generated_image_round_trips_through_generate_content_stream() {
+    // A generated image survives the canonical stream `File` part through the
+    // Gemini encoder (inlineData chunk) and back through its decoder.
+    let outbound = adapter_for(ApiProtocol::GenerateContent);
+    let part = StreamPart::File {
+        media_type: "image/png".to_string(),
+        data: DataContent::Base64 {
+            data: IMG_B64.to_string(),
+        },
+    };
+    let mut encoder = outbound.stream_encoder("resp_s", "test-model");
+    let mut frames = encoder.encode(&part).unwrap();
+    frames.extend(encoder.finish().unwrap());
+
+    let mut decoder = outbound.stream_decoder();
+    let mut decoded = Vec::new();
+    for frame in &frames {
+        if let SseFrame::Event { event, data } = frame {
+            decoded.extend(
+                decoder
+                    .decode(&SseEvent {
+                        event: event.clone(),
+                        data: data.clone(),
+                    })
+                    .unwrap(),
+            );
+        }
+    }
+    decoded.extend(decoder.finish().unwrap());
+
+    let expected = DataContent::Base64 {
+        data: IMG_B64.to_string(),
+    };
+    let file = decoded.iter().find_map(|p| match p {
+        StreamPart::File { media_type, data } => Some((media_type.as_str(), data)),
+        _ => None,
+    });
+    assert_eq!(file, Some(("image/png", &expected)));
+}
+
+#[test]
+fn generated_image_round_trips_through_generate_content_response() {
+    let adapter = adapter_for(ApiProtocol::GenerateContent);
+    let body = serde_json::json!({
+        "candidates": [{
+            "content": { "role": "model", "parts": [
+                { "inlineData": { "mimeType": "image/png", "data": IMG_B64 } }
+            ]},
+            "finishReason": "STOP"
+        }]
+    });
+    let result = adapter.parse_response(body).unwrap();
+    let expected = DataContent::Base64 {
+        data: IMG_B64.to_string(),
+    };
+    let file = result.content.iter().find_map(|c| match c {
+        Content::File {
+            media_type, data, ..
+        } => Some((media_type.as_str(), data)),
+        _ => None,
+    });
+    assert_eq!(file, Some(("image/png", &expected)));
+
+    let rendered = adapter
+        .render_response(&result, &sample_prompt(), "id")
+        .unwrap();
+    let s = serde_json::to_string(&rendered).unwrap();
+    assert!(
+        s.contains("inlineData") && s.contains(IMG_B64),
+        "rendered response should carry the generated image: {s}"
+    );
+}
+
+#[test]
+fn generated_image_renders_into_chat_response_best_effort() {
+    let adapter = adapter_for(ApiProtocol::ChatCompletions);
+    let result = GenerateResult {
+        content: vec![Content::File {
+            media_type: "image/png".to_string(),
+            data: DataContent::Base64 {
+                data: IMG_B64.to_string(),
+            },
+            filename: None,
+            extra: Default::default(),
+        }],
+        usage: None,
+        finish_reason: Some(FinishReason::Stop),
+        response_id: None,
+        stop_details: None,
+    };
+    let rendered = adapter
+        .render_response(&result, &sample_prompt(), "id")
+        .unwrap();
+    let part = &rendered["choices"][0]["message"]["content"][0];
+    assert_eq!(part["type"], "image_url");
+    assert_eq!(
+        part["image_url"]["url"],
+        format!("data:image/png;base64,{IMG_B64}")
+    );
+}

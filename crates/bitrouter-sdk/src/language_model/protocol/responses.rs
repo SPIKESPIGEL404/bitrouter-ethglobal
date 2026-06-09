@@ -791,6 +791,20 @@ fn render_output_items(result: &GenerateResult) -> Vec<serde_json::Value> {
             }));
         }
     }
+    // Best-effort: a generated file becomes an image message item. The Responses
+    // API has no standard output-image item, so this preserves the data rather
+    // than dropping it. <https://platform.openai.com/docs/api-reference/responses>
+    for c in &result.content {
+        if let Content::File {
+            media_type, data, ..
+        } = c
+        {
+            items.push(serde_json::json!({
+                "type": "message", "role": "assistant",
+                "content": [{ "type": "output_image", "image_url": data.to_url(media_type) }],
+            }));
+        }
+    }
     items
 }
 
@@ -1395,6 +1409,10 @@ impl StreamEncoder for ResponsesStreamEncoder {
         let mut frames = Vec::new();
         self.ensure_created(&mut frames);
         match part {
+            StreamPart::File { .. } => {
+                // Responses streaming surfaces generated files on the
+                // non-streaming path; no inline file-output delta is emitted here.
+            }
             StreamPart::TextDelta { text } => {
                 // `open_text_item` closes any open reasoning / tool item
                 // first — items never interleave their deltas.

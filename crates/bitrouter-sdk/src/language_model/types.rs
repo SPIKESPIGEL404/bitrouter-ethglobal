@@ -592,6 +592,16 @@ pub enum StreamPart {
         /// Arguments fragment.
         arguments: String,
     },
+    /// A complete generated file (e.g. an image), emitted whole — matching the
+    /// Vercel AI SDK `LanguageModelV3` stream `file` part, where files arrive as
+    /// one part rather than chunked deltas.
+    /// <https://github.com/vercel/ai/blob/main/packages/provider/src/language-model/v3/language-model-v3-file.ts>
+    File {
+        /// IANA media type, e.g. `image/png`.
+        media_type: String,
+        /// The file payload — inline base64 bytes or a URL.
+        data: DataContent,
+    },
     /// A usage report. May arrive mid-stream (per-checkpoint) or only at the end.
     Usage {
         /// The usage counts.

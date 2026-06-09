@@ -1236,6 +1236,10 @@ impl StreamEncoder for MessagesStreamEncoder {
         let mut frames = Vec::new();
         self.ensure_started(&mut frames);
         match part {
+            StreamPart::File { .. } => {
+                // Anthropic Messages streaming has no file-output content block;
+                // a generated file is surfaced only on the non-streaming path.
+            }
             StreamPart::TextDelta { text } => {
                 if self.ensure_block_open(&mut frames, EncoderBlockKind::Text) {
                     frames.push(Self::ev(

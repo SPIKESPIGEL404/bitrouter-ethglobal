@@ -734,13 +734,12 @@ impl StreamDecoder for GenerateContentStreamDecoder {
                             arguments,
                         }),
                         Content::ToolResult { .. } => {}
-                        // Response-side file output (e.g. Gemini-generated images)
-                        // is the not-yet-implemented multimodal *output* surface:
-                        // no StreamPart here, and the non-streaming cross-protocol
-                        // render also drops it where the target protocol has no
-                        // native output-file shape (chat / responses). Request-side
-                        // files never reach this decoder.
-                        Content::File { .. } => {}
+                        // A generated file (e.g. an image) becomes one whole
+                        // `StreamPart::File`, matching the AI SDK V3 stream `file`
+                        // part. <https://ai.google.dev/gemini-api/docs/image-generation>
+                        Content::File {
+                            media_type, data, ..
+                        } => parts.push(StreamPart::File { media_type, data }),
                     }
                 }
             }
@@ -770,6 +769,21 @@ impl StreamEncoder for GenerateContentStreamEncoder {
             // Observability-only metadata (upstream response id) — never
             // forwarded to the Google-protocol client.
             StreamPart::ResponseStarted { .. } => return Ok(Vec::new()),
+            // A generated file -> an `inlineData` / `fileData` part in one chunk.
+            // <https://ai.google.dev/gemini-api/docs/image-generation>
+            StreamPart::File { media_type, data } => {
+                let file_part = match data {
+                    DataContent::Base64 { data } => serde_json::json!({
+                        "inlineData": { "mimeType": media_type, "data": data }
+                    }),
+                    DataContent::Url { url } => serde_json::json!({
+                        "fileData": { "mimeType": media_type, "fileUri": url }
+                    }),
+                };
+                serde_json::json!({
+                    "candidates": [{ "content": { "role": "model", "parts": [file_part] } }]
+                })
+            }
             StreamPart::TextDelta { text } => serde_json::json!({
                 "candidates": [{ "content": { "role": "model", "parts": [{ "text": text }] } }]
             }),

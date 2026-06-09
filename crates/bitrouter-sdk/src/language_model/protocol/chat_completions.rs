@@ -403,16 +403,33 @@ impl InboundAdapter for ChatCompletionsAdapter {
         let mut message = serde_json::Map::new();
         message.insert("role".into(), "assistant".into());
 
-        let text: String = result
+        // `content` is a plain string for text-only replies; when the reply
+        // carries a generated file (e.g. an image), emit a parts array — the same
+        // shape OpenAI uses for input media. Non-standard for a chat *response*,
+        // but it preserves the data rather than dropping it.
+        if result
             .content
             .iter()
-            .filter_map(|c| match c {
-                Content::Text { text } => Some(text.as_str()),
-                _ => None,
-            })
-            .collect();
-        // `content` is always present (possibly an empty string) — never null.
-        message.insert("content".into(), text.into());
+            .any(|c| matches!(c, Content::File { .. }))
+        {
+            let parts: Vec<serde_json::Value> = result
+                .content
+                .iter()
+                .filter_map(render_input_part)
+                .collect();
+            message.insert("content".into(), parts.into());
+        } else {
+            let text: String = result
+                .content
+                .iter()
+                .filter_map(|c| match c {
+                    Content::Text { text } => Some(text.as_str()),
+                    _ => None,
+                })
+                .collect();
+            // `content` is always present (possibly an empty string) — never null.
+            message.insert("content".into(), text.into());
+        }
 
         let reasoning: String = result
             .content
@@ -1111,6 +1128,11 @@ impl StreamEncoder for ChatStreamEncoder {
             }
             StreamPart::Usage { .. } => {
                 // usage is attached to the Finish chunk below; nothing here.
+            }
+            StreamPart::File { .. } => {
+                // Chat Completions streaming has no native file-output frame
+                // (image generation is a separate API), so a generated file is
+                // surfaced only on the non-streaming path. Documented limitation.
             }
             StreamPart::ResponseStarted { .. } => {
                 // Observability-only metadata (upstream response id); not
