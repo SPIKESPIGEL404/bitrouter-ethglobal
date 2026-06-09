@@ -4041,6 +4041,68 @@ fn responses_render_response_reproduces_server_tool_item() {
     );
 }
 
+/// `image_generation_call` and `computer_call` output items are parsed as
+/// provider-executed tool calls (no echoed input, matching the AI SDK), and they
+/// round-trip: `render_response` reproduces each as its native `<name>_call`
+/// item keyed by `id`. `local_shell_call` / `mcp_call` are deferred and not
+/// parsed (so they must NOT appear as tool calls), per the documented skip.
+#[test]
+fn responses_parses_and_reproduces_image_and_computer_calls() {
+    let adapter = adapter_for(ApiProtocol::Responses);
+    let body = serde_json::json!({
+        "id": "resp_1",
+        "status": "completed",
+        "output": [
+            { "type": "image_generation_call", "id": "ig_1", "result": "BASE64..." },
+            { "type": "computer_call", "id": "cu_1", "status": "completed" },
+            // deferred — must not surface as tool calls
+            { "type": "local_shell_call", "call_id": "ls_1", "action": {"command": ["ls"]} },
+            { "type": "mcp_call", "id": "mc_1", "name": "fetch", "arguments": "{}" }
+        ]
+    });
+    let result = adapter.parse_response(body).unwrap();
+    let calls: Vec<_> = result
+        .content
+        .iter()
+        .filter_map(|c| match c {
+            Content::ToolCall {
+                name,
+                provider_executed,
+                arguments,
+                ..
+            } => Some((name.as_str(), *provider_executed, arguments.as_str())),
+            _ => None,
+        })
+        .collect();
+    // Only the two (a)-mapped server tools are parsed; the deferred items drop.
+    assert_eq!(
+        calls,
+        vec![("image_generation", true, "{}"), ("computer", true, "{}"),],
+        "image_generation_call/computer_call parse; local_shell_call/mcp_call defer"
+    );
+
+    // Live, not dead: each parsed call is consumed by the reproduction site,
+    // re-emitting its native `<name>_call` output item keyed by `id`.
+    let rendered = adapter
+        .render_response(&result, &sample_prompt(), "resp_1")
+        .unwrap();
+    let output = rendered["output"].as_array().unwrap();
+    let ig = output
+        .iter()
+        .find(|i| i["type"] == "image_generation_call")
+        .expect("image_generation_call reproduced");
+    assert_eq!(ig["id"], "ig_1");
+    let cu = output
+        .iter()
+        .find(|i| i["type"] == "computer_call")
+        .expect("computer_call reproduced");
+    assert_eq!(cu["id"], "cu_1");
+    assert!(
+        output.iter().all(|i| i["type"] != "function_call"),
+        "provider-executed calls must not render as function_call: {rendered}"
+    );
+}
+
 /// `provider_executed` defaults to false and is omitted from the serialized
 /// canonical form when false (no JSON `null`, no `false` noise).
 #[test]
@@ -4354,6 +4416,113 @@ fn exotic_tool_choice_falls_back_to_other_and_round_trips() {
     assert_eq!(
         rendered["toolConfig"], tool_config,
         "Gemini exotic toolConfig must render back verbatim"
+    );
+}
+
+/// Regression: a Gemini `toolConfig` whose `functionCallingConfig` cannot be
+/// reduced to a typed [`ToolChoice`] — because it omits `mode`, or carries an
+/// unmodelled sibling key — must NOT vanish. Before the parser was made
+/// infallible it returned `None` for these shapes while the caller had already
+/// removed `toolConfig` from the top-level extras, so the choice was dropped and
+/// broke even a same-protocol Gemini→Gemini round-trip. It must now degrade to
+/// `ToolChoice::Other` and re-emit verbatim, with no duplicate left in extras.
+#[test]
+fn gemini_unreducible_tool_config_survives_round_trip() {
+    let gemini = adapter_for(ApiProtocol::GenerateContent);
+    // Case 1: `functionCallingConfig` with `allowedFunctionNames` but NO `mode`.
+    // Case 2: a different shape — a `functionCallingConfig` carrying an unknown
+    // sibling key alongside a recognised `mode`.
+    let configs = [
+        serde_json::json!({
+            "functionCallingConfig": {"allowedFunctionNames": ["lookup"]}
+        }),
+        serde_json::json!({
+            "functionCallingConfig": {"mode": "VALIDATED", "responseSchema": {"x": 1}}
+        }),
+    ];
+    for tool_config in configs {
+        let prompt = gemini
+            .parse_request(serde_json::json!({
+                "model": "gemini-2.0-flash",
+                "contents": [{"role": "user", "parts": [{"text": "hi"}]}],
+                "toolConfig": tool_config.clone()
+            }))
+            .unwrap();
+        // The unreducible config is preserved verbatim in the typed slot, not
+        // dropped.
+        assert_eq!(
+            prompt.params.tool_choice,
+            Some(ToolChoice::Other {
+                value: tool_config.clone()
+            }),
+            "unreducible toolConfig must be preserved as Other: {tool_config}"
+        );
+        // It must NOT also linger in the top-level extras sentinel (otherwise it
+        // would be double-written on render).
+        let lingering = prompt
+            .params
+            .extra
+            .get("__google_top_level__")
+            .and_then(|v| v.as_object())
+            .map(|t| t.contains_key("toolConfig"))
+            .unwrap_or(false);
+        assert!(
+            !lingering,
+            "toolConfig must be lifted out of extras, not duplicated: {:?}",
+            prompt.params.extra
+        );
+        // Gemini→Gemini render re-emits the original toolConfig byte-for-byte,
+        // exactly once at the request root.
+        let rendered = gemini.render_request(&prompt).unwrap();
+        assert_eq!(
+            rendered["toolConfig"], tool_config,
+            "unreducible toolConfig must round-trip verbatim"
+        );
+        // And a second render→parse→render hop is still stable (no drift).
+        let reparsed = gemini.parse_request(rendered).unwrap();
+        let rerendered = gemini.render_request(&reparsed).unwrap();
+        assert_eq!(
+            rerendered["toolConfig"], tool_config,
+            "unreducible toolConfig must remain stable across a second hop"
+        );
+    }
+}
+
+/// Cross-protocol translation of `Auto`: authored as a Chat Completions
+/// `"auto"`, it must reach Anthropic as `{type:"auto"}` and Gemini as
+/// `mode:"AUTO"` (and stay `"auto"` on Responses).
+#[test]
+fn tool_choice_auto_translates_across_protocols() {
+    let chat = adapter_for(ApiProtocol::ChatCompletions);
+    let prompt = chat
+        .parse_request(serde_json::json!({
+            "model": "gpt-5",
+            "messages": [{"role": "user", "content": "hi"}],
+            "tool_choice": "auto"
+        }))
+        .unwrap();
+    assert_eq!(prompt.params.tool_choice, Some(ToolChoice::Auto));
+
+    // Anthropic -> {type:"auto"}
+    assert_eq!(
+        adapter_for(ApiProtocol::Messages)
+            .render_request(&prompt)
+            .unwrap()["tool_choice"],
+        serde_json::json!({"type": "auto"})
+    );
+    // Gemini -> toolConfig.functionCallingConfig.mode = AUTO
+    assert_eq!(
+        adapter_for(ApiProtocol::GenerateContent)
+            .render_request(&prompt)
+            .unwrap()["toolConfig"]["functionCallingConfig"]["mode"],
+        "AUTO"
+    );
+    // Responses -> "auto"
+    assert_eq!(
+        adapter_for(ApiProtocol::Responses)
+            .render_request(&prompt)
+            .unwrap()["tool_choice"],
+        "auto"
     );
 }
 

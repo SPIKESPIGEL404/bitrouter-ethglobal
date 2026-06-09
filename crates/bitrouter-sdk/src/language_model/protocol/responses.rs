@@ -616,9 +616,22 @@ impl OutboundAdapter for ResponsesAdapter {
                 // `id`, with a synthetic tool name and the call's distinguishing
                 // input, matching the AI SDK reference mapping. These must be
                 // marked `provider_executed` so they are not re-sent as client
-                // `function_call` items on a later turn.
+                // `function_call` items on a later turn. `image_generation_call`
+                // and `computer_call` join the no-echoed-input group: the AI SDK
+                // emits an empty input for both (`'{}'` and `''` respectively)
+                // and surfaces their payload only via a *separate* tool-result
+                // (the generated image / the computer-use status). The flat
+                // `ToolCall` cannot carry that result, so — exactly as for
+                // `web_search_call`/`file_search_call` — only the call itself is
+                // modeled here; it round-trips via `render_output_items`, which
+                // re-emits `<name>_call` keyed by `id`.
                 // <https://github.com/vercel/ai/blob/main/packages/openai/src/responses/openai-responses-language-model.ts>
-                Some(server_tool @ ("web_search_call" | "file_search_call")) => {
+                Some(
+                    server_tool @ ("web_search_call"
+                    | "file_search_call"
+                    | "image_generation_call"
+                    | "computer_call"),
+                ) => {
                     content.push(Content::ToolCall {
                         id: item
                             .get("id")
@@ -655,6 +668,24 @@ impl OutboundAdapter for ResponsesAdapter {
                         provider_executed: true,
                     });
                 }
+                // Deferred output-item types — intentionally skipped, not parsed,
+                // and documented here so the omission is explicit rather than a
+                // silent drop:
+                //   - `mcp_call`: the AI SDK models this as a provider-executed
+                //     `mcp.<name>` call *plus* a separate tool-result carrying the
+                //     remote MCP tool's `output`/`error`. The flat `ToolCall`
+                //     cannot hold that result, so faithfully representing it needs
+                //     a richer content shape than exists today.
+                //   - `local_shell_call`: a *client*-executed call (the AI SDK
+                //     leaves `providerExecuted` unset and keys it by `call_id`),
+                //     which must round-trip its `action` payload and be paired
+                //     with a `local_shell_call_output`. That is a distinct client
+                //     tool-call shape, not the provider-executed `<name>_call`
+                //     reproduction path used above, so it is deferred too.
+                //   - any other unknown item type is skipped for forward
+                //     compatibility (mirrors the input-side `Some(_) => {}`),
+                //     rather than failing the whole response.
+                // <https://github.com/vercel/ai/blob/main/packages/openai/src/responses/openai-responses-language-model.ts>
                 _ => {}
             }
         }

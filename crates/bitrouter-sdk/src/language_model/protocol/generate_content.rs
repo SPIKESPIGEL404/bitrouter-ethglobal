@@ -199,37 +199,40 @@ fn take_gemini_modalities(
 /// `allowedFunctionNames`. `AUTO`→`Auto`, `NONE`→`None`, bare `ANY`→`Required`.
 /// `ANY` restricted to a single allowed name is rendered as `Tool` (a forced
 /// specific call); any richer constraint — `ANY` with multiple allowed names,
-/// the `VALIDATED` mode, or a `toolConfig` carrying sibling keys — has no V3
-/// equivalent and is preserved verbatim via [`ToolChoice::Other`] so it
-/// round-trips losslessly on the same wire.
+/// the `VALIDATED` mode, a `functionCallingConfig` that omits `mode` (e.g. one
+/// carrying only `allowedFunctionNames`), or a `toolConfig` carrying sibling
+/// keys — has no V3 equivalent and is preserved verbatim via
+/// [`ToolChoice::Other`] so it round-trips losslessly on the same wire. Like the
+/// other adapters' tool-choice parsers, this is infallible: anything it cannot
+/// reduce to a typed variant degrades to `Other`, never to a dropped value.
 /// <https://ai.google.dev/api/caching#FunctionCallingConfig>
-fn parse_gemini_tool_choice(tool_config: &serde_json::Value) -> Option<ToolChoice> {
-    let obj = tool_config.as_object()?;
-    let fcc = obj.get("functionCallingConfig")?.as_object()?;
-    let mode = fcc.get("mode").and_then(|m| m.as_str())?;
-    let allowed: Vec<&str> = fcc
-        .get("allowedFunctionNames")
-        .and_then(|a| a.as_array())
-        .map(|arr| arr.iter().filter_map(|n| n.as_str()).collect())
-        .unwrap_or_default();
-    // A `toolConfig` with extra sibling keys, or a `functionCallingConfig` with
-    // keys beyond mode/allowedFunctionNames, cannot be reconstructed from a bare
-    // typed variant — preserve the whole thing verbatim.
-    let only_known_siblings = obj.len() == 1
-        && fcc
-            .keys()
-            .all(|k| k == "mode" || k == "allowedFunctionNames");
-    match mode {
-        "AUTO" if only_known_siblings && allowed.is_empty() => Some(ToolChoice::Auto),
-        "NONE" if only_known_siblings && allowed.is_empty() => Some(ToolChoice::None),
-        "ANY" if only_known_siblings && allowed.is_empty() => Some(ToolChoice::Required),
-        "ANY" if only_known_siblings && allowed.len() == 1 => Some(ToolChoice::Tool {
-            name: allowed[0].to_string(),
-        }),
-        _ => Some(ToolChoice::Other {
-            value: tool_config.clone(),
-        }),
-    }
+fn parse_gemini_tool_choice(tool_config: serde_json::Value) -> ToolChoice {
+    let reduced = tool_config.as_object().and_then(|obj| {
+        let fcc = obj.get("functionCallingConfig")?.as_object()?;
+        let mode = fcc.get("mode").and_then(|m| m.as_str())?;
+        let allowed: Vec<&str> = fcc
+            .get("allowedFunctionNames")
+            .and_then(|a| a.as_array())
+            .map(|arr| arr.iter().filter_map(|n| n.as_str()).collect())
+            .unwrap_or_default();
+        // A `toolConfig` with extra sibling keys, or a `functionCallingConfig`
+        // with keys beyond mode/allowedFunctionNames, cannot be reconstructed
+        // from a bare typed variant — fall through to the verbatim `Other`.
+        let only_known_siblings = obj.len() == 1
+            && fcc
+                .keys()
+                .all(|k| k == "mode" || k == "allowedFunctionNames");
+        match mode {
+            "AUTO" if only_known_siblings && allowed.is_empty() => Some(ToolChoice::Auto),
+            "NONE" if only_known_siblings && allowed.is_empty() => Some(ToolChoice::None),
+            "ANY" if only_known_siblings && allowed.is_empty() => Some(ToolChoice::Required),
+            "ANY" if only_known_siblings && allowed.len() == 1 => Some(ToolChoice::Tool {
+                name: allowed[0].to_string(),
+            }),
+            _ => None,
+        }
+    });
+    reduced.unwrap_or(ToolChoice::Other { value: tool_config })
 }
 
 /// Render a canonical [`ToolChoice`] into Google's top-level `toolConfig` value.
@@ -485,13 +488,16 @@ impl InboundAdapter for GenerateContentAdapter {
             None => (GenerationParams::default(), None),
         };
         // `toolConfig` is a top-level Google field that carries tool choice. Lift
-        // its `functionCallingConfig` into the typed slot and remove `toolConfig`
-        // from the top-level extras so it is not also re-rendered verbatim (which
-        // would forward a Gemini-shaped choice into a non-Gemini upstream, and
-        // double-write it on a same-protocol round-trip).
+        // it into the typed slot — as a reduced `ToolChoice` when it maps onto a
+        // V3 variant, otherwise verbatim via `ToolChoice::Other` — and remove
+        // `toolConfig` from the top-level extras so it is not also re-rendered
+        // verbatim (which would forward a Gemini-shaped choice into a non-Gemini
+        // upstream, and double-write it on a same-protocol round-trip). The
+        // parser is infallible, so an exotic `toolConfig` (e.g. one whose
+        // `functionCallingConfig` omits `mode`) is preserved, never dropped.
         let mut top_level = req.extra;
         if let Some(tc) = top_level.remove("toolConfig") {
-            params.tool_choice = parse_gemini_tool_choice(&tc);
+            params.tool_choice = Some(parse_gemini_tool_choice(tc));
         }
         // Preserve the remaining top-level Google fields (`safetySettings`,
         // `cachedContent`, …) across the round-trip. They're namespaced so they
