@@ -3110,3 +3110,37 @@ fn generated_image_renders_into_chat_response_best_effort() {
         format!("data:image/png;base64,{IMG_B64}")
     );
 }
+
+#[test]
+fn generated_file_url_round_trips_through_generate_content() {
+    // The URL (`fileData` / `fileUri`) output path mirrors the base64 one.
+    let adapter = adapter_for(ApiProtocol::GenerateContent);
+    let body = serde_json::json!({
+        "candidates": [{
+            "content": { "role": "model", "parts": [
+                { "fileData": { "mimeType": "image/png", "fileUri": "https://example.invalid/g.png" } }
+            ]},
+            "finishReason": "STOP"
+        }]
+    });
+    let result = adapter.parse_response(body).unwrap();
+    let expected = DataContent::Url {
+        url: "https://example.invalid/g.png".to_string(),
+    };
+    let file = result.content.iter().find_map(|c| match c {
+        Content::File {
+            media_type, data, ..
+        } => Some((media_type.as_str(), data)),
+        _ => None,
+    });
+    assert_eq!(file, Some(("image/png", &expected)));
+
+    let rendered = adapter
+        .render_response(&result, &sample_prompt(), "id")
+        .unwrap();
+    let s = serde_json::to_string(&rendered).unwrap();
+    assert!(
+        s.contains("fileData") && s.contains("https://example.invalid/g.png"),
+        "rendered response should carry the file URL: {s}"
+    );
+}
