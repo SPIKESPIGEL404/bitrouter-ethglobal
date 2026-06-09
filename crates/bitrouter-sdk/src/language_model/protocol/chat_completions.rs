@@ -20,7 +20,8 @@ use crate::language_model::protocol::{
 use crate::language_model::stream::SseFrame;
 use crate::language_model::types::{
     ApiProtocol, Content, DataContent, FinishReason, GenerateResult, GenerationParams, Message,
-    Modality, Prompt, ResponseFormat, Role, RoutingTarget, StreamPart, Usage,
+    Modality, Prompt, ResponseFormat, Role, RoutingTarget, StreamPart, ToolResultContentPart,
+    ToolResultOutput, Usage,
 };
 
 /// The Chat Completions inbound + outbound protocol adapter.
@@ -206,6 +207,48 @@ fn content_text(value: &serde_json::Value) -> String {
     }
 }
 
+/// Parse an OpenAI `tool` message `content` value into a canonical
+/// [`ToolResultOutput`]. A string → [`ToolResultOutput::Text`]. A content-part
+/// array that carries any media part → [`ToolResultOutput::Content`] (text +
+/// media, in order); a text-only array collapses to `Text` so a trivial
+/// `[{type:text}]` does not gratuitously promote to the multimodal variant. Any
+/// other JSON value → [`ToolResultOutput::Json`].
+/// <https://platform.openai.com/docs/api-reference/chat/create#chat-create-messages>
+fn parse_tool_result_output(value: &serde_json::Value) -> ToolResultOutput {
+    match value {
+        serde_json::Value::String(s) => ToolResultOutput::Text { value: s.clone() },
+        serde_json::Value::Array(parts) => {
+            let canonical: Vec<Content> = parts.iter().filter_map(parse_chat_part).collect();
+            let has_media = canonical.iter().any(|c| matches!(c, Content::File { .. }));
+            if has_media {
+                let value = canonical
+                    .into_iter()
+                    .filter_map(content_to_tool_result_part)
+                    .collect();
+                ToolResultOutput::Content { value }
+            } else {
+                ToolResultOutput::Text {
+                    value: content_text(value),
+                }
+            }
+        }
+        other => ToolResultOutput::from_untyped_value(other),
+    }
+}
+
+/// Map a canonical text/file [`Content`] into a [`ToolResultContentPart`].
+/// Only text and media parts have a tool-result-content representation; any
+/// other content kind yields `None`.
+fn content_to_tool_result_part(c: Content) -> Option<ToolResultContentPart> {
+    match c {
+        Content::Text { text } => Some(ToolResultContentPart::Text { text }),
+        Content::File {
+            media_type, data, ..
+        } => Some(ToolResultContentPart::Media { media_type, data }),
+        _ => None,
+    }
+}
+
 /// Parse an OpenAI `content` value (string, or array of content parts) into
 /// ordered canonical content. Text + media parts are preserved in order; other
 /// part shapes are skipped.
@@ -310,13 +353,26 @@ impl InboundAdapter for ChatCompletionsAdapter {
                 content.push(Content::Reasoning { text: reasoning });
             }
             if role == Role::Tool {
-                let result = m.content.as_ref().map(content_text).unwrap_or_default();
+                // OpenAI tool messages carry `{role:"tool", tool_call_id, content}`;
+                // `content` is a string or a content-part array, with no tool
+                // name and no error flag on the wire. A string → Text, a part
+                // array carrying media → Content, any other structured value →
+                // Json.
+                // <https://platform.openai.com/docs/api-reference/chat/create#chat-create-messages>
+                let output = m
+                    .content
+                    .as_ref()
+                    .map(parse_tool_result_output)
+                    .unwrap_or_else(|| ToolResultOutput::Text {
+                        value: String::new(),
+                    });
                 let call_id = m.tool_call_id.ok_or_else(|| {
                     BitrouterError::bad_request("tool message missing 'tool_call_id'")
                 })?;
                 content.push(Content::ToolResult {
                     call_id,
-                    content: result,
+                    tool_name: None,
+                    output,
                 });
             } else {
                 if let Some(value) = &m.content {
@@ -784,16 +840,56 @@ fn render_input_part(c: &Content) -> Option<serde_json::Value> {
     }
 }
 
+/// Render a [`ToolResultOutput`] into the value of an OpenAI tool message's
+/// `content` field. A multimodal [`ToolResultOutput::Content`] becomes a
+/// content-part array (reusing [`render_input_part`]); every other variant
+/// collapses to a plain string (the error variants lose their flag, which the
+/// OpenAI tool wire cannot represent).
+/// <https://platform.openai.com/docs/api-reference/chat/create#chat-create-messages>
+fn render_tool_result_content(output: &ToolResultOutput) -> serde_json::Value {
+    match output {
+        ToolResultOutput::Content { value } => {
+            let parts: Vec<serde_json::Value> = value
+                .iter()
+                .filter_map(|p| render_input_part(&tool_result_part_to_content(p)))
+                .collect();
+            parts.into()
+        }
+        other => other.to_provider_string().into(),
+    }
+}
+
+/// Lift a [`ToolResultContentPart`] into a canonical [`Content`] so the shared
+/// [`render_input_part`] media renderer can be reused for tool-result content.
+fn tool_result_part_to_content(part: &ToolResultContentPart) -> Content {
+    match part {
+        ToolResultContentPart::Text { text } => Content::Text { text: text.clone() },
+        ToolResultContentPart::Media { media_type, data } => Content::File {
+            media_type: media_type.clone(),
+            data: data.clone(),
+            filename: None,
+            extra: Default::default(),
+        },
+    }
+}
+
 fn render_message(m: &Message) -> serde_json::Value {
     let mut obj = serde_json::Map::new();
     obj.insert("role".into(), role_str(m.role).into());
 
     if m.role == Role::Tool {
-        // tool messages carry a tool_call_id + flat string content
+        // OpenAI tool messages carry `{tool_call_id, content}`. `content` is a
+        // string, or a content-part array when the result is multimodal. The
+        // wire has no error flag and no tool-name field, so an error output
+        // degrades to its text/JSON string and `tool_name` is dropped.
+        // <https://platform.openai.com/docs/api-reference/chat/create#chat-create-messages>
         for c in &m.content {
-            if let Content::ToolResult { call_id, content } = c {
+            if let Content::ToolResult {
+                call_id, output, ..
+            } = c
+            {
                 obj.insert("tool_call_id".into(), call_id.clone().into());
-                obj.insert("content".into(), content.clone().into());
+                obj.insert("content".into(), render_tool_result_content(output));
             }
         }
         return serde_json::Value::Object(obj);

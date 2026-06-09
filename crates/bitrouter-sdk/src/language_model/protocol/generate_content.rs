@@ -20,7 +20,7 @@ use crate::language_model::protocol::{
 use crate::language_model::stream::SseFrame;
 use crate::language_model::types::{
     ApiProtocol, Content, DataContent, FinishReason, GenerateResult, GenerationParams, Message,
-    Modality, Prompt, ResponseFormat, Role, RoutingTarget, StreamPart, Usage,
+    Modality, Prompt, ResponseFormat, Role, RoutingTarget, StreamPart, ToolResultOutput, Usage,
 };
 
 /// The Generate Content protocol adapter.
@@ -215,16 +215,33 @@ fn parse_parts(parts: &[serde_json::Value]) -> Vec<Content> {
                     .unwrap_or_else(|| "{}".to_string()),
             });
         } else if let Some(fr) = part.get("functionResponse") {
+            // Gemini `functionResponse {id?, name, response}`: `name` is the tool
+            // name (required), the optional `id` correlates the originating call,
+            // and `response` is a JSON object. Map `name` → tool_name, `id` →
+            // call_id (falling back to `name` when the wire omits the id, since
+            // the canonical call_id must not be empty), and the JSON `response`
+            // → a structured Json output.
+            // <https://ai.google.dev/api/caching#FunctionResponse>
+            let name = fr
+                .get("name")
+                .and_then(|n| n.as_str())
+                .unwrap_or_default()
+                .to_string();
+            let call_id = fr
+                .get("id")
+                .and_then(|i| i.as_str())
+                .map(str::to_string)
+                .unwrap_or_else(|| name.clone());
+            let output = fr
+                .get("response")
+                .map(ToolResultOutput::from_untyped_value)
+                .unwrap_or_else(|| ToolResultOutput::Json {
+                    value: serde_json::json!({}),
+                });
             out.push(Content::ToolResult {
-                call_id: fr
-                    .get("name")
-                    .and_then(|n| n.as_str())
-                    .unwrap_or_default()
-                    .to_string(),
-                content: fr
-                    .get("response")
-                    .map(|r| r.to_string())
-                    .unwrap_or_default(),
+                call_id,
+                tool_name: (!name.is_empty()).then_some(name),
+                output,
             });
         } else if let Some(inline) = part.get("inlineData") {
             // Inline base64 media. <https://ai.google.dev/gemini-api/docs/image-understanding>
@@ -619,12 +636,35 @@ fn render_part(c: &Content) -> Option<serde_json::Value> {
                 serde_json::from_str(arguments).unwrap_or(serde_json::json!({}));
             Some(serde_json::json!({ "functionCall": { "name": name, "args": args } }))
         }
-        Content::ToolResult { call_id, content } => {
-            let response: serde_json::Value =
-                serde_json::from_str(content).unwrap_or(serde_json::json!({ "result": content }));
-            Some(serde_json::json!({
-                "functionResponse": { "name": call_id, "response": response }
-            }))
+        // Gemini `functionResponse {id?, name, response}`: `response` must be a
+        // JSON object and there is no error flag or media slot. `name` comes from
+        // `tool_name` (Gemini keys results by name), falling back to `call_id`;
+        // `id` rides along when it differs from the name. A non-object output
+        // degrades losslessly under a `result` key.
+        // <https://ai.google.dev/api/caching#FunctionResponse>
+        Content::ToolResult {
+            call_id,
+            tool_name,
+            output,
+        } => {
+            let name = tool_name.as_deref().unwrap_or(call_id);
+            let response = match output {
+                ToolResultOutput::Json { value } | ToolResultOutput::ErrorJson { value }
+                    if value.is_object() =>
+                {
+                    value.clone()
+                }
+                ToolResultOutput::Json { value } | ToolResultOutput::ErrorJson { value } => {
+                    serde_json::json!({ "result": value })
+                }
+                other => serde_json::json!({ "result": other.to_provider_string() }),
+            };
+            let mut fr = serde_json::json!({ "name": name, "response": response });
+            // Carry the call id only when it adds information beyond the name.
+            if call_id != name && !call_id.is_empty() {
+                fr["id"] = serde_json::Value::String(call_id.clone());
+            }
+            Some(serde_json::json!({ "functionResponse": fr }))
         }
         // Inline bytes -> `inlineData`; a URL -> `fileData`. Gemini keys media by
         // `mimeType`. <https://ai.google.dev/gemini-api/docs/image-understanding>

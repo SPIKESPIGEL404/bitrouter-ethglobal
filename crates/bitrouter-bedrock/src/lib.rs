@@ -83,8 +83,8 @@ use aws_sdk_bedrockruntime::types::{
     ContentBlock, ContentBlockDelta, ContentBlockDeltaEvent, ContentBlockStart,
     ContentBlockStartEvent, ConversationRole, ConverseOutput, ConverseStreamMetadataEvent,
     ConverseStreamOutput, InferenceConfiguration, Message as BedrockMessage, MessageStopEvent,
-    StopReason, SystemContentBlock, ToolResultBlock, ToolResultContentBlock, ToolUseBlock,
-    ToolUseBlockStart,
+    StopReason, SystemContentBlock, ToolResultBlock, ToolResultContentBlock, ToolResultStatus,
+    ToolUseBlock, ToolUseBlockStart,
 };
 use aws_smithy_types::Document;
 use aws_smithy_types::event_stream::RawMessage;
@@ -92,7 +92,8 @@ use bedrock::error::SdkError;
 
 use bitrouter_sdk::language_model::{
     Content, ExecutionResult, Executor, FinishReason, GenerateResult, PipelineContext, Prompt,
-    Role, RoutingTarget, StreamPart, StreamPartStream, Usage,
+    Role, RoutingTarget, StreamPart, StreamPartStream, ToolResultContentPart, ToolResultOutput,
+    Usage,
 };
 use bitrouter_sdk::{BitrouterError, Result};
 
@@ -309,14 +310,25 @@ fn canonical_content_to_bedrock(blocks: &[Content]) -> Result<Vec<ContentBlock>>
                     })?;
                 out.push(ContentBlock::ToolUse(tool_use));
             }
-            Content::ToolResult { call_id, content } => {
-                let tool_result = ToolResultBlock::builder()
-                    .tool_use_id(call_id.clone())
-                    .content(ToolResultContentBlock::Text(content.clone()))
-                    .build()
-                    .map_err(|e| {
-                        BitrouterError::internal(format!("building Bedrock ToolResultBlock: {e}"))
-                    })?;
+            Content::ToolResult {
+                call_id, output, ..
+            } => {
+                // Bedrock Converse `ToolResultBlock`: a content-block list plus a
+                // `status` (success/error). Map the typed output faithfully —
+                // text/JSON go to `Text` / `Json` content blocks, and the error
+                // variants set `status = error`. Bedrock has no tool-name field,
+                // so `tool_name` is dropped.
+                // https://docs.aws.amazon.com/bedrock/latest/APIReference/API_runtime_ToolResultBlock.html
+                let mut builder = ToolResultBlock::builder().tool_use_id(call_id.clone());
+                if output.is_error() {
+                    builder = builder.status(ToolResultStatus::Error);
+                }
+                for block in render_tool_result_blocks(output) {
+                    builder = builder.content(block);
+                }
+                let tool_result = builder.build().map_err(|e| {
+                    BitrouterError::internal(format!("building Bedrock ToolResultBlock: {e}"))
+                })?;
                 out.push(ContentBlock::ToolResult(tool_result));
             }
             Content::Reasoning { .. } => {
@@ -324,9 +336,44 @@ fn canonical_content_to_bedrock(blocks: &[Content]) -> Result<Vec<ContentBlock>>
                 // Bedrock Converse input schema — they appear only on the
                 // *response* side (under `reasoningContent`). Skipping.
             }
+            Content::File { .. } => {
+                // Multimodal request input (Bedrock `image` / `document` content
+                // blocks) is not yet wired onto the canonical IR here, mirroring
+                // the response side, which also skips non-text/tool blocks.
+                // Skipping keeps the request faithful for the text/tool path.
+                // https://docs.aws.amazon.com/bedrock/latest/APIReference/API_runtime_ContentBlock.html
+            }
         }
     }
     Ok(out)
+}
+
+/// Render a canonical [`ToolResultOutput`] into Bedrock `ToolResultContentBlock`s.
+/// Text / error-text → a `Text` block; JSON / error-json → a `Json` block; a
+/// multimodal `Content` output contributes one block per part, with text parts
+/// becoming `Text` blocks and media parts skipped (the faithful router does not
+/// decode bytes into Bedrock's structured `Image` / `Document` blocks).
+/// https://docs.aws.amazon.com/bedrock/latest/APIReference/API_runtime_ToolResultContentBlock.html
+fn render_tool_result_blocks(output: &ToolResultOutput) -> Vec<ToolResultContentBlock> {
+    match output {
+        ToolResultOutput::Text { value } | ToolResultOutput::ErrorText { value } => {
+            vec![ToolResultContentBlock::Text(value.clone())]
+        }
+        ToolResultOutput::Json { value } | ToolResultOutput::ErrorJson { value } => {
+            vec![ToolResultContentBlock::Json(json_value_to_document(
+                value.clone(),
+            ))]
+        }
+        ToolResultOutput::Content { value } => value
+            .iter()
+            .filter_map(|part| match part {
+                ToolResultContentPart::Text { text } => {
+                    Some(ToolResultContentBlock::Text(text.clone()))
+                }
+                ToolResultContentPart::Media { .. } => None,
+            })
+            .collect(),
+    }
 }
 
 fn build_inference_config(prompt: &Prompt) -> InferenceConfiguration {
@@ -395,18 +442,40 @@ fn bedrock_content_to_canonical(blocks: &[ContentBlock]) -> Vec<Content> {
                 });
             }
             ContentBlock::ToolResult(tr) => {
-                // Concatenate any text-shaped tool_result fragments.
-                let text: String = tr
-                    .content()
-                    .iter()
-                    .filter_map(|c| match c {
-                        ToolResultContentBlock::Text(s) => Some(s.as_str()),
-                        _ => None,
-                    })
-                    .collect();
+                // Bedrock carries a `status` (success/error) and a content-block
+                // list. A lone `Json` block maps to a structured Json output;
+                // otherwise the text fragments are concatenated. The error
+                // status promotes to the matching error variant. Bedrock has no
+                // tool-name field, so `tool_name` is `None`.
+                // https://docs.aws.amazon.com/bedrock/latest/APIReference/API_runtime_ToolResultBlock.html
+                let is_error = tr.status() == Some(&ToolResultStatus::Error);
+                let json_block = match tr.content() {
+                    [ToolResultContentBlock::Json(doc)] => Some(document_to_json(doc)),
+                    _ => None,
+                };
+                let output = match json_block {
+                    Some(value) if is_error => ToolResultOutput::ErrorJson { value },
+                    Some(value) => ToolResultOutput::Json { value },
+                    None => {
+                        let text: String = tr
+                            .content()
+                            .iter()
+                            .filter_map(|c| match c {
+                                ToolResultContentBlock::Text(s) => Some(s.as_str()),
+                                _ => None,
+                            })
+                            .collect();
+                        if is_error {
+                            ToolResultOutput::ErrorText { value: text }
+                        } else {
+                            ToolResultOutput::Text { value: text }
+                        }
+                    }
+                };
                 out.push(Content::ToolResult {
                     call_id: tr.tool_use_id().to_string(),
-                    content: text,
+                    tool_name: None,
+                    output,
                 });
             }
             _ => {
@@ -569,5 +638,102 @@ fn map_stream_err(
     BitrouterError::Upstream {
         status: 502,
         message: format!("Bedrock stream recv error: {e:?}"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use bitrouter_sdk::language_model::DataContent;
+
+    /// Render a single canonical tool result through Bedrock and parse it back,
+    /// returning the canonical output that survived the round trip.
+    fn round_trip_tool_output(output: ToolResultOutput) -> ToolResultOutput {
+        let blocks = canonical_content_to_bedrock(&[Content::ToolResult {
+            call_id: "call_1".to_string(),
+            tool_name: None,
+            output,
+        }])
+        .expect("render to Bedrock content blocks");
+        let back = bedrock_content_to_canonical(&blocks);
+        match back.into_iter().next() {
+            Some(Content::ToolResult { output, .. }) => output,
+            other => panic!("expected a tool result, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn bedrock_tool_result_text_round_trips() {
+        let output = ToolResultOutput::Text {
+            value: "the answer is 42".to_string(),
+        };
+        assert_eq!(round_trip_tool_output(output.clone()), output);
+    }
+
+    #[test]
+    fn bedrock_tool_result_json_round_trips_via_json_block() {
+        // A Json output renders to a Bedrock `Json` content block and parses back
+        // structured (not stringified).
+        let output = ToolResultOutput::Json {
+            value: serde_json::json!({ "celsius": 21, "unit": "C" }),
+        };
+        assert_eq!(round_trip_tool_output(output.clone()), output);
+    }
+
+    #[test]
+    fn bedrock_tool_result_error_text_sets_and_recovers_status() {
+        // The error flag rides Bedrock's `status` field, so ErrorText round-trips
+        // (Bedrock has a native error status, unlike the OpenAI tool wires).
+        let output = ToolResultOutput::ErrorText {
+            value: "tool blew up".to_string(),
+        };
+        let blocks = canonical_content_to_bedrock(&[Content::ToolResult {
+            call_id: "c1".to_string(),
+            tool_name: None,
+            output: output.clone(),
+        }])
+        .unwrap();
+        // The rendered block carries `status = error`.
+        match &blocks[0] {
+            ContentBlock::ToolResult(tr) => {
+                assert_eq!(tr.status(), Some(&ToolResultStatus::Error));
+            }
+            other => panic!("expected a tool_result block, got {other:?}"),
+        }
+        assert_eq!(round_trip_tool_output(output.clone()), output);
+    }
+
+    #[test]
+    fn bedrock_tool_result_error_json_round_trips() {
+        let output = ToolResultOutput::ErrorJson {
+            value: serde_json::json!({ "code": "E_BOOM" }),
+        };
+        assert_eq!(round_trip_tool_output(output.clone()), output);
+    }
+
+    #[test]
+    fn bedrock_tool_result_content_keeps_text_drops_media() {
+        // A multimodal Content output renders its text parts as Text blocks; the
+        // media part is dropped (faithful router does not decode bytes into
+        // Bedrock's structured Image/Document blocks), so it re-parses as Text.
+        let output = ToolResultOutput::Content {
+            value: vec![
+                ToolResultContentPart::Text {
+                    text: "see this".to_string(),
+                },
+                ToolResultContentPart::Media {
+                    media_type: "image/png".to_string(),
+                    data: DataContent::Base64 {
+                        data: "AAAA".to_string(),
+                    },
+                },
+            ],
+        };
+        assert_eq!(
+            round_trip_tool_output(output),
+            ToolResultOutput::Text {
+                value: "see this".to_string()
+            }
+        );
     }
 }

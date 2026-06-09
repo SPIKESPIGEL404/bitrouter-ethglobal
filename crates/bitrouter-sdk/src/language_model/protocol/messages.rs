@@ -23,7 +23,8 @@ use crate::language_model::protocol::{
 use crate::language_model::stream::SseFrame;
 use crate::language_model::types::{
     ApiProtocol, AuthScheme, Content, DataContent, FinishReason, GenerateResult, GenerationParams,
-    Message, Prompt, ResponseFormat, Role, RoutingTarget, StopDetails, StreamPart, Usage,
+    Message, Prompt, ResponseFormat, Role, RoutingTarget, StopDetails, StreamPart,
+    ToolResultContentPart, ToolResultOutput, Usage,
 };
 
 /// The Messages inbound + outbound protocol adapter.
@@ -131,7 +132,126 @@ fn parse_system(value: &serde_json::Value) -> String {
     }
 }
 
-/// Messages `tool_result.content` may be a string or an array of blocks (#364).
+/// Parse an Anthropic image/document `source` object into a canonical
+/// `(media_type, DataContent)`. A `base64` source carries an explicit
+/// `media_type`; a `url` source carries none, so the caller's fallback (derived
+/// from the block kind) is used.
+/// <https://docs.anthropic.com/en/docs/build-with-claude/vision>
+fn parse_anthropic_source(
+    source: Option<&serde_json::Value>,
+    media_type_fallback: &str,
+) -> (String, DataContent) {
+    let media_type = source
+        .and_then(|s| s.get("media_type"))
+        .and_then(|m| m.as_str())
+        .map(str::to_string)
+        .unwrap_or_else(|| media_type_fallback.to_string());
+    let data = if source.and_then(|s| s.get("type")).and_then(|t| t.as_str()) == Some("url") {
+        DataContent::Url {
+            url: source
+                .and_then(|s| s.get("url"))
+                .and_then(|u| u.as_str())
+                .unwrap_or_default()
+                .to_string(),
+        }
+    } else {
+        DataContent::Base64 {
+            data: source
+                .and_then(|s| s.get("data"))
+                .and_then(|d| d.as_str())
+                .unwrap_or_default()
+                .to_string(),
+        }
+    };
+    (media_type, data)
+}
+
+/// Parse the `content` of an Anthropic `tool_result` block into a canonical
+/// [`ToolResultOutput`], honoring the block's `is_error` flag.
+///
+/// `is_error` selects the error variants: a string error → [`ToolResultOutput::ErrorText`],
+/// a structured error → [`ToolResultOutput::ErrorJson`]. Without the flag, a
+/// string → [`ToolResultOutput::Text`], a block array carrying media →
+/// [`ToolResultOutput::Content`] (text + image parts in order), a text-only
+/// block array collapses to `Text`, and any other JSON value →
+/// [`ToolResultOutput::Json`].
+/// <https://docs.anthropic.com/en/docs/build-with-claude/tool-use#tool-result>
+fn parse_tool_result_output(
+    content: Option<&serde_json::Value>,
+    is_error: bool,
+) -> ToolResultOutput {
+    let Some(value) = content else {
+        // An absent body still carries the error flag faithfully.
+        return if is_error {
+            ToolResultOutput::ErrorText {
+                value: String::new(),
+            }
+        } else {
+            ToolResultOutput::Text {
+                value: String::new(),
+            }
+        };
+    };
+    if is_error {
+        return match value {
+            serde_json::Value::String(s) => ToolResultOutput::ErrorText { value: s.clone() },
+            serde_json::Value::Array(_) => ToolResultOutput::ErrorText {
+                value: tool_result_text(value),
+            },
+            other => ToolResultOutput::ErrorJson {
+                value: other.clone(),
+            },
+        };
+    }
+    match value {
+        serde_json::Value::String(s) => ToolResultOutput::Text { value: s.clone() },
+        serde_json::Value::Array(blocks) => {
+            let parts = parse_tool_result_blocks(blocks);
+            let has_media = parts
+                .iter()
+                .any(|p| matches!(p, ToolResultContentPart::Media { .. }));
+            if has_media {
+                ToolResultOutput::Content { value: parts }
+            } else {
+                ToolResultOutput::Text {
+                    value: tool_result_text(value),
+                }
+            }
+        }
+        other => ToolResultOutput::Json {
+            value: other.clone(),
+        },
+    }
+}
+
+/// Parse an Anthropic `tool_result` content-block array into ordered
+/// [`ToolResultContentPart`]s. `text` blocks become text parts; `image` blocks
+/// become media parts. Unknown block kinds are skipped (forward compatibility).
+/// <https://docs.anthropic.com/en/docs/build-with-claude/tool-use#tool-result>
+fn parse_tool_result_blocks(blocks: &[serde_json::Value]) -> Vec<ToolResultContentPart> {
+    blocks
+        .iter()
+        .filter_map(|b| match b.get("type").and_then(|t| t.as_str()) {
+            Some("text") => Some(ToolResultContentPart::Text {
+                text: b
+                    .get("text")
+                    .and_then(|t| t.as_str())
+                    .unwrap_or_default()
+                    .to_string(),
+            }),
+            Some("image") => {
+                let (media_type, data) = parse_anthropic_source(b.get("source"), "image/");
+                Some(ToolResultContentPart::Media { media_type, data })
+            }
+            _ => None,
+        })
+        .collect()
+}
+
+/// Flatten the text of an Anthropic `tool_result` content value (string, or a
+/// block array) — used as the lossless string fallback for providers that
+/// cannot carry structure.
+/// <https://docs.anthropic.com/en/docs/build-with-claude/tool-use#tool-result>
 fn tool_result_text(value: &serde_json::Value) -> String {
     match value {
         serde_json::Value::String(s) => s.clone(),
@@ -188,54 +308,38 @@ fn parse_content(value: &serde_json::Value) -> Result<Vec<Content>> {
                             .map(|i| i.to_string())
                             .unwrap_or_else(|| "{}".to_string()),
                     }),
+                    // Anthropic `tool_result` block `{tool_use_id, content, is_error}`:
+                    // `content` is a string or a block array (text / image); the
+                    // optional `is_error` flag promotes the output to an error
+                    // variant. The wire carries no tool name → `tool_name: None`.
+                    // <https://docs.anthropic.com/en/docs/build-with-claude/tool-use#tool-result>
                     "tool_result" => out.push(Content::ToolResult {
                         call_id: block
                             .get("tool_use_id")
                             .and_then(|i| i.as_str())
                             .unwrap_or_default()
                             .to_string(),
-                        content: block
-                            .get("content")
-                            .map(tool_result_text)
-                            .unwrap_or_default(),
+                        tool_name: None,
+                        output: parse_tool_result_output(
+                            block.get("content"),
+                            block
+                                .get("is_error")
+                                .and_then(|e| e.as_bool())
+                                .unwrap_or(false),
+                        ),
                     }),
                     // image/* and documents (PDF, …) -> a canonical File part.
                     // <https://docs.anthropic.com/en/docs/build-with-claude/vision>
                     "image" | "document" => {
-                        let source = block.get("source");
-                        let media_type = source
-                            .and_then(|s| s.get("media_type"))
-                            .and_then(|m| m.as_str())
-                            .map(str::to_string)
-                            .unwrap_or_else(|| {
-                                // A `url` source carries no media type; derive a
-                                // prefix from the block kind so modality detection
-                                // still works.
-                                if block_type == "image" {
-                                    "image/".to_string()
-                                } else {
-                                    "application/".to_string()
-                                }
-                            });
-                        let data = if source.and_then(|s| s.get("type")).and_then(|t| t.as_str())
-                            == Some("url")
-                        {
-                            DataContent::Url {
-                                url: source
-                                    .and_then(|s| s.get("url"))
-                                    .and_then(|u| u.as_str())
-                                    .unwrap_or_default()
-                                    .to_string(),
-                            }
+                        // A `url` source carries no media type; derive a prefix
+                        // from the block kind so modality detection still works.
+                        let fallback = if block_type == "image" {
+                            "image/"
                         } else {
-                            DataContent::Base64 {
-                                data: source
-                                    .and_then(|s| s.get("data"))
-                                    .and_then(|d| d.as_str())
-                                    .unwrap_or_default()
-                                    .to_string(),
-                            }
+                            "application/"
                         };
+                        let (media_type, data) =
+                            parse_anthropic_source(block.get("source"), fallback);
                         out.push(Content::File {
                             media_type,
                             data,
@@ -788,19 +892,67 @@ fn render_content_block(c: &Content) -> Option<serde_json::Value> {
     }
 }
 
+/// Render one canonical [`ToolResultOutput`] into an Anthropic `tool_result`
+/// block body: `(content, is_error)`. A multimodal [`ToolResultOutput::Content`]
+/// becomes a block array (`text` + `image` blocks); every other variant becomes
+/// a string. The error variants set `is_error: true`; `ErrorJson` is stringified
+/// because the Anthropic wire's error body is a string, not structured JSON.
+/// <https://docs.anthropic.com/en/docs/build-with-claude/tool-use#tool-result>
+fn render_tool_result_content(output: &ToolResultOutput) -> (serde_json::Value, bool) {
+    let is_error = output.is_error();
+    let content = match output {
+        ToolResultOutput::Content { value } => {
+            let blocks: Vec<serde_json::Value> = value
+                .iter()
+                .map(|p| match p {
+                    ToolResultContentPart::Text { text } => {
+                        serde_json::json!({ "type": "text", "text": text })
+                    }
+                    ToolResultContentPart::Media { media_type, data } => {
+                        let source = match data {
+                            DataContent::Base64 { data } => serde_json::json!({
+                                "type": "base64", "media_type": media_type, "data": data
+                            }),
+                            DataContent::Url { url } => {
+                                serde_json::json!({ "type": "url", "url": url })
+                            }
+                        };
+                        serde_json::json!({ "type": "image", "source": source })
+                    }
+                })
+                .collect();
+            serde_json::Value::Array(blocks)
+        }
+        other => serde_json::Value::String(other.to_provider_string()),
+    };
+    (content, is_error)
+}
+
 fn render_message(m: &Message) -> serde_json::Value {
     // Canonical Tool-role messages become Anthropic user messages carrying
     // tool_result blocks.
+    // <https://docs.anthropic.com/en/docs/build-with-claude/tool-use#tool-result>
     if m.role == Role::Tool {
         let blocks: Vec<serde_json::Value> = m
             .content
             .iter()
             .filter_map(|c| match c {
-                Content::ToolResult { call_id, content } => Some(serde_json::json!({
-                    "type": "tool_result",
-                    "tool_use_id": call_id,
-                    "content": content,
-                })),
+                Content::ToolResult {
+                    call_id, output, ..
+                } => {
+                    let (content, is_error) = render_tool_result_content(output);
+                    let mut block = serde_json::json!({
+                        "type": "tool_result",
+                        "tool_use_id": call_id,
+                        "content": content,
+                    });
+                    // Only emit `is_error` when set — Anthropic treats its absence
+                    // as `false`, so omitting it keeps non-error results clean.
+                    if is_error {
+                        block["is_error"] = serde_json::Value::Bool(true);
+                    }
+                    Some(block)
+                }
                 _ => None,
             })
             .collect();

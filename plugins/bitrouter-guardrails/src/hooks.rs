@@ -49,13 +49,19 @@ fn request_text(ctx: &PipelineContext) -> String {
                     buf.push_str(text);
                     buf.push('\n');
                 }
-                Content::ToolResult { content, .. } => {
-                    buf.push_str(content);
+                Content::ToolResult { output, .. } => {
+                    // Scan the flattened text of the tool result (text parts and
+                    // stringified JSON) so guardrail rules still see tool output.
+                    buf.push_str(&output.to_provider_string());
                     buf.push('\n');
                 }
                 Content::ToolCall { arguments, .. } => {
                     buf.push_str(arguments);
                     buf.push('\n');
+                }
+                Content::File { .. } => {
+                    // File parts (image / audio / document) carry no scannable
+                    // text, so they contribute nothing to the guardrail buffer.
                 }
             }
         }

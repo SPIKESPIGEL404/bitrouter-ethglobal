@@ -29,7 +29,7 @@ use crate::language_model::protocol::{
 use crate::language_model::stream::SseFrame;
 use crate::language_model::types::{
     ApiProtocol, Content, DataContent, FinishReason, GenerateResult, GenerationParams, Message,
-    Prompt, ResponseFormat, Role, RoutingTarget, StreamPart, Usage,
+    Prompt, ResponseFormat, Role, RoutingTarget, StreamPart, ToolResultOutput, Usage,
 };
 
 /// The Responses protocol adapter.
@@ -251,7 +251,18 @@ fn parse_input(value: &serde_json::Value) -> Result<Vec<Message>> {
                             }],
                         });
                     }
+                    // OpenAI Responses `function_call_output {call_id, output}`:
+                    // `output` is a string or structured JSON, with no tool name
+                    // and no error flag on the wire. A string → Text, any other
+                    // value → Json.
+                    // <https://platform.openai.com/docs/api-reference/responses/create>
                     Some("function_call_output") => {
+                        let output = item
+                            .get("output")
+                            .map(ToolResultOutput::from_untyped_value)
+                            .unwrap_or_else(|| ToolResultOutput::Text {
+                                value: String::new(),
+                            });
                         messages.push(Message {
                             role: Role::Tool,
                             content: vec![Content::ToolResult {
@@ -260,13 +271,8 @@ fn parse_input(value: &serde_json::Value) -> Result<Vec<Message>> {
                                     .and_then(|i| i.as_str())
                                     .unwrap_or_default()
                                     .to_string(),
-                                content: item
-                                    .get("output")
-                                    .map(|o| match o {
-                                        serde_json::Value::String(s) => s.clone(),
-                                        other => other.to_string(),
-                                    })
-                                    .unwrap_or_default(),
+                                tool_name: None,
+                                output,
                             }],
                         });
                     }
@@ -722,11 +728,19 @@ fn render_message_items(m: &Message) -> Vec<serde_json::Value> {
                 };
                 text_parts.push(part);
             }
-            Content::ToolResult { call_id, content } => {
+            // Responses `function_call_output {call_id, output}`. `output` carries
+            // no error flag and no tool name, so an error output degrades to its
+            // value and `tool_name` is dropped. `Json` / `ErrorJson` preserve
+            // their structured value; the text/content variants stringify.
+            // <https://platform.openai.com/docs/api-reference/responses/create>
+            Content::ToolResult {
+                call_id, output, ..
+            } => {
+                let output_value = render_responses_tool_output(output);
                 items.push(serde_json::json!({
                     "type": "function_call_output",
                     "call_id": call_id,
-                    "output": content,
+                    "output": output_value,
                 }));
             }
         }
@@ -742,6 +756,18 @@ fn render_message_items(m: &Message) -> Vec<serde_json::Value> {
         );
     }
     items
+}
+
+/// Render a [`ToolResultOutput`] into a Responses `function_call_output.output`
+/// value. Structured `Json` / `ErrorJson` keep their value (Responses accepts a
+/// structured output); the text and multimodal variants stringify (the wire has
+/// no media slot for tool output here).
+/// <https://platform.openai.com/docs/api-reference/responses/create>
+fn render_responses_tool_output(output: &ToolResultOutput) -> serde_json::Value {
+    match output {
+        ToolResultOutput::Json { value } | ToolResultOutput::ErrorJson { value } => value.clone(),
+        other => serde_json::Value::String(other.to_provider_string()),
+    }
 }
 
 /// Render a canonical result into Responses `output` items.

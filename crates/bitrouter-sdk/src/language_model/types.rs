@@ -139,12 +139,122 @@ pub enum Content {
         /// JSON-encoded arguments.
         arguments: String,
     },
-    /// A tool/function result supplied back to the model.
+    /// A tool/function result supplied back to the model. Models the Vercel AI
+    /// SDK `LanguageModelV3ToolResultPart`: the result is a typed
+    /// [`ToolResultOutput`] union (text / JSON / error / multimodal content)
+    /// rather than a flat opaque string, so structure, the error flag, and
+    /// multimodal results survive cross-protocol routing.
+    /// <https://github.com/vercel/ai/blob/main/packages/provider/src/language-model/v3/language-model-v3-prompt.ts>
     ToolResult {
         /// The call id this result answers.
         call_id: String,
-        /// Result body. May itself be structured (v0 #364).
-        content: String,
+        /// The tool's name, when the wire carries it. Anthropic / OpenAI tool
+        /// results key only by call id and leave this `None`; Gemini's
+        /// `functionResponse` keys by name and populates it.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        tool_name: Option<String>,
+        /// The typed result body.
+        output: ToolResultOutput,
+    },
+}
+
+/// The result body of a [`Content::ToolResult`]. A faithful port of the Vercel
+/// AI SDK `LanguageModelV3ToolResultOutput` tagged union: a tool result can be
+/// plain text, a JSON value, an error (text or JSON), or a multimodal content
+/// array. Adapters translate each variant to/from the upstream's native wire
+/// shape and degrade losslessly when a provider can't express a variant.
+/// <https://github.com/vercel/ai/blob/main/packages/provider/src/language-model/v3/language-model-v3-prompt.ts>
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum ToolResultOutput {
+    /// Plain-text output sent directly to the model.
+    Text {
+        /// The text body.
+        value: String,
+    },
+    /// A structured JSON result.
+    Json {
+        /// The JSON value.
+        value: serde_json::Value,
+    },
+    /// A textual error message (the V3 `error-text` output).
+    ErrorText {
+        /// The error text.
+        value: String,
+    },
+    /// A structured JSON error (the V3 `error-json` output).
+    ErrorJson {
+        /// The error value.
+        value: serde_json::Value,
+    },
+    /// A multimodal result: an ordered array of text / media parts.
+    Content {
+        /// The ordered content parts.
+        value: Vec<ToolResultContentPart>,
+    },
+}
+
+impl ToolResultOutput {
+    /// Parse a provider tool-result body that carries no error flag and no
+    /// typed shape (OpenAI Chat Completions `tool` content / Responses
+    /// `function_call_output.output`). A JSON string maps to [`Self::Text`];
+    /// any other JSON value (object, array, number, …) maps to [`Self::Json`],
+    /// preserving structure the flat-string IR used to lose.
+    pub fn from_untyped_value(value: &serde_json::Value) -> Self {
+        match value {
+            serde_json::Value::String(s) => Self::Text { value: s.clone() },
+            other => Self::Json {
+                value: other.clone(),
+            },
+        }
+    }
+
+    /// Whether this output represents an error (the V3 `error-text` /
+    /// `error-json` outputs). Lets an adapter set a provider's native error flag
+    /// (e.g. Anthropic's `tool_result.is_error`).
+    pub fn is_error(&self) -> bool {
+        matches!(self, Self::ErrorText { .. } | Self::ErrorJson { .. })
+    }
+
+    /// Collapse this output to a single string for providers whose tool-result
+    /// field is string-only (OpenAI Chat Completions / Responses). `Text` /
+    /// `ErrorText` pass through verbatim; `Json` / `ErrorJson` stringify their
+    /// value; `Content` concatenates its text parts (media parts have no string
+    /// form on these wires and are dropped).
+    pub fn to_provider_string(&self) -> String {
+        match self {
+            Self::Text { value } | Self::ErrorText { value } => value.clone(),
+            Self::Json { value } | Self::ErrorJson { value } => value.to_string(),
+            Self::Content { value } => value
+                .iter()
+                .filter_map(|p| match p {
+                    ToolResultContentPart::Text { text } => Some(text.as_str()),
+                    ToolResultContentPart::Media { .. } => None,
+                })
+                .collect(),
+        }
+    }
+}
+
+/// One part of a [`ToolResultOutput::Content`] multimodal tool result. Mirrors
+/// the V3 `content` output's element union, reduced to the two payload forms a
+/// faithful-passthrough router carries: inline/URL media (via the shared
+/// [`DataContent`]) and text.
+/// <https://github.com/vercel/ai/blob/main/packages/provider/src/language-model/v3/language-model-v3-prompt.ts>
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum ToolResultContentPart {
+    /// A text fragment.
+    Text {
+        /// The text body.
+        text: String,
+    },
+    /// A media fragment — image, audio, etc., keyed by IANA media type.
+    Media {
+        /// IANA media type, e.g. `image/png`.
+        media_type: String,
+        /// The payload — inline base64 bytes or a URL.
+        data: DataContent,
     },
 }
 

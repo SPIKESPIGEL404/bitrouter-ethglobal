@@ -2058,19 +2058,21 @@ fn regression_364_tool_result_array_and_thinking() {
             .any(|c| matches!(c, Content::Reasoning { .. })),
         "thinking block preserved as Reasoning"
     );
-    // tool_result with array content is read as text
+    // a text-only tool_result block array collapses to a Text output
     let tr = prompt
         .messages
         .iter()
         .flat_map(|m| &m.content)
         .find_map(|c| match c {
-            Content::ToolResult { content, .. } => Some(content.as_str()),
+            Content::ToolResult { output, .. } => Some(output.clone()),
             _ => None,
         });
     assert_eq!(
         tr,
-        Some("42"),
-        "array tool_result content flattened to text"
+        Some(ToolResultOutput::Text {
+            value: "42".to_string()
+        }),
+        "text-only array tool_result content flattens to a Text output"
     );
 }
 
@@ -3142,5 +3144,435 @@ fn generated_file_url_round_trips_through_generate_content() {
     assert!(
         s.contains("fileData") && s.contains("https://example.invalid/g.png"),
         "rendered response should carry the file URL: {s}"
+    );
+}
+
+// ===== structured tool results (LanguageModelV3 ToolResultOutput parity) =====
+
+/// A canonical prompt whose single Tool-role message carries one tool result
+/// with the given call id, optional tool name, and typed output.
+fn tool_result_prompt(call_id: &str, tool_name: Option<&str>, output: ToolResultOutput) -> Prompt {
+    Prompt {
+        model: "test-model".to_string(),
+        system: None,
+        messages: vec![Message {
+            role: Role::Tool,
+            content: vec![Content::ToolResult {
+                call_id: call_id.to_string(),
+                tool_name: tool_name.map(str::to_string),
+                output,
+            }],
+        }],
+        tools: vec![],
+        params: GenerationParams {
+            max_tokens: Some(256),
+            ..Default::default()
+        },
+        response_format: None,
+        stream: false,
+    }
+}
+
+/// The first tool result `(call_id, tool_name, output)` in a parsed prompt.
+fn first_tool_result(prompt: &Prompt) -> (&str, Option<&str>, &ToolResultOutput) {
+    prompt
+        .messages
+        .iter()
+        .flat_map(|m| &m.content)
+        .find_map(|c| match c {
+            Content::ToolResult {
+                call_id,
+                tool_name,
+                output,
+            } => Some((call_id.as_str(), tool_name.as_deref(), output)),
+            _ => None,
+        })
+        .expect("prompt should carry a tool result")
+}
+
+/// Render `output` through `protocol` as a tool-result request, re-parse it, and
+/// return the canonical output that survived the round trip.
+fn round_trip_tool_output(protocol: ApiProtocol, output: ToolResultOutput) -> ToolResultOutput {
+    let adapter = adapter_for(protocol.clone());
+    let rendered = adapter
+        .render_request(&tool_result_prompt("call_1", None, output))
+        .unwrap_or_else(|e| panic!("{protocol:?} render_request: {e}"));
+    let reparsed = adapter
+        .parse_request(rendered)
+        .unwrap_or_else(|e| panic!("{protocol:?} parse_request: {e}"));
+    first_tool_result(&reparsed).2.clone()
+}
+
+#[test]
+fn tool_result_text_round_trips_through_string_capable_protocols() {
+    // Chat Completions, Messages, and Responses all carry a string tool-result
+    // body, so a Text output survives a round trip unchanged. Generate Content
+    // is excluded: its `functionResponse.response` is always a JSON object, so
+    // Text necessarily degrades there (covered by its own test below).
+    for protocol in [
+        ApiProtocol::ChatCompletions,
+        ApiProtocol::Messages,
+        ApiProtocol::Responses,
+    ] {
+        let output = ToolResultOutput::Text {
+            value: "the result is 42".to_string(),
+        };
+        assert_eq!(
+            round_trip_tool_output(protocol.clone(), output.clone()),
+            output,
+            "{protocol:?} lost a Text tool result"
+        );
+    }
+}
+
+#[test]
+fn tool_result_text_degrades_to_json_result_on_gemini() {
+    // Gemini's `functionResponse.response` must be a JSON object, so a Text
+    // output is rendered losslessly under a `result` key and re-parses as a
+    // Json output carrying that key — a faithful, non-dropping degrade.
+    // <https://ai.google.dev/api/caching#FunctionResponse>
+    let output = ToolResultOutput::Text {
+        value: "the result is 42".to_string(),
+    };
+    let back = round_trip_tool_output(ApiProtocol::GenerateContent, output);
+    assert_eq!(
+        back,
+        ToolResultOutput::Json {
+            value: serde_json::json!({ "result": "the result is 42" }),
+        },
+        "Gemini Text tool result degrades to a Json {{result}} object"
+    );
+}
+
+#[test]
+fn tool_result_json_round_trips_through_structured_protocols() {
+    // Responses (`function_call_output.output`) and Generate Content
+    // (`functionResponse.response`) both carry a structured tool-result body, so
+    // a Json *object* output survives intact.
+    let output = ToolResultOutput::Json {
+        value: serde_json::json!({ "celsius": 21, "unit": "C" }),
+    };
+    for protocol in [ApiProtocol::Responses, ApiProtocol::GenerateContent] {
+        assert_eq!(
+            round_trip_tool_output(protocol.clone(), output.clone()),
+            output,
+            "{protocol:?} lost a Json tool result"
+        );
+    }
+}
+
+#[test]
+fn tool_result_json_degrades_to_text_on_chat_completions() {
+    // OpenAI Chat Completions' `tool` message `content` is a string (or a
+    // text/media part array) — there is no slot for a bare JSON value, so a Json
+    // output is stringified and re-parses as Text (a lossless degrade).
+    // <https://platform.openai.com/docs/api-reference/chat/create#chat-create-messages>
+    let output = ToolResultOutput::Json {
+        value: serde_json::json!({ "celsius": 21, "unit": "C" }),
+    };
+    let back = round_trip_tool_output(ApiProtocol::ChatCompletions, output.clone());
+    assert_eq!(
+        back,
+        ToolResultOutput::Text {
+            value: output.to_provider_string(),
+        },
+        "Chat Completions Json tool result degrades to a stringified Text output"
+    );
+}
+
+#[test]
+fn tool_result_json_degrades_to_text_on_anthropic() {
+    // Anthropic's tool_result body is a string (or block array), with no slot
+    // for a bare JSON value — so a Json output degrades losslessly to its
+    // stringified form rather than being dropped.
+    let output = ToolResultOutput::Json {
+        value: serde_json::json!({ "k": 1 }),
+    };
+    let back = round_trip_tool_output(ApiProtocol::Messages, output.clone());
+    assert_eq!(
+        back,
+        ToolResultOutput::Text {
+            value: output.to_provider_string(),
+        },
+        "Anthropic Json tool result degrades to a stringified Text output"
+    );
+}
+
+#[test]
+fn tool_result_error_text_round_trips_through_anthropic() {
+    // Anthropic is the only request protocol with a native error flag
+    // (`tool_result.is_error`); ErrorText must survive a round trip through it.
+    let output = ToolResultOutput::ErrorText {
+        value: "tool exploded".to_string(),
+    };
+    assert_eq!(
+        round_trip_tool_output(ApiProtocol::Messages, output.clone()),
+        output,
+        "Anthropic lost an ErrorText tool result"
+    );
+}
+
+#[test]
+fn tool_result_error_json_round_trips_through_anthropic() {
+    // Anthropic's error body is a string, so ErrorJson round-trips as ErrorText
+    // (the flag survives, the structure flattens — a lossless degrade).
+    let output = ToolResultOutput::ErrorJson {
+        value: serde_json::json!({ "code": "E_BOOM", "retryable": false }),
+    };
+    let back = round_trip_tool_output(ApiProtocol::Messages, output.clone());
+    assert_eq!(
+        back,
+        ToolResultOutput::ErrorText {
+            value: output.to_provider_string(),
+        },
+        "Anthropic ErrorJson keeps the error flag, flattening to ErrorText"
+    );
+}
+
+#[test]
+fn tool_result_is_error_renders_anthropic_flag() {
+    // The rendered Anthropic wire must carry `is_error: true` for an error
+    // output and omit it otherwise.
+    let err = adapter_for(ApiProtocol::Messages)
+        .render_request(&tool_result_prompt(
+            "t1",
+            None,
+            ToolResultOutput::ErrorText {
+                value: "bad".to_string(),
+            },
+        ))
+        .unwrap();
+    let err_block = &err["messages"][0]["content"][0];
+    assert_eq!(err_block["type"], "tool_result");
+    assert_eq!(err_block["is_error"], serde_json::Value::Bool(true));
+    assert_eq!(err_block["content"], "bad");
+
+    let ok = adapter_for(ApiProtocol::Messages)
+        .render_request(&tool_result_prompt(
+            "t1",
+            None,
+            ToolResultOutput::Text {
+                value: "good".to_string(),
+            },
+        ))
+        .unwrap();
+    assert!(
+        ok["messages"][0]["content"][0].get("is_error").is_none(),
+        "a non-error tool result must omit the is_error flag"
+    );
+}
+
+#[test]
+fn tool_result_content_round_trips_through_anthropic() {
+    // A multimodal (content-variant) tool result: text + an image part survive a
+    // round trip through Anthropic's tool_result block array.
+    let output = ToolResultOutput::Content {
+        value: vec![
+            ToolResultContentPart::Text {
+                text: "see image".to_string(),
+            },
+            ToolResultContentPart::Media {
+                media_type: "image/png".to_string(),
+                data: DataContent::Base64 {
+                    data: IMG_B64.to_string(),
+                },
+            },
+        ],
+    };
+    assert_eq!(
+        round_trip_tool_output(ApiProtocol::Messages, output.clone()),
+        output,
+        "Anthropic lost a multimodal Content tool result"
+    );
+}
+
+#[test]
+fn tool_result_content_renders_anthropic_image_block() {
+    // The rendered Anthropic wire carries the multimodal result as a block
+    // array with a `text` block and an `image` block.
+    let output = ToolResultOutput::Content {
+        value: vec![
+            ToolResultContentPart::Text {
+                text: "look".to_string(),
+            },
+            ToolResultContentPart::Media {
+                media_type: "image/png".to_string(),
+                data: DataContent::Base64 {
+                    data: IMG_B64.to_string(),
+                },
+            },
+        ],
+    };
+    let req = adapter_for(ApiProtocol::Messages)
+        .render_request(&tool_result_prompt("t1", None, output))
+        .unwrap();
+    let blocks = &req["messages"][0]["content"][0]["content"];
+    assert_eq!(blocks[0]["type"], "text");
+    assert_eq!(blocks[0]["text"], "look");
+    assert_eq!(blocks[1]["type"], "image");
+    assert_eq!(blocks[1]["source"]["type"], "base64");
+    assert_eq!(blocks[1]["source"]["media_type"], "image/png");
+    assert_eq!(blocks[1]["source"]["data"], IMG_B64);
+}
+
+#[test]
+fn tool_result_content_round_trips_through_chat_completions() {
+    // OpenAI Chat Completions carries a multimodal tool result as a content-part
+    // array (text + image_url), so a Content output survives there too.
+    let output = ToolResultOutput::Content {
+        value: vec![
+            ToolResultContentPart::Text {
+                text: "pic".to_string(),
+            },
+            ToolResultContentPart::Media {
+                media_type: "image/png".to_string(),
+                data: DataContent::Base64 {
+                    data: IMG_B64.to_string(),
+                },
+            },
+        ],
+    };
+    assert_eq!(
+        round_trip_tool_output(ApiProtocol::ChatCompletions, output.clone()),
+        output,
+        "Chat Completions lost a multimodal Content tool result"
+    );
+}
+
+#[test]
+fn tool_name_survives_gemini_function_response_round_trip() {
+    // Gemini keys tool results by function name; `tool_name` must survive a
+    // render→parse round trip through `functionResponse`.
+    let output = ToolResultOutput::Json {
+        value: serde_json::json!({ "ok": true }),
+    };
+    let adapter = adapter_for(ApiProtocol::GenerateContent);
+    let rendered = adapter
+        .render_request(&tool_result_prompt(
+            "call_1",
+            Some("get_weather"),
+            output.clone(),
+        ))
+        .unwrap();
+    // The rendered wire carries the tool name under `functionResponse.name`.
+    let fr = &rendered["contents"][0]["parts"][0]["functionResponse"];
+    assert_eq!(fr["name"], "get_weather");
+    assert_eq!(fr["response"]["ok"], true);
+
+    let reparsed = adapter.parse_request(rendered).unwrap();
+    let (_, tool_name, parsed_output) = first_tool_result(&reparsed);
+    assert_eq!(
+        tool_name,
+        Some("get_weather"),
+        "Gemini functionResponse must preserve the tool name"
+    );
+    assert_eq!(parsed_output, &output, "Gemini lost the Json tool output");
+}
+
+#[test]
+fn gemini_function_response_carries_call_id_when_distinct() {
+    // When the call id differs from the tool name, the Gemini wire carries it
+    // under `functionResponse.id` and a round trip recovers both.
+    let adapter = adapter_for(ApiProtocol::GenerateContent);
+    let rendered = adapter
+        .render_request(&tool_result_prompt(
+            "call_42",
+            Some("get_weather"),
+            ToolResultOutput::Json {
+                value: serde_json::json!({ "ok": true }),
+            },
+        ))
+        .unwrap();
+    let fr = &rendered["contents"][0]["parts"][0]["functionResponse"];
+    assert_eq!(fr["name"], "get_weather");
+    assert_eq!(fr["id"], "call_42");
+
+    let reparsed = adapter.parse_request(rendered).unwrap();
+    let (call_id, tool_name, _) = first_tool_result(&reparsed);
+    assert_eq!(call_id, "call_42", "Gemini lost the distinct call id");
+    assert_eq!(tool_name, Some("get_weather"));
+}
+
+#[test]
+fn tool_result_output_serde_uses_snake_case_tags() {
+    // The IR serde representation is the cross-protocol contract: snake_case
+    // type tags on both the output union and its content parts.
+    let text = serde_json::to_value(ToolResultOutput::Text {
+        value: "x".to_string(),
+    })
+    .unwrap();
+    assert_eq!(text["type"], "text");
+    assert_eq!(text["value"], "x");
+
+    let err = serde_json::to_value(ToolResultOutput::ErrorText {
+        value: "boom".to_string(),
+    })
+    .unwrap();
+    assert_eq!(err["type"], "error_text");
+
+    let err_json = serde_json::to_value(ToolResultOutput::ErrorJson {
+        value: serde_json::json!({ "a": 1 }),
+    })
+    .unwrap();
+    assert_eq!(err_json["type"], "error_json");
+
+    let content = serde_json::to_value(ToolResultOutput::Content {
+        value: vec![ToolResultContentPart::Media {
+            media_type: "image/png".to_string(),
+            data: DataContent::Url {
+                url: "https://example.invalid/a.png".to_string(),
+            },
+        }],
+    })
+    .unwrap();
+    assert_eq!(content["type"], "content");
+    assert_eq!(content["value"][0]["type"], "media");
+    assert_eq!(content["value"][0]["media_type"], "image/png");
+    assert_eq!(content["value"][0]["data"]["kind"], "url");
+}
+
+#[test]
+fn tool_result_content_serde_round_trips() {
+    // The whole Content block round-trips through serde unchanged, including the
+    // optional tool_name field.
+    let original = Content::ToolResult {
+        call_id: "c1".to_string(),
+        tool_name: Some("calc".to_string()),
+        output: ToolResultOutput::Content {
+            value: vec![
+                ToolResultContentPart::Text {
+                    text: "hi".to_string(),
+                },
+                ToolResultContentPart::Media {
+                    media_type: "image/png".to_string(),
+                    data: DataContent::Base64 {
+                        data: IMG_B64.to_string(),
+                    },
+                },
+            ],
+        },
+    };
+    let value = serde_json::to_value(&original).unwrap();
+    assert_eq!(value["type"], "tool_result");
+    assert_eq!(value["tool_name"], "calc");
+    let back: Content = serde_json::from_value(value).unwrap();
+    assert_eq!(back, original);
+}
+
+#[test]
+fn tool_result_without_tool_name_omits_the_field() {
+    // `tool_name` is `skip_serializing_if = "Option::is_none"`, so a result
+    // without a name must not emit the key.
+    let value = serde_json::to_value(Content::ToolResult {
+        call_id: "c1".to_string(),
+        tool_name: None,
+        output: ToolResultOutput::Text {
+            value: "x".to_string(),
+        },
+    })
+    .unwrap();
+    assert!(
+        value.get("tool_name").is_none(),
+        "absent tool_name must omit the key, not emit null: {value}"
     );
 }
