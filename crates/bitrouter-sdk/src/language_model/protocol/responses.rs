@@ -29,7 +29,8 @@ use crate::language_model::protocol::{
 use crate::language_model::stream::SseFrame;
 use crate::language_model::types::{
     ApiProtocol, Content, DataContent, FinishReason, GenerateResult, GenerationParams, Message,
-    Prompt, ResponseFormat, Role, RoutingTarget, StreamPart, ToolResultOutput, Usage,
+    Prompt, ResponseFormat, Role, RoutingTarget, StreamPart, ToolResultContentPart,
+    ToolResultOutput, Usage,
 };
 
 /// The Responses protocol adapter.
@@ -252,14 +253,15 @@ fn parse_input(value: &serde_json::Value) -> Result<Vec<Message>> {
                         });
                     }
                     // OpenAI Responses `function_call_output {call_id, output}`:
-                    // `output` is a string or structured JSON, with no tool name
-                    // and no error flag on the wire. A string → Text, any other
+                    // `output` is a string, a content-part array, or (loosely) a
+                    // bare JSON value, with no tool name and no error flag on the
+                    // wire. A string → Text, a part array → Content, any other
                     // value → Json.
                     // <https://platform.openai.com/docs/api-reference/responses/create>
                     Some("function_call_output") => {
                         let output = item
                             .get("output")
-                            .map(ToolResultOutput::from_untyped_value)
+                            .map(parse_responses_tool_output)
                             .unwrap_or_else(|| ToolResultOutput::Text {
                                 value: String::new(),
                             });
@@ -728,10 +730,10 @@ fn render_message_items(m: &Message) -> Vec<serde_json::Value> {
                 };
                 text_parts.push(part);
             }
-            // Responses `function_call_output {call_id, output}`. `output` carries
-            // no error flag and no tool name, so an error output degrades to its
-            // value and `tool_name` is dropped. `Json` / `ErrorJson` preserve
-            // their structured value; the text/content variants stringify.
+            // Responses `function_call_output {call_id, output}`. `output` is a
+            // string or content-part array, with no error flag and no tool name,
+            // so an error output degrades to its value and `tool_name` is dropped.
+            // `Json` / `ErrorJson` stringify; `Content` becomes a part array.
             // <https://platform.openai.com/docs/api-reference/responses/create>
             Content::ToolResult {
                 call_id, output, ..
@@ -759,14 +761,130 @@ fn render_message_items(m: &Message) -> Vec<serde_json::Value> {
 }
 
 /// Render a [`ToolResultOutput`] into a Responses `function_call_output.output`
-/// value. Structured `Json` / `ErrorJson` keep their value (Responses accepts a
-/// structured output); the text and multimodal variants stringify (the wire has
-/// no media slot for tool output here).
+/// value. The wire's `output` is `string | content-part-array`, never a bare
+/// JSON-value slot: `Text` / `ErrorText` pass through as a string, `Json` /
+/// `ErrorJson` are **stringified** (the reference does `JSON.stringify`), and a
+/// multimodal `Content` becomes a part array of `input_text` / `input_image` /
+/// `input_file` — the same wire shapes a user message uses, so media survives
+/// rather than being flattened to text. The error flag and tool name have no
+/// slot here and are dropped.
 /// <https://platform.openai.com/docs/api-reference/responses/create>
+/// <https://github.com/vercel/ai/blob/main/packages/openai/src/responses/convert-to-openai-responses-input.ts>
 fn render_responses_tool_output(output: &ToolResultOutput) -> serde_json::Value {
     match output {
-        ToolResultOutput::Json { value } | ToolResultOutput::ErrorJson { value } => value.clone(),
+        // `output` is a string slot, not a JSON-value slot: stringify the value
+        // (matching the reference's `JSON.stringify(output.value)`) rather than
+        // emitting a bare object the wire would reject.
+        ToolResultOutput::Json { value } | ToolResultOutput::ErrorJson { value } => {
+            serde_json::Value::String(value.to_string())
+        }
+        ToolResultOutput::Content { value } => serde_json::Value::Array(
+            value
+                .iter()
+                .map(render_responses_tool_output_part)
+                .collect(),
+        ),
         other => serde_json::Value::String(other.to_provider_string()),
+    }
+}
+
+/// Render one [`ToolResultContentPart`] into a Responses tool-output content
+/// part. `text` → `input_text`; `image/*` media or an image file reference →
+/// `input_image`; any other media or file reference → `input_file`. Media bytes
+/// ride as a `data:` URL or a plain URL; a provider file reference rides as
+/// `file_id`.
+/// <https://github.com/vercel/ai/blob/main/packages/openai/src/responses/convert-to-openai-responses-input.ts>
+fn render_responses_tool_output_part(part: &ToolResultContentPart) -> serde_json::Value {
+    match part {
+        ToolResultContentPart::Text { text } => {
+            serde_json::json!({ "type": "input_text", "text": text })
+        }
+        ToolResultContentPart::Media { media_type, data } => {
+            if media_type.starts_with("image/") {
+                serde_json::json!({
+                    "type": "input_image", "image_url": data.to_url(media_type)
+                })
+            } else {
+                // The reference renders a `url`-form file as `file_url` and a
+                // `data`-form file as `file_data`; `to_url` already collapses
+                // inline bytes into a `data:` URL, so both land in `file_data`
+                // here — a value the Responses wire accepts for either form.
+                serde_json::json!({
+                    "type": "input_file", "file_data": data.to_url(media_type)
+                })
+            }
+        }
+        ToolResultContentPart::FileId { media_type, id } => {
+            let kind = match media_type {
+                Some(mt) if mt.starts_with("image/") => "input_image",
+                _ => "input_file",
+            };
+            serde_json::json!({ "type": kind, "file_id": id })
+        }
+    }
+}
+
+/// Parse a Responses `function_call_output.output` value into a canonical
+/// [`ToolResultOutput`]. A string or bare JSON value uses the untyped mapping
+/// (string → `Text`, else `Json`); a content-part array becomes the multimodal
+/// `Content` variant, inverting [`render_responses_tool_output`].
+/// <https://platform.openai.com/docs/api-reference/responses/create>
+fn parse_responses_tool_output(value: &serde_json::Value) -> ToolResultOutput {
+    match value {
+        serde_json::Value::Array(parts) => ToolResultOutput::Content {
+            value: parts
+                .iter()
+                .filter_map(parse_responses_tool_output_part)
+                .collect(),
+        },
+        other => ToolResultOutput::from_untyped_value(other),
+    }
+}
+
+/// Parse one Responses tool-output content part into a [`ToolResultContentPart`].
+/// `input_text` → text; `input_image` / `input_file` carry either a `file_id`
+/// (→ [`ToolResultContentPart::FileId`]) or an inline/URL payload
+/// (→ [`ToolResultContentPart::Media`]).
+/// <https://github.com/vercel/ai/blob/main/packages/openai/src/responses/convert-to-openai-responses-input.ts>
+fn parse_responses_tool_output_part(part: &serde_json::Value) -> Option<ToolResultContentPart> {
+    match part.get("type").and_then(|t| t.as_str())? {
+        "input_text" | "text" => Some(ToolResultContentPart::Text {
+            text: part.get("text").and_then(|t| t.as_str())?.to_string(),
+        }),
+        "input_image" => {
+            if let Some(id) = part.get("file_id").and_then(|f| f.as_str()) {
+                return Some(ToolResultContentPart::FileId {
+                    media_type: Some("image/*".to_string()),
+                    id: id.to_string(),
+                });
+            }
+            let url = part.get("image_url").and_then(|u| u.as_str())?;
+            let (media_type, data) = DataContent::from_url(url);
+            Some(ToolResultContentPart::Media {
+                media_type: media_type.unwrap_or_else(|| "image/*".to_string()),
+                data,
+            })
+        }
+        "input_file" => {
+            if let Some(id) = part.get("file_id").and_then(|f| f.as_str()) {
+                return Some(ToolResultContentPart::FileId {
+                    media_type: None,
+                    id: id.to_string(),
+                });
+            }
+            // The data form carries `file_data` (a `data:` URL); the url form
+            // carries `file_url`. Either resolves through the shared parser.
+            let payload = part
+                .get("file_data")
+                .or_else(|| part.get("file_url"))
+                .and_then(|d| d.as_str())?;
+            let (media_type, data) = DataContent::from_url(payload);
+            Some(ToolResultContentPart::Media {
+                media_type: media_type.unwrap_or_else(|| "application/octet-stream".to_string()),
+                data,
+            })
+        }
+        _ => None,
     }
 }
 

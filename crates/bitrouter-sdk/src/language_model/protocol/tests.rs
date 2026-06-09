@@ -3245,39 +3245,43 @@ fn tool_result_text_degrades_to_json_result_on_gemini() {
 }
 
 #[test]
-fn tool_result_json_round_trips_through_structured_protocols() {
-    // Responses (`function_call_output.output`) and Generate Content
-    // (`functionResponse.response`) both carry a structured tool-result body, so
-    // a Json *object* output survives intact.
+fn tool_result_json_round_trips_through_generate_content() {
+    // Generate Content (`functionResponse.response`) is the only request wire
+    // whose tool-result body is a structured JSON *object* slot, so a Json object
+    // output survives intact there. (Responses' `output` is a string slot — see
+    // `tool_result_json_degrades_to_text_on_string_wires`.)
     let output = ToolResultOutput::Json {
         value: serde_json::json!({ "celsius": 21, "unit": "C" }),
     };
-    for protocol in [ApiProtocol::Responses, ApiProtocol::GenerateContent] {
-        assert_eq!(
-            round_trip_tool_output(protocol.clone(), output.clone()),
-            output,
-            "{protocol:?} lost a Json tool result"
-        );
-    }
+    assert_eq!(
+        round_trip_tool_output(ApiProtocol::GenerateContent, output.clone()),
+        output,
+        "Generate Content lost a Json tool result"
+    );
 }
 
 #[test]
-fn tool_result_json_degrades_to_text_on_chat_completions() {
-    // OpenAI Chat Completions' `tool` message `content` is a string (or a
-    // text/media part array) — there is no slot for a bare JSON value, so a Json
-    // output is stringified and re-parses as Text (a lossless degrade).
+fn tool_result_json_degrades_to_text_on_string_wires() {
+    // Neither OpenAI Chat Completions (`tool` message `content`) nor OpenAI
+    // Responses (`function_call_output.output`) has a slot for a bare JSON value —
+    // both are string (or part-array) slots. A Json output is therefore
+    // stringified and re-parses as Text (a lossless degrade). The Responses case
+    // is the audit-proven fix: `output` is `JSON.stringify`d, never a raw object.
     // <https://platform.openai.com/docs/api-reference/chat/create#chat-create-messages>
+    // <https://github.com/vercel/ai/blob/main/packages/openai/src/responses/convert-to-openai-responses-input.ts>
     let output = ToolResultOutput::Json {
         value: serde_json::json!({ "celsius": 21, "unit": "C" }),
     };
-    let back = round_trip_tool_output(ApiProtocol::ChatCompletions, output.clone());
-    assert_eq!(
-        back,
-        ToolResultOutput::Text {
-            value: output.to_provider_string(),
-        },
-        "Chat Completions Json tool result degrades to a stringified Text output"
-    );
+    for protocol in [ApiProtocol::ChatCompletions, ApiProtocol::Responses] {
+        let back = round_trip_tool_output(protocol.clone(), output.clone());
+        assert_eq!(
+            back,
+            ToolResultOutput::Text {
+                value: output.to_provider_string(),
+            },
+            "{protocol:?} Json tool result must degrade to a stringified Text output"
+        );
+    }
 }
 
 #[test]
@@ -3416,6 +3420,58 @@ fn tool_result_content_renders_anthropic_image_block() {
 }
 
 #[test]
+fn tool_result_content_skips_non_image_media_on_anthropic() {
+    // Anthropic `tool_result` content accepts only `text` and `image` blocks.
+    // A non-image media part (e.g. a PDF) must be skipped, NOT emitted as an
+    // `image` block with a non-image media_type.
+    // <https://docs.anthropic.com/en/docs/build-with-claude/tool-use#tool-result>
+    let output = ToolResultOutput::Content {
+        value: vec![
+            ToolResultContentPart::Text {
+                text: "report".to_string(),
+            },
+            ToolResultContentPart::Media {
+                media_type: "application/pdf".to_string(),
+                data: DataContent::Base64 {
+                    data: IMG_B64.to_string(),
+                },
+            },
+            ToolResultContentPart::Media {
+                media_type: "image/png".to_string(),
+                data: DataContent::Base64 {
+                    data: IMG_B64.to_string(),
+                },
+            },
+        ],
+    };
+    let req = adapter_for(ApiProtocol::Messages)
+        .render_request(&tool_result_prompt("t1", None, output))
+        .unwrap();
+    let blocks = req["messages"][0]["content"][0]["content"]
+        .as_array()
+        .expect("tool_result content is a block array");
+    // Only the text block and the single image block survive; the PDF is dropped.
+    assert_eq!(
+        blocks.len(),
+        2,
+        "non-image media must be skipped: {blocks:?}"
+    );
+    assert_eq!(blocks[0]["type"], "text");
+    assert_eq!(blocks[1]["type"], "image");
+    assert_eq!(blocks[1]["source"]["media_type"], "image/png");
+    // No block may carry a non-image media type under an `image` type tag.
+    for b in blocks {
+        if b["type"] == "image" {
+            let mt = b["source"]["media_type"].as_str().unwrap_or("");
+            assert!(
+                mt.is_empty() || mt.starts_with("image/"),
+                "an image block must not carry a non-image media_type: {mt}"
+            );
+        }
+    }
+}
+
+#[test]
 fn tool_result_content_round_trips_through_chat_completions() {
     // OpenAI Chat Completions carries a multimodal tool result as a content-part
     // array (text + image_url), so a Content output survives there too.
@@ -3436,6 +3492,209 @@ fn tool_result_content_round_trips_through_chat_completions() {
         round_trip_tool_output(ApiProtocol::ChatCompletions, output.clone()),
         output,
         "Chat Completions lost a multimodal Content tool result"
+    );
+}
+
+#[test]
+fn tool_result_json_renders_responses_output_as_string() {
+    // Regression: the Responses `function_call_output.output` field is a
+    // `string | content-part-array`, not a bare JSON-value slot. A Json output
+    // must be emitted as a *stringified* JSON value (the reference does
+    // `JSON.stringify(output.value)`), never as a raw object — otherwise the
+    // OpenAI wire rejects it.
+    // <https://github.com/vercel/ai/blob/main/packages/openai/src/responses/convert-to-openai-responses-input.ts>
+    let value = serde_json::json!({ "celsius": 21, "unit": "C" });
+    for output in [
+        ToolResultOutput::Json {
+            value: value.clone(),
+        },
+        ToolResultOutput::ErrorJson {
+            value: value.clone(),
+        },
+    ] {
+        let req = adapter_for(ApiProtocol::Responses)
+            .render_request(&tool_result_prompt("c1", None, output.clone()))
+            .unwrap();
+        // Find the function_call_output item in the rendered input array.
+        let wire_output = req["input"]
+            .as_array()
+            .expect("input is an array")
+            .iter()
+            .find(|i| i["type"] == "function_call_output")
+            .expect("a function_call_output item")["output"]
+            .clone();
+        assert!(
+            wire_output.is_string(),
+            "Responses `output` must be a JSON string, not a bare {:?}: {wire_output:?}",
+            output
+        );
+        // And the string must be the JSON serialization of the value.
+        assert_eq!(
+            wire_output.as_str().unwrap(),
+            value.to_string(),
+            "Responses `output` string must be the stringified JSON value"
+        );
+    }
+}
+
+#[test]
+fn tool_result_content_round_trips_through_responses() {
+    // A multimodal Content tool result (text + inline image + inline non-image
+    // file) survives a round trip through the Responses
+    // `function_call_output.output` part array. The wire has a real multimodal
+    // slot here (`input_text` / `input_image` / `input_file`), so media is
+    // preserved rather than flattened to text. Inline `data:` payloads carry the
+    // media type so it round-trips exactly (a plain `input_file` URL, by
+    // contrast, has no media-type hint — the same subtype loss the Anthropic
+    // URL-source path documents).
+    let output = ToolResultOutput::Content {
+        value: vec![
+            ToolResultContentPart::Text {
+                text: "see attachments".to_string(),
+            },
+            ToolResultContentPart::Media {
+                media_type: "image/png".to_string(),
+                data: DataContent::Base64 {
+                    data: IMG_B64.to_string(),
+                },
+            },
+            ToolResultContentPart::Media {
+                media_type: "application/pdf".to_string(),
+                data: DataContent::Base64 {
+                    data: IMG_B64.to_string(),
+                },
+            },
+        ],
+    };
+    assert_eq!(
+        round_trip_tool_output(ApiProtocol::Responses, output.clone()),
+        output,
+        "Responses lost a multimodal Content tool result"
+    );
+}
+
+#[test]
+fn tool_result_content_responses_file_url_round_trips_as_url() {
+    // A non-image file delivered by URL renders as `input_file.file_data` =
+    // the URL, and re-parses as a URL-form Media part. The media subtype is not
+    // carried on the wire (a bare URL has no type hint), so it degrades to the
+    // generic `application/octet-stream` — the type still round-trips, only the
+    // subtype is lost, which is the faithful behavior for an untyped URL slot.
+    let output = ToolResultOutput::Content {
+        value: vec![ToolResultContentPart::Media {
+            media_type: "application/pdf".to_string(),
+            data: DataContent::Url {
+                url: "https://example.invalid/report.pdf".to_string(),
+            },
+        }],
+    };
+    let back = round_trip_tool_output(ApiProtocol::Responses, output);
+    assert_eq!(
+        back,
+        ToolResultOutput::Content {
+            value: vec![ToolResultContentPart::Media {
+                media_type: "application/octet-stream".to_string(),
+                data: DataContent::Url {
+                    url: "https://example.invalid/report.pdf".to_string(),
+                },
+            }],
+        },
+        "a URL-form file part round-trips as a URL, degrading only its subtype"
+    );
+}
+
+#[test]
+fn tool_result_content_renders_responses_part_array() {
+    // The rendered Responses wire carries the multimodal result as a part array:
+    // text → input_text, image/* → input_image (image_url), other media →
+    // input_file (file_data). It must NOT collapse to a string.
+    // <https://github.com/vercel/ai/blob/main/packages/openai/src/responses/convert-to-openai-responses-input.ts>
+    let output = ToolResultOutput::Content {
+        value: vec![
+            ToolResultContentPart::Text {
+                text: "look".to_string(),
+            },
+            ToolResultContentPart::Media {
+                media_type: "image/png".to_string(),
+                data: DataContent::Base64 {
+                    data: IMG_B64.to_string(),
+                },
+            },
+            ToolResultContentPart::Media {
+                media_type: "application/pdf".to_string(),
+                data: DataContent::Url {
+                    url: "https://example.invalid/a.pdf".to_string(),
+                },
+            },
+        ],
+    };
+    let req = adapter_for(ApiProtocol::Responses)
+        .render_request(&tool_result_prompt("c1", None, output))
+        .unwrap();
+    let wire_output = req["input"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|i| i["type"] == "function_call_output")
+        .unwrap()["output"]
+        .clone();
+    let parts = wire_output
+        .as_array()
+        .expect("Responses Content output must be a part array, not a string");
+    assert_eq!(parts[0]["type"], "input_text");
+    assert_eq!(parts[0]["text"], "look");
+    assert_eq!(parts[1]["type"], "input_image");
+    assert_eq!(
+        parts[1]["image_url"],
+        format!("data:image/png;base64,{IMG_B64}")
+    );
+    assert_eq!(parts[2]["type"], "input_file");
+    assert_eq!(parts[2]["file_data"], "https://example.invalid/a.pdf");
+}
+
+#[test]
+fn tool_result_content_file_id_round_trips_through_responses() {
+    // A provider file reference (V3 `file-id` / `image-file-id`) rides the
+    // Responses wire as an `input_image` / `input_file` part whose payload is
+    // `file_id`. It round-trips as a `FileId` content part. This is the only wire
+    // that carries the construct, so the variant is constructed (parse) and
+    // consumed (render) here in non-test code.
+    // <https://github.com/vercel/ai/blob/main/packages/openai/src/responses/convert-to-openai-responses-input.ts>
+    let output = ToolResultOutput::Content {
+        value: vec![
+            ToolResultContentPart::FileId {
+                media_type: Some("image/*".to_string()),
+                id: "file-img-123".to_string(),
+            },
+            ToolResultContentPart::FileId {
+                media_type: None,
+                id: "file-doc-456".to_string(),
+            },
+        ],
+    };
+    // Assert the wire shape first.
+    let req = adapter_for(ApiProtocol::Responses)
+        .render_request(&tool_result_prompt("c1", None, output.clone()))
+        .unwrap();
+    let parts = req["input"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|i| i["type"] == "function_call_output")
+        .unwrap()["output"]
+        .as_array()
+        .expect("FileId parts render as a part array")
+        .clone();
+    assert_eq!(parts[0]["type"], "input_image");
+    assert_eq!(parts[0]["file_id"], "file-img-123");
+    assert_eq!(parts[1]["type"], "input_file");
+    assert_eq!(parts[1]["file_id"], "file-doc-456");
+
+    // Then the full round trip.
+    assert_eq!(
+        round_trip_tool_output(ApiProtocol::Responses, output.clone()),
+        output,
+        "Responses lost a FileId tool-result content part"
     );
 }
 

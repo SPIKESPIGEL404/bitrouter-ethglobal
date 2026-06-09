@@ -370,7 +370,10 @@ fn render_tool_result_blocks(output: &ToolResultOutput) -> Vec<ToolResultContent
                 ToolResultContentPart::Text { text } => {
                     Some(ToolResultContentBlock::Text(text.clone()))
                 }
-                ToolResultContentPart::Media { .. } => None,
+                // A faithful router does not decode bytes into Bedrock's
+                // structured Image/Document blocks, and Bedrock has no field for a
+                // foreign provider's `file_id`; both drop here.
+                ToolResultContentPart::Media { .. } | ToolResultContentPart::FileId { .. } => None,
             })
             .collect(),
     }
@@ -447,6 +450,14 @@ fn bedrock_content_to_canonical(blocks: &[ContentBlock]) -> Vec<Content> {
                 // otherwise the text fragments are concatenated. The error
                 // status promotes to the matching error variant. Bedrock has no
                 // tool-name field, so `tool_name` is `None`.
+                //
+                // Known asymmetry: this lone-`[Json]` recovery currently only
+                // fires for results that the renderer above emitted from a `Json` /
+                // `ErrorJson` output, because the `Content` render path drops media
+                // and never produces a standalone Json block. The recovery is kept
+                // general (it would also rebuild a Json output from an
+                // externally-authored Bedrock request) rather than narrowed to the
+                // shapes this SDK happens to emit today.
                 // https://docs.aws.amazon.com/bedrock/latest/APIReference/API_runtime_ToolResultBlock.html
                 let is_error = tr.status() == Some(&ToolResultStatus::Error);
                 let json_block = match tr.content() {

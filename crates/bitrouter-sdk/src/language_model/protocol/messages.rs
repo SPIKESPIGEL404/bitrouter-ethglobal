@@ -904,11 +904,20 @@ fn render_tool_result_content(output: &ToolResultOutput) -> (serde_json::Value, 
         ToolResultOutput::Content { value } => {
             let blocks: Vec<serde_json::Value> = value
                 .iter()
-                .map(|p| match p {
+                .filter_map(|p| match p {
                     ToolResultContentPart::Text { text } => {
-                        serde_json::json!({ "type": "text", "text": text })
+                        Some(serde_json::json!({ "type": "text", "text": text }))
                     }
-                    ToolResultContentPart::Media { media_type, data } => {
+                    // Anthropic `tool_result` content accepts only `text` and
+                    // `image` blocks — there is no `document`/audio block inside a
+                    // tool result. Emit an `image` block only for `image/*` media;
+                    // skip any other media type rather than mislabeling, say, a
+                    // PDF or audio clip as an image (which the API would reject or
+                    // misinterpret).
+                    // <https://docs.anthropic.com/en/docs/build-with-claude/tool-use#tool-result>
+                    ToolResultContentPart::Media { media_type, data }
+                        if media_type.starts_with("image/") =>
+                    {
                         let source = match data {
                             DataContent::Base64 { data } => serde_json::json!({
                                 "type": "base64", "media_type": media_type, "data": data
@@ -917,7 +926,12 @@ fn render_tool_result_content(output: &ToolResultOutput) -> (serde_json::Value, 
                                 serde_json::json!({ "type": "url", "url": url })
                             }
                         };
-                        serde_json::json!({ "type": "image", "source": source })
+                        Some(serde_json::json!({ "type": "image", "source": source }))
+                    }
+                    // Non-image media and provider file references have no
+                    // tool_result block on the Anthropic wire; drop them.
+                    ToolResultContentPart::Media { .. } | ToolResultContentPart::FileId { .. } => {
+                        None
                     }
                 })
                 .collect();

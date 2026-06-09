@@ -148,9 +148,17 @@ pub enum Content {
     ToolResult {
         /// The call id this result answers.
         call_id: String,
-        /// The tool's name, when the wire carries it. Anthropic / OpenAI tool
-        /// results key only by call id and leave this `None`; Gemini's
-        /// `functionResponse` keys by name and populates it.
+        /// The tool's name, when the wire carries it. The V3 type makes this a
+        /// required `string`, but that is faithful only to Gemini, whose
+        /// `functionResponse` keys results by name. The OpenAI (Chat Completions
+        /// and Responses) and Anthropic tool-result wires key purely by call id
+        /// and never transmit the name, so it is genuinely absent there —
+        /// modeling it as `Option` records that absence honestly. Fabricating a
+        /// placeholder name to satisfy a required field would be worse: it would
+        /// invent data the wire never carried and could collide with a real tool
+        /// name on a downstream re-render. `None` is the correct value when the
+        /// provider omits it; the field round-trips only where the wire supplies
+        /// it (Gemini).
         #[serde(default, skip_serializing_if = "Option::is_none")]
         tool_name: Option<String>,
         /// The typed result body.
@@ -164,6 +172,19 @@ pub enum Content {
 /// array. Adapters translate each variant to/from the upstream's native wire
 /// shape and degrade losslessly when a provider can't express a variant.
 /// <https://github.com/vercel/ai/blob/main/packages/provider/src/language-model/v3/language-model-v3-prompt.ts>
+///
+/// The V3 union has a sixth member, `execution-denied`
+/// (`{ type: 'execution-denied', reason? }`), that is intentionally **not**
+/// modeled here. It carries no distinct tag on any of the four request wires:
+/// the OpenAI Responses input conversion renders it as a plain
+/// `function_call_output.output` string (`reason ?? 'Tool call execution
+/// denied.'`) that re-parses indistinguishably from a [`Self::Text`], and its
+/// structured form arises only from the human-in-the-loop tool-approval flow
+/// (`tool-approval-request` / `tool-approval-response`), which this SDK does not
+/// yet implement. When that flow lands it will reintroduce the denial as part of
+/// the approval types rather than as a free-standing tool-result variant, so
+/// adding it now would be unconstructed dead code.
+/// <https://github.com/vercel/ai/blob/main/packages/openai/src/responses/convert-to-openai-responses-input.ts>
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ToolResultOutput {
@@ -229,7 +250,11 @@ impl ToolResultOutput {
                 .iter()
                 .filter_map(|p| match p {
                     ToolResultContentPart::Text { text } => Some(text.as_str()),
-                    ToolResultContentPart::Media { .. } => None,
+                    // Media bytes and provider file references have no string form
+                    // on a string-only tool wire; both drop out of the collapse.
+                    ToolResultContentPart::Media { .. } | ToolResultContentPart::FileId { .. } => {
+                        None
+                    }
                 })
                 .collect(),
         }
@@ -237,9 +262,23 @@ impl ToolResultOutput {
 }
 
 /// One part of a [`ToolResultOutput::Content`] multimodal tool result. Mirrors
-/// the V3 `content` output's element union, reduced to the two payload forms a
-/// faithful-passthrough router carries: inline/URL media (via the shared
-/// [`DataContent`]) and text.
+/// the V3 `content` output's element union. That union names eight element kinds
+/// (`text`, `file-data`, `file-url`, `file-id`, `image-data`, `image-url`,
+/// `image-file-id`, `custom`); they collapse onto the payload forms a
+/// faithful-passthrough router actually carries:
+/// - `text` → [`Self::Text`].
+/// - `file-data` / `file-url` / `image-data` / `image-url` → [`Self::Media`],
+///   whose [`DataContent`] holds inline base64 bytes or a URL (the data/URL split
+///   absorbs the `*-data` vs `*-url` distinction; the IANA `media_type` absorbs
+///   the file-vs-image distinction).
+/// - `file-id` / `image-file-id` → [`Self::FileId`], a provider-side uploaded-file
+///   reference (e.g. an OpenAI `file_id`) carried instead of inline bytes/URL.
+/// - `custom` (`{ type: 'custom', providerOptions? }`) is dropped: it has no
+///   transportable payload of its own — only opaque, provider-scoped
+///   `providerOptions` with no cross-provider meaning — and the reference
+///   conversions likewise drop any unrecognised content part, so omitting it is
+///   lossless for a faithful-passthrough router.
+///
 /// <https://github.com/vercel/ai/blob/main/packages/provider/src/language-model/v3/language-model-v3-prompt.ts>
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -255,6 +294,21 @@ pub enum ToolResultContentPart {
         media_type: String,
         /// The payload — inline base64 bytes or a URL.
         data: DataContent,
+    },
+    /// A provider-side uploaded-file reference (the V3 `file-id` /
+    /// `image-file-id` content kinds): the bytes live with the provider and the
+    /// tool result carries only the opaque id. On the OpenAI Responses wire this
+    /// is an `input_image` / `input_file` part whose payload is `file_id` rather
+    /// than `image_url` / `file_data`.
+    /// <https://platform.openai.com/docs/api-reference/responses/input-item-list>
+    FileId {
+        /// IANA media type when known. Selects the image-vs-file rendering
+        /// (`image/*` → `input_image`, otherwise `input_file`); `None` when the
+        /// wire part gives no type hint.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        media_type: Option<String>,
+        /// The provider's file identifier.
+        id: String,
     },
 }
 

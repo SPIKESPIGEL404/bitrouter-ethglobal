@@ -641,6 +641,14 @@ fn render_part(c: &Content) -> Option<serde_json::Value> {
         // `tool_name` (Gemini keys results by name), falling back to `call_id`;
         // `id` rides along when it differs from the name. A non-object output
         // degrades losslessly under a `result` key.
+        //
+        // Known degrade: a multimodal `Content` output collapses to
+        // `{ result: <concatenated text> }` here — its media and provider
+        // file-reference parts are dropped. The V3 `FunctionResponse.parts[]`
+        // array (which CAN carry inline media alongside the response) is left
+        // unused; modeling it is deferred until a consumer needs Gemini-side tool
+        // media, since today no other request wire round-trips media *out* of a
+        // tool result into Gemini.
         // <https://ai.google.dev/api/caching#FunctionResponse>
         Content::ToolResult {
             call_id,

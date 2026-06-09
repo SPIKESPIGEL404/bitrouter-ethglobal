@@ -851,7 +851,8 @@ fn render_tool_result_content(output: &ToolResultOutput) -> serde_json::Value {
         ToolResultOutput::Content { value } => {
             let parts: Vec<serde_json::Value> = value
                 .iter()
-                .filter_map(|p| render_input_part(&tool_result_part_to_content(p)))
+                .filter_map(tool_result_part_to_content)
+                .filter_map(|c| render_input_part(&c))
                 .collect();
             parts.into()
         }
@@ -861,15 +862,21 @@ fn render_tool_result_content(output: &ToolResultOutput) -> serde_json::Value {
 
 /// Lift a [`ToolResultContentPart`] into a canonical [`Content`] so the shared
 /// [`render_input_part`] media renderer can be reused for tool-result content.
-fn tool_result_part_to_content(part: &ToolResultContentPart) -> Content {
+/// Returns `None` for a provider file reference: the OpenAI Chat Completions
+/// `content` parts (`text` / `image_url` / `input_audio` / `file{file_data}`)
+/// have no bare-`file_id` form, so a [`ToolResultContentPart::FileId`] has no
+/// faithful representation here and is dropped rather than fabricated.
+/// <https://platform.openai.com/docs/api-reference/chat/create#chat-create-messages>
+fn tool_result_part_to_content(part: &ToolResultContentPart) -> Option<Content> {
     match part {
-        ToolResultContentPart::Text { text } => Content::Text { text: text.clone() },
-        ToolResultContentPart::Media { media_type, data } => Content::File {
+        ToolResultContentPart::Text { text } => Some(Content::Text { text: text.clone() }),
+        ToolResultContentPart::Media { media_type, data } => Some(Content::File {
             media_type: media_type.clone(),
             data: data.clone(),
             filename: None,
             extra: Default::default(),
-        },
+        }),
+        ToolResultContentPart::FileId { .. } => None,
     }
 }
 
