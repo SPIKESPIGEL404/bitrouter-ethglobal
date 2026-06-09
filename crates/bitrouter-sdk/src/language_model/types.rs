@@ -192,6 +192,17 @@ pub enum Content {
         /// The typed result body.
         output: ToolResultOutput,
     },
+    /// A citation / grounding source attached to the model's reply — the V3
+    /// `LanguageModelV3Source` content part. Response-side only: an adapter's
+    /// `parse_response` lifts a provider's native citation/annotation/grounding
+    /// entries into these parts, and `render_response` re-attaches them to the
+    /// provider's citation location. Sources never appear in a request, so
+    /// request-side render paths skip this variant (documented at each site).
+    /// <https://github.com/vercel/ai/blob/main/packages/provider/src/language-model/v3/language-model-v3-source.ts>
+    Source {
+        /// The citation source (URL or document).
+        source: Source,
+    },
 }
 
 /// The result body of a [`Content::ToolResult`]. A faithful port of the Vercel
@@ -396,6 +407,78 @@ impl DataContent {
                 url: value.to_string(),
             },
         )
+    }
+}
+
+/// A citation / grounding source attached to the model's reply — a faithful
+/// port of the Vercel AI SDK `LanguageModelV3Source` tagged union. A source is
+/// **response-side metadata**: unlike text or media it is never a free-standing
+/// part on any request wire. Providers carry it as message/response
+/// *annotations* (OpenAI `url_citation`), text-block *citations* / a
+/// `web_search_tool_result` block (Anthropic), or *grounding* metadata (Gemini
+/// `groundingChunks`); an adapter's `parse_response` lifts those out into
+/// [`Content::Source`] parts, and `render_response` re-attaches them at the
+/// provider's native citation location (never per-part on a request).
+/// <https://github.com/vercel/ai/blob/main/packages/provider/src/language-model/v3/language-model-v3-source.ts>
+///
+/// V3 requires `id` on both variants, but providers rarely transmit a citation
+/// id (OpenAI / Gemini / Anthropic web-search results carry none). Adapters
+/// therefore **synthesize** a stable id from the source's URL and its index in
+/// the response (see `synthesize_source_id` in each adapter) so the required
+/// field is always populated without inventing identity the wire never carried.
+///
+/// The V3 per-source `providerMetadata` (e.g. Anthropic `cited_text` /
+/// `encrypted_index`, a document citation's page/char ranges) is intentionally
+/// **not** modeled here yet — it is deferred to the separate provider-metadata
+/// task that adds a metadata slot uniformly across the content parts. Its
+/// absence is why the text-to-source linkage (`cited_text` and char/page
+/// offsets) cannot cross faithfully today; that loss is inherent to the current
+/// parity target, not to any one adapter.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "source_type", rename_all = "snake_case")]
+pub enum Source {
+    /// A URL citation — the V3 `sourceType: 'url'` source. Maps to OpenAI
+    /// `url_citation` annotations, Anthropic `web_search_result` /
+    /// `web_search_result_location` citations, and Gemini web `groundingChunks`.
+    Url {
+        /// Stable source id. Synthesized from `url` + response index where the
+        /// provider transmits none.
+        id: String,
+        /// The cited web address.
+        url: String,
+        /// Human-readable title of the cited page, when the provider supplies
+        /// one.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        title: Option<String>,
+    },
+    /// A document citation — the V3 `sourceType: 'document'` source. Maps to
+    /// OpenAI Responses `file_citation` / `container_file_citation` /
+    /// `file_path` annotations and Anthropic `page_location` / `char_location`
+    /// document citations. `title` is required by V3; `media_type` identifies
+    /// the cited document's IANA type.
+    Document {
+        /// Stable source id. Synthesized where the provider transmits none.
+        id: String,
+        /// IANA media type of the cited document, e.g. `text/plain` or
+        /// `application/pdf`.
+        media_type: String,
+        /// Document title (required by V3). Adapters fall back to the filename
+        /// or file id when the provider gives no separate title.
+        title: String,
+        /// Original filename, when the provider supplies one.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        filename: Option<String>,
+    },
+}
+
+impl Source {
+    /// Synthesize a stable [`Source`] id from a citation's URL and its index in
+    /// the response. V3 requires an `id`, but the OpenAI / Anthropic web-search
+    /// / Gemini grounding wires rarely carry one; this derives a deterministic,
+    /// collision-resistant id (`url#<index>`) so a same-protocol round-trip
+    /// reproduces a stable identity without fabricating provider-side identity.
+    pub fn synthesize_id(url: &str, index: usize) -> String {
+        format!("{url}#{index}")
     }
 }
 
@@ -904,6 +987,16 @@ pub enum StreamPart {
         media_type: String,
         /// The file payload — inline base64 bytes or a URL.
         data: DataContent,
+    },
+    /// A citation / grounding source, emitted whole — the V3 stream `source`
+    /// part. Citations stream as one complete part (never chunked deltas):
+    /// Gemini emits the candidate's `groundingChunks` per chunk and OpenAI Chat
+    /// streams `delta.annotations`, both decoded here; the client-side encoders
+    /// re-attach it to the protocol's native citation location.
+    /// <https://github.com/vercel/ai/blob/main/packages/provider/src/language-model/v3/language-model-v3-source.ts>
+    Source {
+        /// The citation source (URL or document).
+        source: Source,
     },
     /// A usage report. May arrive mid-stream (per-checkpoint) or only at the end.
     Usage {

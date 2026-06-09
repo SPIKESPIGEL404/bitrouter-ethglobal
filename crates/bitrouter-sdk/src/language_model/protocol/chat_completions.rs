@@ -20,7 +20,7 @@ use crate::language_model::protocol::{
 use crate::language_model::stream::SseFrame;
 use crate::language_model::types::{
     ApiProtocol, Content, DataContent, FinishReason, GenerateResult, GenerationParams, Message,
-    Modality, Prompt, ResponseFormat, Role, RoutingTarget, StreamPart, Tool, ToolChoice,
+    Modality, Prompt, ResponseFormat, Role, RoutingTarget, Source, StreamPart, Tool, ToolChoice,
     ToolResultContentPart, ToolResultOutput, Usage,
 };
 
@@ -327,6 +327,75 @@ fn parse_chat_part(part: &serde_json::Value) -> Option<Content> {
     }
 }
 
+/// Parse an OpenAI Chat `message.annotations[]` array into canonical
+/// [`Content::Source`] parts. Only `url_citation` entries
+/// (`{type:"url_citation", url_citation:{url, title?}}`) are mapped — the only
+/// annotation kind Chat Completions emits for web search. The citation id is
+/// synthesized from the url + index (the wire carries none); the `start_index`/
+/// `end_index` text offsets are dropped (no canonical slot). Mirrors the AI SDK
+/// OpenAI chat mapping.
+/// <https://github.com/vercel/ai/blob/main/packages/openai/src/chat/openai-chat-language-model.ts>
+fn parse_chat_annotations(annotations: Option<&serde_json::Value>) -> Vec<Content> {
+    let Some(arr) = annotations.and_then(|a| a.as_array()) else {
+        return Vec::new();
+    };
+    arr.iter()
+        .enumerate()
+        .filter_map(|(i, ann)| {
+            if ann.get("type").and_then(|t| t.as_str()) != Some("url_citation") {
+                return None;
+            }
+            let cite = ann.get("url_citation")?;
+            let url = cite.get("url").and_then(|u| u.as_str())?.to_string();
+            let title = cite
+                .get("title")
+                .and_then(|t| t.as_str())
+                .map(str::to_string);
+            Some(Content::Source {
+                source: Source::Url {
+                    id: Source::synthesize_id(&url, i),
+                    url,
+                    title,
+                },
+            })
+        })
+        .collect()
+}
+
+/// Render canonical [`Content::Source`] parts back into OpenAI Chat
+/// `message.annotations[]` `url_citation` entries. Only [`Source::Url`] has a
+/// Chat representation; a [`Source::Document`] citation (which only OpenAI
+/// Responses / Anthropic documents produce) has no `url_citation` shape on this
+/// wire and is dropped — documented cross-protocol loss. Returns an empty Vec
+/// when the result carries no URL sources.
+/// <https://platform.openai.com/docs/api-reference/chat/object> (`annotations`)
+fn render_chat_annotations(result: &GenerateResult) -> Vec<serde_json::Value> {
+    result
+        .content
+        .iter()
+        .filter_map(|c| match c {
+            Content::Source {
+                source: Source::Url { url, title, .. },
+            } => {
+                let mut cite = serde_json::Map::new();
+                cite.insert("url".into(), url.clone().into());
+                if let Some(title) = title {
+                    cite.insert("title".into(), title.clone().into());
+                }
+                Some(serde_json::json!({
+                    "type": "url_citation",
+                    "url_citation": serde_json::Value::Object(cite),
+                }))
+            }
+            // Document citations have no `url_citation` form on the Chat wire.
+            Content::Source {
+                source: Source::Document { .. },
+            } => None,
+            _ => None,
+        })
+        .collect()
+}
+
 impl InboundAdapter for ChatCompletionsAdapter {
     fn protocol(&self) -> ApiProtocol {
         ApiProtocol::ChatCompletions
@@ -544,6 +613,16 @@ impl InboundAdapter for ChatCompletionsAdapter {
             message.insert("tool_calls".into(), tool_calls.into());
         }
 
+        // Re-attach web-search citations as `message.annotations[]`
+        // `url_citation` entries — the same location `parse_response` lifts them
+        // from. Collected from the result's `Content::Source` parts rather than
+        // rendered per-part (citations are response annotations, not content).
+        // <https://platform.openai.com/docs/api-reference/chat/object> (`annotations`)
+        let annotations = render_chat_annotations(result);
+        if !annotations.is_empty() {
+            message.insert("annotations".into(), annotations.into());
+        }
+
         let mut response = serde_json::Map::new();
         response.insert("id".into(), request_id.into());
         response.insert("object".into(), "chat.completion".into());
@@ -736,6 +815,14 @@ impl OutboundAdapter for ChatCompletionsAdapter {
                 });
             }
         }
+        // Web-search citations ride `message.annotations[]` as `url_citation`
+        // entries `{type:"url_citation", url_citation:{url, title, ...}}`. Lift
+        // each into a canonical `Content::Source` (URL) so it is not dropped.
+        // The wire carries no citation id, so synthesize a stable one from the
+        // url + index. `start_index`/`end_index` (the text offsets) have no slot
+        // on the canonical `Source` and are dropped — see [`Source`].
+        // <https://platform.openai.com/docs/api-reference/chat/object> (`annotations`)
+        content.extend(parse_chat_annotations(message.get("annotations")));
 
         let finish_reason = choice
             .get("finish_reason")
@@ -1237,6 +1324,16 @@ impl StreamDecoder for ChatStreamDecoder {
                         });
                     }
                 }
+                // Streamed web-search citations arrive on `delta.annotations`
+                // (same `url_citation` shape as the non-streaming response).
+                // Each becomes one whole `StreamPart::Source`; the id is
+                // synthesized from the url + this chunk's annotation index.
+                // <https://github.com/vercel/ai/blob/main/packages/openai/src/chat/openai-chat-language-model.ts>
+                for content in parse_chat_annotations(delta.get("annotations")) {
+                    if let Content::Source { source } = content {
+                        parts.push(StreamPart::Source { source });
+                    }
+                }
             }
             if let Some(reason) = choice
                 .get("finish_reason")
@@ -1356,6 +1453,29 @@ impl StreamEncoder for ChatStreamEncoder {
                 // Chat Completions streaming has no native file-output frame
                 // (image generation is a separate API), so a generated file is
                 // surfaced only on the non-streaming path. Documented limitation.
+            }
+            StreamPart::Source { source } => {
+                // Re-attach a streamed citation as a `delta.annotations[]`
+                // `url_citation` chunk — the location the decoder reads. Only a
+                // URL source has a Chat representation; a document citation is
+                // dropped here (no `url_citation` form on this wire).
+                // <https://github.com/vercel/ai/blob/main/packages/openai/src/chat/openai-chat-language-model.ts>
+                if let Source::Url { url, title, .. } = source {
+                    let mut cite = serde_json::Map::new();
+                    cite.insert("url".into(), url.clone().into());
+                    if let Some(title) = title {
+                        cite.insert("title".into(), title.clone().into());
+                    }
+                    let mut delta = self.open_delta();
+                    delta.insert(
+                        "annotations".into(),
+                        serde_json::json!([{
+                            "type": "url_citation",
+                            "url_citation": serde_json::Value::Object(cite),
+                        }]),
+                    );
+                    frames.push(self.chunk(serde_json::Value::Object(delta), None));
+                }
             }
             StreamPart::ResponseStarted { .. } => {
                 // Observability-only metadata (upstream response id); not

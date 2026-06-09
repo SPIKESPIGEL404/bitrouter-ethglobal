@@ -63,6 +63,11 @@ fn request_text(ctx: &PipelineContext) -> String {
                     // File parts (image / audio / document) carry no scannable
                     // text, so they contribute nothing to the guardrail buffer.
                 }
+                Content::Source { .. } => {
+                    // Citation sources are response-side metadata (a url/title),
+                    // not user-authored prompt text, so they are not scanned by
+                    // the request-side guardrail.
+                }
             }
         }
     }

@@ -29,7 +29,7 @@ use crate::language_model::protocol::{
 use crate::language_model::stream::SseFrame;
 use crate::language_model::types::{
     ApiProtocol, Content, DataContent, FinishReason, GenerateResult, GenerationParams, Message,
-    Prompt, ResponseFormat, Role, RoutingTarget, StreamPart, Tool, ToolChoice,
+    Prompt, ResponseFormat, Role, RoutingTarget, Source, StreamPart, Tool, ToolChoice,
     ToolResultContentPart, ToolResultOutput, Usage,
 };
 
@@ -227,6 +227,119 @@ fn parse_responses_part(part: &serde_json::Value) -> Option<Content> {
         }
         _ => None,
     }
+}
+
+/// Parse a Responses `output_text` part's `annotations[]` into canonical
+/// [`Content::Source`] parts, with `next_index` tracking the running citation
+/// count so synthesized ids stay unique across parts/items. Mirrors the AI SDK
+/// OpenAI Responses mapping:
+/// - `url_citation` (`{url, title}`) → [`Source::Url`];
+/// - `file_citation` / `container_file_citation` (`{filename, file_id}`) →
+///   [`Source::Document`] with `media_type: text/plain`, `title`/`filename` from
+///   `filename`;
+/// - `file_path` (`{file_id}`) → [`Source::Document`] with
+///   `media_type: application/octet-stream`, `title`/`filename` from `file_id`.
+///
+/// The wire carries no citation id, so one is synthesized (from the url, or from
+/// `file_id`/`filename` for documents) + index. The `index`/`start_index` text
+/// offsets and the `file_id`/`container_id` provider fields have no canonical
+/// slot and are dropped — see [`Source`].
+/// <https://github.com/vercel/ai/blob/main/packages/openai/src/responses/openai-responses-language-model.ts>
+fn parse_responses_annotations(
+    annotations: Option<&serde_json::Value>,
+    next_index: &mut usize,
+) -> Vec<Content> {
+    let Some(arr) = annotations.and_then(|a| a.as_array()) else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    for ann in arr {
+        let source = match ann.get("type").and_then(|t| t.as_str()) {
+            Some("url_citation") => {
+                let Some(url) = ann.get("url").and_then(|u| u.as_str()) else {
+                    continue;
+                };
+                Source::Url {
+                    id: Source::synthesize_id(url, *next_index),
+                    url: url.to_string(),
+                    title: ann
+                        .get("title")
+                        .and_then(|t| t.as_str())
+                        .map(str::to_string),
+                }
+            }
+            Some("file_citation") | Some("container_file_citation") => {
+                let filename = ann
+                    .get("filename")
+                    .and_then(|f| f.as_str())
+                    .unwrap_or_default()
+                    .to_string();
+                Source::Document {
+                    id: Source::synthesize_id(&filename, *next_index),
+                    media_type: "text/plain".to_string(),
+                    title: filename.clone(),
+                    filename: (!filename.is_empty()).then_some(filename),
+                }
+            }
+            Some("file_path") => {
+                let file_id = ann
+                    .get("file_id")
+                    .and_then(|f| f.as_str())
+                    .unwrap_or_default()
+                    .to_string();
+                Source::Document {
+                    id: Source::synthesize_id(&file_id, *next_index),
+                    media_type: "application/octet-stream".to_string(),
+                    title: file_id.clone(),
+                    filename: (!file_id.is_empty()).then_some(file_id),
+                }
+            }
+            _ => continue,
+        };
+        out.push(Content::Source { source });
+        *next_index += 1;
+    }
+    out
+}
+
+/// Render canonical [`Content::Source`] parts into a Responses `annotations[]`
+/// array for an `output_text` part — the location [`parse_responses_annotations`]
+/// reads. [`Source::Url`] → `url_citation`; [`Source::Document`] →
+/// `file_citation` (keyed by `filename`). The `file_id`/`container_id` provider
+/// fields cannot be reconstructed from the canonical `Source` and are omitted on
+/// the document path (documented loss). Returns an empty Vec when the result
+/// carries no sources.
+/// <https://platform.openai.com/docs/api-reference/responses/object> (`annotations`)
+fn render_responses_annotations(result: &GenerateResult) -> Vec<serde_json::Value> {
+    result
+        .content
+        .iter()
+        .filter_map(|c| match c {
+            Content::Source {
+                source: Source::Url { url, title, .. },
+            } => {
+                let mut ann = serde_json::Map::new();
+                ann.insert("type".into(), "url_citation".into());
+                ann.insert("url".into(), url.clone().into());
+                if let Some(title) = title {
+                    ann.insert("title".into(), title.clone().into());
+                }
+                Some(serde_json::Value::Object(ann))
+            }
+            Content::Source {
+                source: Source::Document {
+                    title, filename, ..
+                },
+            } => {
+                let name = filename.clone().unwrap_or_else(|| title.clone());
+                Some(serde_json::json!({
+                    "type": "file_citation",
+                    "filename": name,
+                }))
+            }
+            _ => None,
+        })
+        .collect()
 }
 
 /// Parse the Responses `input` field — a string or a heterogeneous item array.
@@ -574,6 +687,9 @@ impl OutboundAdapter for ResponsesAdapter {
             .and_then(|o| o.as_array())
             .ok_or_else(|| BitrouterError::bad_request("responses response missing 'output'"))?;
         let mut content = Vec::new();
+        // Running citation counter so synthesized source ids stay unique across
+        // every annotated output_text part in the response.
+        let mut source_index = 0usize;
         for item in output {
             match item.get("type").and_then(|t| t.as_str()) {
                 Some("message") => {
@@ -584,6 +700,13 @@ impl OutboundAdapter for ResponsesAdapter {
                                     text: text.to_string(),
                                 });
                             }
+                            // An `output_text` part may carry web-search / file
+                            // citations on `annotations[]`; lift them into
+                            // `Content::Source` parts right after the text.
+                            content.extend(parse_responses_annotations(
+                                part.get("annotations"),
+                                &mut source_index,
+                            ));
                         }
                     }
                 }
@@ -971,6 +1094,9 @@ fn render_message_items(m: &Message) -> Vec<serde_json::Value> {
                     "output": output_value,
                 }));
             }
+            // Citation sources are response-side metadata only; they are never
+            // re-sent as a request input item, so the request path skips them.
+            Content::Source { .. } => {}
         }
     }
     if !text_parts.is_empty() {
@@ -1140,10 +1266,20 @@ fn render_output_items(result: &GenerateResult) -> Vec<serde_json::Value> {
         })
         .collect();
     if !text.is_empty() {
+        // Re-attach citations as the `output_text` part's `annotations[]` (the
+        // location `parse_response` lifts them from), collected from the result's
+        // `Content::Source` parts rather than rendered per-part. The key is
+        // omitted entirely when there are no sources (#454-5: never emit null /
+        // gratuitous empty fields).
+        let mut part = serde_json::json!({ "type": "output_text", "text": text });
+        let annotations = render_responses_annotations(result);
+        if !annotations.is_empty() {
+            part["annotations"] = annotations.into();
+        }
         items.push(serde_json::json!({
             "type": "message",
             "role": "assistant",
-            "content": [{ "type": "output_text", "text": text }],
+            "content": [part],
         }));
     }
     for c in &result.content {
@@ -1875,6 +2011,18 @@ impl StreamEncoder for ResponsesStreamEncoder {
                         }),
                     ));
                 }
+            }
+            StreamPart::Source { .. } => {
+                // Streaming citations are NOT re-encoded onto the Responses wire.
+                // On this protocol a citation is a `response.output_text.annotation.added`
+                // event that mutates an already-open `output_text` item's
+                // `annotations[]`; a cross-protocol `StreamPart::Source` arrives
+                // with no guaranteed open text item to attach to, and faithfully
+                // re-emitting the `*.annotation.added` lifecycle would require
+                // buffering against the text item-state machine. Documented gap:
+                // the citation survives the non-streaming Responses render
+                // (`render_output_items`) but is dropped on the streamed path.
+                // <https://platform.openai.com/docs/api-reference/responses-streaming/response/output_text/annotation_added>
             }
             StreamPart::Usage { .. } => {}
             StreamPart::ResponseStarted { .. } => {

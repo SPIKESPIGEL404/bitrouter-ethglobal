@@ -4996,3 +4996,473 @@ fn tool_serde_uses_type_tag() {
     assert_eq!(provider["type"], "provider_defined");
     assert_eq!(provider["id"], "openai.web_search_preview");
 }
+
+// ===== Source (web-search citations) — V3 LanguageModelV3Source parity =====
+
+/// Collect every `Content::Source` from a result's content, in order.
+fn sources_of(content: &[Content]) -> Vec<&Source> {
+    content
+        .iter()
+        .filter_map(|c| match c {
+            Content::Source { source } => Some(source),
+            _ => None,
+        })
+        .collect()
+}
+
+/// The canonical `Source` IR uses an internal `source_type` tag and round-trips
+/// through serde for both the URL and document variants.
+#[test]
+fn source_serde_round_trips_both_variants() {
+    let url = Content::Source {
+        source: Source::Url {
+            id: "https://example.invalid/a#0".to_string(),
+            url: "https://example.invalid/a".to_string(),
+            title: Some("A".to_string()),
+        },
+    };
+    let v = serde_json::to_value(&url).unwrap();
+    assert_eq!(v["type"], "source");
+    assert_eq!(v["source"]["source_type"], "url");
+    assert_eq!(v["source"]["url"], "https://example.invalid/a");
+    assert_eq!(url, serde_json::from_value(v).unwrap());
+
+    let doc = Content::Source {
+        source: Source::Document {
+            id: "report.pdf#0".to_string(),
+            media_type: "application/pdf".to_string(),
+            title: "report.pdf".to_string(),
+            filename: Some("report.pdf".to_string()),
+        },
+    };
+    let v = serde_json::to_value(&doc).unwrap();
+    assert_eq!(v["source"]["source_type"], "document");
+    assert_eq!(v["source"]["media_type"], "application/pdf");
+    assert_eq!(doc, serde_json::from_value(v).unwrap());
+
+    // An absent URL title is omitted entirely (no JSON null) per the IR rule.
+    let no_title = serde_json::to_value(&Content::Source {
+        source: Source::Url {
+            id: "x".to_string(),
+            url: "https://example.invalid/x".to_string(),
+            title: None,
+        },
+    })
+    .unwrap();
+    assert!(no_title["source"].get("title").is_none());
+}
+
+/// Chat Completions: a `message.annotations[]` `url_citation` is lifted into a
+/// `Content::Source` on parse and re-attached at the same location on render —
+/// a same-protocol citation round-trip.
+#[test]
+fn chat_completions_url_citation_round_trip() {
+    let adapter = chat_completions::ChatCompletionsAdapter;
+    let provider_resp = serde_json::json!({
+        "id": "chatcmpl-1",
+        "choices": [{
+            "index": 0,
+            "message": {
+                "role": "assistant",
+                "content": "see source",
+                "annotations": [{
+                    "type": "url_citation",
+                    "url_citation": {
+                        "url": "https://example.invalid/doc",
+                        "title": "Doc",
+                        "start_index": 0,
+                        "end_index": 10
+                    }
+                }]
+            },
+            "finish_reason": "stop"
+        }]
+    });
+    let result = adapter.parse_response(provider_resp).unwrap();
+    let sources = sources_of(&result.content);
+    assert_eq!(sources.len(), 1, "one url citation parsed into a Source");
+    match sources[0] {
+        Source::Url { url, title, id } => {
+            assert_eq!(url, "https://example.invalid/doc");
+            assert_eq!(title.as_deref(), Some("Doc"));
+            // The wire carried no id; one is synthesized from url + index.
+            assert_eq!(id, "https://example.invalid/doc#0");
+        }
+        other => panic!("expected url source, got {other:?}"),
+    }
+
+    // Render back: the citation reappears under `message.annotations[]`.
+    let prompt = sample_prompt();
+    let rendered = adapter
+        .render_response(&result, &prompt, "chatcmpl-1")
+        .unwrap();
+    let ann = &rendered["choices"][0]["message"]["annotations"][0];
+    assert_eq!(ann["type"], "url_citation");
+    assert_eq!(ann["url_citation"]["url"], "https://example.invalid/doc");
+    assert_eq!(ann["url_citation"]["title"], "Doc");
+
+    // And a re-parse of the rendered body recovers the same Source.
+    let reparsed = adapter.parse_response(rendered).unwrap();
+    assert_eq!(sources_of(&reparsed.content), sources_of(&result.content));
+}
+
+/// Gemini: `groundingMetadata.groundingChunks[].web` is lifted into a
+/// `Content::Source` on parse and re-attached on render.
+#[test]
+fn generate_content_grounding_round_trip() {
+    let adapter = generate_content::GenerateContentAdapter;
+    let provider_resp = serde_json::json!({
+        "candidates": [{
+            "content": { "role": "model", "parts": [{ "text": "grounded answer" }] },
+            "groundingMetadata": {
+                "groundingChunks": [
+                    { "web": { "uri": "https://example.invalid/g1", "title": "G1" } },
+                    { "web": { "uri": "https://example.invalid/g2" } }
+                ]
+            },
+            "finishReason": "STOP"
+        }]
+    });
+    let result = adapter.parse_response(provider_resp).unwrap();
+    let sources = sources_of(&result.content);
+    assert_eq!(sources.len(), 2, "two grounding chunks parsed into Sources");
+    match sources[1] {
+        // A chunk without a title yields a titleless Source (no fabricated title).
+        Source::Url { url, title, .. } => {
+            assert_eq!(url, "https://example.invalid/g2");
+            assert!(title.is_none());
+        }
+        other => panic!("expected url source, got {other:?}"),
+    }
+
+    let prompt = sample_prompt();
+    let rendered = adapter.render_response(&result, &prompt, "resp_1").unwrap();
+    let chunks = &rendered["candidates"][0]["groundingMetadata"]["groundingChunks"];
+    assert_eq!(chunks[0]["web"]["uri"], "https://example.invalid/g1");
+    assert_eq!(chunks[0]["web"]["title"], "G1");
+    assert_eq!(chunks[1]["web"]["uri"], "https://example.invalid/g2");
+    // The titleless chunk renders with no `title` key (no null).
+    assert!(chunks[1]["web"].get("title").is_none());
+
+    let reparsed = adapter.parse_response(rendered).unwrap();
+    assert_eq!(sources_of(&reparsed.content), sources_of(&result.content));
+}
+
+/// Anthropic: both citation shapes — a text block's `citations[]`
+/// (`web_search_result_location`) and a `web_search_tool_result` block's
+/// `content[]` (`web_search_result`) — are lifted into `Content::Source` parts,
+/// and render re-attaches them as a `web_search_tool_result` block.
+#[test]
+fn messages_citations_round_trip_both_shapes() {
+    let adapter = messages::MessagesAdapter;
+    let provider_resp = serde_json::json!({
+        "id": "msg_1",
+        "type": "message",
+        "role": "assistant",
+        "content": [
+            {
+                "type": "text",
+                "text": "cited",
+                "citations": [{
+                    "type": "web_search_result_location",
+                    "url": "https://example.invalid/inline",
+                    "title": "Inline",
+                    "cited_text": "snippet",
+                    "encrypted_index": "abc"
+                }]
+            },
+            {
+                "type": "web_search_tool_result",
+                "tool_use_id": "srvtoolu_x",
+                "content": [
+                    { "type": "web_search_result", "url": "https://example.invalid/r1", "title": "R1" },
+                    { "type": "web_search_result", "url": "https://example.invalid/r2", "title": "R2" }
+                ]
+            }
+        ],
+        "stop_reason": "end_turn",
+        "usage": { "input_tokens": 1, "output_tokens": 1 }
+    });
+    let result = adapter.parse_response(provider_resp).unwrap();
+    let sources = sources_of(&result.content);
+    assert_eq!(sources.len(), 3, "inline citation + 2 search results");
+    // Ids are unique across blocks (running index): inline is #0, results #1/#2.
+    let ids: Vec<&str> = sources
+        .iter()
+        .map(|s| match s {
+            Source::Url { id, .. } => id.as_str(),
+            Source::Document { id, .. } => id.as_str(),
+        })
+        .collect();
+    assert_eq!(
+        ids,
+        vec![
+            "https://example.invalid/inline#0",
+            "https://example.invalid/r1#1",
+            "https://example.invalid/r2#2"
+        ]
+    );
+
+    // Render: a single `web_search_tool_result` block carries every URL source.
+    let prompt = sample_prompt();
+    let rendered = adapter.render_response(&result, &prompt, "msg_1").unwrap();
+    let blocks = rendered["content"].as_array().unwrap();
+    let wstr = blocks
+        .iter()
+        .find(|b| b["type"] == "web_search_tool_result")
+        .expect("a web_search_tool_result block was rendered");
+    let entries = wstr["content"].as_array().unwrap();
+    assert_eq!(entries.len(), 3);
+    assert_eq!(entries[0]["type"], "web_search_result");
+    assert_eq!(entries[0]["url"], "https://example.invalid/inline");
+
+    // Re-parse recovers all three sources (now all from the result block).
+    let reparsed = adapter.parse_response(rendered).unwrap();
+    assert_eq!(sources_of(&reparsed.content).len(), 3);
+}
+
+/// Responses: an `output_text` part's `annotations[]` — a `url_citation` and a
+/// `file_citation` — are lifted into `Content::Source` parts (URL + document)
+/// and re-attached on render.
+#[test]
+fn responses_annotations_round_trip_url_and_document() {
+    let adapter = responses::ResponsesAdapter;
+    let provider_resp = serde_json::json!({
+        "id": "resp_1",
+        "object": "response",
+        "status": "completed",
+        "output": [{
+            "type": "message",
+            "role": "assistant",
+            "content": [{
+                "type": "output_text",
+                "text": "answer",
+                "annotations": [
+                    { "type": "url_citation", "url": "https://example.invalid/u", "title": "U" },
+                    { "type": "file_citation", "filename": "report.txt", "file_id": "file_1", "index": 3 }
+                ]
+            }]
+        }]
+    });
+    let result = adapter.parse_response(provider_resp).unwrap();
+    let sources = sources_of(&result.content);
+    assert_eq!(sources.len(), 2);
+    assert!(matches!(sources[0], Source::Url { .. }));
+    match sources[1] {
+        Source::Document {
+            media_type,
+            title,
+            filename,
+            ..
+        } => {
+            assert_eq!(media_type, "text/plain");
+            assert_eq!(title, "report.txt");
+            assert_eq!(filename.as_deref(), Some("report.txt"));
+        }
+        other => panic!("expected document source, got {other:?}"),
+    }
+
+    let prompt = sample_prompt();
+    let rendered = adapter.render_response(&result, &prompt, "resp_1").unwrap();
+    let anns = rendered["output"][0]["content"][0]["annotations"]
+        .as_array()
+        .unwrap();
+    assert_eq!(anns.len(), 2);
+    assert_eq!(anns[0]["type"], "url_citation");
+    assert_eq!(anns[0]["url"], "https://example.invalid/u");
+    assert_eq!(anns[1]["type"], "file_citation");
+    assert_eq!(anns[1]["filename"], "report.txt");
+
+    // The URL source re-parses identically; the document source survives as a
+    // document citation (its provider file_id is a documented drop).
+    let reparsed = adapter.parse_response(rendered).unwrap();
+    assert_eq!(sources_of(&reparsed.content).len(), 2);
+}
+
+/// Cross-protocol: a Gemini grounding response is parsed to canonical Sources,
+/// then rendered onto the Chat Completions wire as `message.annotations[]` —
+/// url + title + a (synthesized) id all cross faithfully.
+#[test]
+fn cross_protocol_gemini_grounding_to_chat_annotations() {
+    let gemini = generate_content::GenerateContentAdapter;
+    let chat = chat_completions::ChatCompletionsAdapter;
+
+    let gemini_resp = serde_json::json!({
+        "candidates": [{
+            "content": { "role": "model", "parts": [{ "text": "x" }] },
+            "groundingMetadata": {
+                "groundingChunks": [
+                    { "web": { "uri": "https://example.invalid/x", "title": "X" } }
+                ]
+            },
+            "finishReason": "STOP"
+        }]
+    });
+    // Gemini upstream -> canonical
+    let canonical = gemini.parse_response(gemini_resp).unwrap();
+    assert_eq!(sources_of(&canonical.content).len(), 1);
+
+    // canonical -> Chat client response: the citation lands on `annotations[]`.
+    let prompt = sample_prompt();
+    let chat_resp = chat
+        .render_response(&canonical, &prompt, "chatcmpl-x")
+        .unwrap();
+    let ann = &chat_resp["choices"][0]["message"]["annotations"][0];
+    assert_eq!(ann["type"], "url_citation");
+    assert_eq!(ann["url_citation"]["url"], "https://example.invalid/x");
+    assert_eq!(ann["url_citation"]["title"], "X");
+
+    // And a Chat client parsing that response recovers the same canonical Source.
+    let back = chat.parse_response(chat_resp).unwrap();
+    assert_eq!(sources_of(&back.content), sources_of(&canonical.content));
+}
+
+/// Streaming, Gemini decode: grounding metadata in a stream chunk surfaces as a
+/// `StreamPart::Source`, deduped across the repeated accumulating chunks.
+#[test]
+fn generate_content_streams_source_deduped() {
+    let adapter = generate_content::GenerateContentAdapter;
+    let mut decoder = adapter.stream_decoder();
+    let chunk = |with_finish: bool| {
+        let mut c = serde_json::json!({
+            "candidates": [{
+                "content": { "role": "model", "parts": [{ "text": "t" }] },
+                "groundingMetadata": {
+                    "groundingChunks": [
+                        { "web": { "uri": "https://example.invalid/s", "title": "S" } }
+                    ]
+                }
+            }]
+        });
+        if with_finish {
+            c["candidates"][0]["finishReason"] = "STOP".into();
+        }
+        SseEvent {
+            event: None,
+            data: c.to_string(),
+        }
+    };
+    let mut parts = decoder.decode(&chunk(false)).unwrap();
+    // The same grounding chunk repeats on the next frame but must not re-emit.
+    parts.extend(decoder.decode(&chunk(true)).unwrap());
+
+    let source_parts: Vec<&Source> = parts
+        .iter()
+        .filter_map(|p| match p {
+            StreamPart::Source { source } => Some(source),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        source_parts.len(),
+        1,
+        "grounding source emitted exactly once"
+    );
+    match source_parts[0] {
+        Source::Url { url, .. } => assert_eq!(url, "https://example.invalid/s"),
+        other => panic!("expected url source, got {other:?}"),
+    }
+}
+
+/// Streaming, Chat decode: `delta.annotations[]` surfaces as a
+/// `StreamPart::Source`, and the Chat encoder re-attaches it on the wire — a
+/// live decode + live re-encode for the same protocol.
+#[test]
+fn chat_completions_streams_and_reencodes_source() {
+    let adapter = chat_completions::ChatCompletionsAdapter;
+    let mut decoder = adapter.stream_decoder();
+    let event = SseEvent {
+        event: None,
+        data: serde_json::json!({
+            "id": "chatcmpl-1",
+            "choices": [{
+                "index": 0,
+                "delta": {
+                    "annotations": [{
+                        "type": "url_citation",
+                        "url_citation": { "url": "https://example.invalid/s", "title": "S" }
+                    }]
+                }
+            }]
+        })
+        .to_string(),
+    };
+    let parts = decoder.decode(&event).unwrap();
+    let src = parts
+        .iter()
+        .find_map(|p| match p {
+            StreamPart::Source { source } => Some(source.clone()),
+            _ => None,
+        })
+        .expect("decoded a StreamPart::Source from delta.annotations");
+
+    // Re-encode the decoded source: it reappears as a `delta.annotations` chunk.
+    let mut encoder = adapter.stream_encoder("chatcmpl-1", "m");
+    let frames = encoder.encode(&StreamPart::Source { source: src }).unwrap();
+    let frame = frames
+        .first()
+        .expect("encoder emitted a frame for the source");
+    let SseFrame::Event { data, .. } = frame else {
+        panic!("expected an SSE event frame");
+    };
+    let chunk: serde_json::Value = serde_json::from_str(data).unwrap();
+    let ann = &chunk["choices"][0]["delta"]["annotations"][0];
+    assert_eq!(ann["type"], "url_citation");
+    assert_eq!(ann["url_citation"]["url"], "https://example.invalid/s");
+}
+
+/// Streaming, Anthropic: a `web_search_tool_result` content block decodes to a
+/// `StreamPart::Source`, which the Messages encoder re-emits as the same block —
+/// a live streamed-citation round-trip on the Anthropic wire.
+#[test]
+fn messages_streams_and_reencodes_source() {
+    let adapter = messages::MessagesAdapter;
+    let mut decoder = adapter.stream_decoder();
+    let event = SseEvent {
+        event: Some("content_block_start".to_string()),
+        data: serde_json::json!({
+            "type": "content_block_start",
+            "index": 2,
+            "content_block": {
+                "type": "web_search_tool_result",
+                "tool_use_id": "srvtoolu_x",
+                "content": [
+                    { "type": "web_search_result", "url": "https://example.invalid/s", "title": "S" }
+                ]
+            }
+        })
+        .to_string(),
+    };
+    let parts = decoder.decode(&event).unwrap();
+    let src = parts
+        .iter()
+        .find_map(|p| match p {
+            StreamPart::Source { source } => Some(source.clone()),
+            _ => None,
+        })
+        .expect("decoded a StreamPart::Source from a streamed web_search_tool_result");
+    match &src {
+        Source::Url { url, title, .. } => {
+            assert_eq!(url, "https://example.invalid/s");
+            assert_eq!(title.as_deref(), Some("S"));
+        }
+        other => panic!("expected url source, got {other:?}"),
+    }
+
+    // Re-encode: the Messages encoder emits a `web_search_tool_result`
+    // content_block_start carrying the same hit.
+    let mut encoder = adapter.stream_encoder("msg_1", "m");
+    let frames = encoder.encode(&StreamPart::Source { source: src }).unwrap();
+    let has_block = frames.iter().any(|f| match f {
+        SseFrame::Event { data, .. } => {
+            let v: serde_json::Value = serde_json::from_str(data).unwrap();
+            v["content_block"]["type"] == "web_search_tool_result"
+                && v["content_block"]["content"][0]["url"] == "https://example.invalid/s"
+        }
+        _ => false,
+    });
+    assert!(
+        has_block,
+        "encoder re-emitted the web_search_tool_result block"
+    );
+}

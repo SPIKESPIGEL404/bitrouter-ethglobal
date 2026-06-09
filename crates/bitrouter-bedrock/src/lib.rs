@@ -347,6 +347,13 @@ fn canonical_content_to_bedrock(blocks: &[Content]) -> Result<Vec<ContentBlock>>
                 // Skipping keeps the request faithful for the text/tool path.
                 // https://docs.aws.amazon.com/bedrock/latest/APIReference/API_runtime_ContentBlock.html
             }
+            Content::Source { .. } => {
+                // Citation sources are response-side metadata only — they never
+                // appear in a request, so there is nothing to render here.
+                // (Bedrock surfaces its own citations under a response
+                // `citationsContent` block, which the response parser would map;
+                // the request path simply skips.)
+            }
         }
     }
     Ok(out)

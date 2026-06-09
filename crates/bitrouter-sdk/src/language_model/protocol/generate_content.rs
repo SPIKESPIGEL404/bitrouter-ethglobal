@@ -20,7 +20,7 @@ use crate::language_model::protocol::{
 use crate::language_model::stream::SseFrame;
 use crate::language_model::types::{
     ApiProtocol, Content, DataContent, FinishReason, GenerateResult, GenerationParams, Message,
-    Modality, Prompt, ResponseFormat, Role, RoutingTarget, StreamPart, Tool, ToolChoice,
+    Modality, Prompt, ResponseFormat, Role, RoutingTarget, Source, StreamPart, Tool, ToolChoice,
     ToolResultOutput, Usage,
 };
 
@@ -451,6 +451,74 @@ fn parse_parts(parts: &[serde_json::Value]) -> Vec<Content> {
     out
 }
 
+/// Parse a Gemini `candidate.groundingMetadata` object into canonical
+/// [`Content::Source`] (URL) parts. Web search grounding surfaces as
+/// `groundingMetadata.groundingChunks[]`, each `{web:{uri, title?}}`; the
+/// model's own server-side Search tool emits these instead of any
+/// `functionCall`. The chunk carries no citation id, so synthesize a stable one
+/// from the uri + index. Non-`web` chunks (`retrievedContext` RAG sources) are
+/// not mapped here — they require document-source plumbing the response wire
+/// does not expose uniformly. Mirrors the AI SDK `extractSources`.
+/// <https://ai.google.dev/gemini-api/docs/grounding>
+/// <https://github.com/vercel/ai/blob/main/packages/google/src/google-language-model.ts>
+fn parse_grounding_sources(grounding: Option<&serde_json::Value>) -> Vec<Content> {
+    let Some(chunks) = grounding
+        .and_then(|g| g.get("groundingChunks"))
+        .and_then(|c| c.as_array())
+    else {
+        return Vec::new();
+    };
+    chunks
+        .iter()
+        .enumerate()
+        .filter_map(|(i, chunk)| {
+            let web = chunk.get("web")?;
+            let url = web.get("uri").and_then(|u| u.as_str())?.to_string();
+            let title = web
+                .get("title")
+                .and_then(|t| t.as_str())
+                .map(str::to_string);
+            Some(Content::Source {
+                source: Source::Url {
+                    id: Source::synthesize_id(&url, i),
+                    url,
+                    title,
+                },
+            })
+        })
+        .collect()
+}
+
+/// Render canonical [`Content::Source`] parts into a Gemini
+/// `groundingMetadata.groundingChunks[]` array (web chunks `{web:{uri, title}}`)
+/// — the location [`parse_grounding_sources`] reads. Only [`Source::Url`] maps;
+/// a [`Source::Document`] citation has no `groundingChunks.web` form and is
+/// dropped (documented cross-protocol loss). Returns an empty Vec when the
+/// result carries no URL sources.
+/// <https://ai.google.dev/api/generate-content#GroundingChunk>
+fn render_grounding_chunks(result: &GenerateResult) -> Vec<serde_json::Value> {
+    result
+        .content
+        .iter()
+        .filter_map(|c| match c {
+            Content::Source {
+                source: Source::Url { url, title, .. },
+            } => {
+                let mut web = serde_json::Map::new();
+                web.insert("uri".into(), url.clone().into());
+                if let Some(title) = title {
+                    web.insert("title".into(), title.clone().into());
+                }
+                Some(serde_json::json!({ "web": serde_json::Value::Object(web) }))
+            }
+            Content::Source {
+                source: Source::Document { .. },
+            } => None,
+            _ => None,
+        })
+        .collect()
+}
+
 fn finish_reason(s: &str) -> Option<FinishReason> {
     match s {
         "STOP" => Some(FinishReason::Stop),
@@ -617,16 +685,26 @@ impl InboundAdapter for GenerateContentAdapter {
     ) -> Result<serde_json::Value> {
         let parts: Vec<serde_json::Value> = result.content.iter().filter_map(render_part).collect();
         let usage = result.usage.unwrap_or_default();
+        let mut candidate = serde_json::json!({
+            "content": { "role": "model", "parts": parts },
+            "finishReason": result
+                .finish_reason
+                .as_ref()
+                .map(finish_reason_str)
+                .unwrap_or_else(|| "STOP".to_string()),
+            "index": 0,
+        });
+        // Re-attach web-search citations under `candidate.groundingMetadata`
+        // (the location `parse_response` lifts them from), collected from the
+        // result's `Content::Source` parts rather than rendered into `parts`
+        // (grounding is candidate metadata, not a content part).
+        // <https://ai.google.dev/gemini-api/docs/grounding>
+        let chunks = render_grounding_chunks(result);
+        if !chunks.is_empty() {
+            candidate["groundingMetadata"] = serde_json::json!({ "groundingChunks": chunks });
+        }
         Ok(serde_json::json!({
-            "candidates": [{
-                "content": { "role": "model", "parts": parts },
-                "finishReason": result
-                    .finish_reason
-                    .as_ref()
-                    .map(finish_reason_str)
-                    .unwrap_or_else(|| "STOP".to_string()),
-                "index": 0,
-            }],
+            "candidates": [candidate],
             "usageMetadata": {
                 "promptTokenCount": usage.prompt_tokens,
                 "candidatesTokenCount": usage.completion_tokens,
@@ -725,12 +803,17 @@ impl OutboundAdapter for GenerateContentAdapter {
             .ok_or_else(|| {
                 BitrouterError::bad_request("google response missing 'candidates[0]'")
             })?;
-        let parts = candidate
+        let mut parts = candidate
             .get("content")
             .and_then(|c| c.get("parts"))
             .and_then(|p| p.as_array())
             .map(|p| parse_parts(p))
             .unwrap_or_default();
+        // Web-search grounding rides `candidate.groundingMetadata`, separate
+        // from the content `parts`. Lift its `groundingChunks` into
+        // `Content::Source` parts appended after the content.
+        // <https://ai.google.dev/gemini-api/docs/grounding>
+        parts.extend(parse_grounding_sources(candidate.get("groundingMetadata")));
         let finish = candidate
             .get("finishReason")
             .and_then(|f| f.as_str())
@@ -851,6 +934,10 @@ fn render_part(c: &Content) -> Option<serde_json::Value> {
                 "fileData": { "mimeType": media_type, "fileUri": url }
             }),
         }),
+        // Sources are response-side citation metadata, never a request part —
+        // they are re-attached under `groundingMetadata` in `render_response`,
+        // not rendered as a content `part`. Skip on the request path.
+        Content::Source { .. } => None,
     }
 }
 
@@ -895,6 +982,12 @@ struct GenerateContentStreamDecoder {
     /// Whether the one-shot [`StreamPart::ResponseStarted`] has been emitted.
     /// Every chunk repeats `responseId`; we surface it only once.
     response_started_emitted: bool,
+    /// URLs of grounding sources already emitted as `StreamPart::Source`.
+    /// `streamGenerateContent` repeats the accumulating `groundingMetadata` on
+    /// successive chunks, so dedupe by URL to emit each citation once — matching
+    /// the AI SDK's `emittedSourceUrls` set.
+    /// <https://github.com/vercel/ai/blob/main/packages/google/src/google-language-model.ts>
+    emitted_source_urls: std::collections::HashSet<String>,
 }
 
 impl StreamDecoder for GenerateContentStreamDecoder {
@@ -958,7 +1051,26 @@ impl StreamDecoder for GenerateContentStreamDecoder {
                         Content::File {
                             media_type, data, ..
                         } => parts.push(StreamPart::File { media_type, data }),
+                        // `parse_parts` never produces `Source` (grounding is
+                        // candidate metadata, not a content part); it is decoded
+                        // from `groundingMetadata` below.
+                        Content::Source { .. } => {}
                     }
+                }
+            }
+            // Web-search grounding arrives on `candidate.groundingMetadata`,
+            // accumulating across chunks. Emit each new citation once as a whole
+            // `StreamPart::Source`, deduped by URL.
+            // <https://ai.google.dev/gemini-api/docs/grounding>
+            for content in parse_grounding_sources(candidate.get("groundingMetadata")) {
+                if let Content::Source {
+                    source: Source::Url { url, title, id },
+                } = content
+                    && self.emitted_source_urls.insert(url.clone())
+                {
+                    parts.push(StreamPart::Source {
+                        source: Source::Url { url, title, id },
+                    });
                 }
             }
             if let Some(reason) = candidate
@@ -1024,6 +1136,30 @@ impl StreamEncoder for GenerateContentStreamEncoder {
                     }] } }]
                 })
             }
+            // Re-attach a streamed citation as a one-chunk
+            // `candidate.groundingMetadata.groundingChunks` web entry — the
+            // location the decoder reads. Only a URL source maps; a document
+            // citation is dropped (no `groundingChunks.web` form on this wire).
+            // <https://ai.google.dev/api/generate-content#GroundingChunk>
+            StreamPart::Source { source } => match source {
+                Source::Url { url, title, .. } => {
+                    let mut web = serde_json::Map::new();
+                    web.insert("uri".into(), url.clone().into());
+                    if let Some(title) = title {
+                        web.insert("title".into(), title.clone().into());
+                    }
+                    serde_json::json!({
+                        "candidates": [{
+                            "content": { "role": "model", "parts": [] },
+                            "groundingMetadata": {
+                                "groundingChunks": [{ "web": serde_json::Value::Object(web) }]
+                            },
+                        }]
+                    })
+                }
+                // No `groundingChunks.web` form for a document citation.
+                Source::Document { .. } => return Ok(Vec::new()),
+            },
             StreamPart::Usage { usage } => serde_json::json!({
                 "usageMetadata": {
                     "promptTokenCount": usage.prompt_tokens,

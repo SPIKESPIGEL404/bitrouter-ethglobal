@@ -25,7 +25,7 @@ use crate::language_model::protocol::{
 use crate::language_model::stream::SseFrame;
 use crate::language_model::types::{
     ApiProtocol, AuthScheme, Content, DataContent, FinishReason, GenerateResult, GenerationParams,
-    Message, Prompt, ResponseFormat, Role, RoutingTarget, StopDetails, StreamPart, Tool,
+    Message, Prompt, ResponseFormat, Role, RoutingTarget, Source, StopDetails, StreamPart, Tool,
     ToolChoice, ToolResultContentPart, ToolResultOutput, Usage,
 };
 
@@ -666,11 +666,18 @@ impl InboundAdapter for MessagesAdapter {
         request_id: &str,
     ) -> Result<serde_json::Value> {
         // Content blocks keep their canonical order (#416).
-        let content: Vec<serde_json::Value> = result
+        let mut content: Vec<serde_json::Value> = result
             .content
             .iter()
             .filter_map(render_content_block)
             .collect();
+        // Re-attach web-search citations as one `web_search_tool_result` block
+        // (the faithful Anthropic citation location — see
+        // `render_web_search_result_block`). Appended after the answer blocks,
+        // matching the wire order (the result block follows the text it cites).
+        if let Some(block) = render_web_search_result_block(result) {
+            content.push(block);
+        }
         let usage = result.usage.unwrap_or_default();
         let stop_reason = result
             .finish_reason
@@ -793,15 +800,23 @@ impl OutboundAdapter for MessagesAdapter {
             .and_then(|c| c.as_array())
             .ok_or_else(|| BitrouterError::bad_request("anthropic response missing 'content'"))?;
         let mut content = Vec::with_capacity(content_blocks.len());
+        // Running citation counter so synthesized source ids stay unique across
+        // every text block / web_search_tool_result block in the reply.
+        let mut source_index = 0usize;
         for block in content_blocks {
             match block.get("type").and_then(|t| t.as_str()) {
-                Some("text") => content.push(Content::Text {
-                    text: block
-                        .get("text")
-                        .and_then(|t| t.as_str())
-                        .unwrap_or_default()
-                        .to_string(),
-                }),
+                Some("text") => {
+                    content.push(Content::Text {
+                        text: block
+                            .get("text")
+                            .and_then(|t| t.as_str())
+                            .unwrap_or_default()
+                            .to_string(),
+                    });
+                    // A text block may carry inline web-search citations; lift
+                    // them into `Content::Source` parts right after the text.
+                    content.extend(parse_messages_block_sources(block, &mut source_index));
+                }
                 Some("thinking") | Some("redacted_thinking") => content.push(Content::Reasoning {
                     text: block
                         .get("thinking")
@@ -835,6 +850,14 @@ impl OutboundAdapter for MessagesAdapter {
                         .unwrap_or_else(|| "{}".to_string()),
                     provider_executed: kind == "server_tool_use",
                 }),
+                // A `web_search_tool_result` block carries the raw search hits
+                // (`content[]` of `web_search_result`). Lift each into a
+                // `Content::Source`; the paired `server_tool_use` call block was
+                // already captured above as a provider-executed tool call.
+                // <https://platform.claude.com/docs/en/agents-and-tools/tool-use/web-search-tool>
+                Some("web_search_tool_result") => {
+                    content.extend(parse_messages_block_sources(block, &mut source_index));
+                }
                 _ => {}
             }
         }
@@ -981,6 +1004,110 @@ impl Transport for MessagesTransport {
     }
 }
 
+/// Lift Anthropic web-search citations out of a response `content` block into
+/// canonical [`Content::Source`] (URL) parts, with `next_index` tracking the
+/// running citation count so synthesized ids stay unique across blocks.
+///
+/// Two block shapes carry web-search citations:
+/// - a `text` block whose `citations[]` array holds
+///   `{type:"web_search_result_location", url, title, cited_text, encrypted_index}`
+///   entries (an inline citation linked to a span of the answer text), and
+/// - a `web_search_tool_result` block whose `content[]` array holds
+///   `{type:"web_search_result", url, title, page_age, ...}` entries (the raw
+///   search hits).
+///
+/// Both map to `Source::Url{url, title}`. The wire carries no citation id, so
+/// one is synthesized from the url + running index. The inline `cited_text` and
+/// the `encrypted_index`/`page_age` provider fields have no slot on the
+/// canonical `Source` and are dropped — see [`Source`] (the text-to-source
+/// linkage loss is inherent to the V3 parity target).
+/// <https://platform.claude.com/docs/en/agents-and-tools/tool-use/web-search-tool>
+fn parse_messages_block_sources(block: &serde_json::Value, next_index: &mut usize) -> Vec<Content> {
+    let entries = match block.get("type").and_then(|t| t.as_str()) {
+        Some("text") => block.get("citations").and_then(|c| c.as_array()),
+        Some("web_search_tool_result") => block.get("content").and_then(|c| c.as_array()),
+        _ => None,
+    };
+    let Some(entries) = entries else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    for entry in entries {
+        // A text block's `citations[]` may also carry non-web citation kinds
+        // (`page_location` / `char_location` for document citations); only the
+        // URL web-search kind has a faithful `Source::Url` form today.
+        let kind = entry.get("type").and_then(|t| t.as_str());
+        if !matches!(
+            kind,
+            Some("web_search_result_location") | Some("web_search_result")
+        ) {
+            continue;
+        }
+        let Some(url) = entry.get("url").and_then(|u| u.as_str()) else {
+            continue;
+        };
+        let title = entry
+            .get("title")
+            .and_then(|t| t.as_str())
+            .map(str::to_string);
+        out.push(Content::Source {
+            source: Source::Url {
+                id: Source::synthesize_id(url, *next_index),
+                url: url.to_string(),
+                title,
+            },
+        });
+        *next_index += 1;
+    }
+    out
+}
+
+/// Render canonical [`Content::Source`] parts into a single Anthropic
+/// `web_search_tool_result` block whose `content[]` carries one
+/// `web_search_result` entry per URL source.
+///
+/// This is the chosen render location among the two Anthropic citation shapes.
+/// A `web_search_tool_result` block is the faithful form because it natively
+/// holds an array of `{url, title}` results with **no** required text linkage,
+/// so it reproduces url+title+id losslessly. The alternative — `citations[]` on
+/// a `text` block — would demand a `cited_text` span and char offsets that the
+/// canonical `Source` does not carry (and could not reconstruct), so emitting it
+/// would fabricate the very text-linkage data the parity target drops.
+/// [`Source::Document`] citations have no `web_search_result` form and are
+/// skipped here. Returns `None` when the result carries no URL sources.
+/// <https://platform.claude.com/docs/en/agents-and-tools/tool-use/web-search-tool>
+fn render_web_search_result_block(result: &GenerateResult) -> Option<serde_json::Value> {
+    let results: Vec<serde_json::Value> = result
+        .content
+        .iter()
+        .filter_map(|c| match c {
+            Content::Source {
+                source: Source::Url { url, title, .. },
+            } => {
+                let mut entry = serde_json::Map::new();
+                entry.insert("type".into(), "web_search_result".into());
+                entry.insert("url".into(), url.clone().into());
+                if let Some(title) = title {
+                    entry.insert("title".into(), title.clone().into());
+                }
+                Some(serde_json::Value::Object(entry))
+            }
+            _ => None,
+        })
+        .collect();
+    if results.is_empty() {
+        return None;
+    }
+    Some(serde_json::json!({
+        "type": "web_search_tool_result",
+        // The wire pairs this block with the originating `server_tool_use` id;
+        // the canonical `Source` does not carry it, so a synthetic placeholder
+        // is used. It is opaque to clients and only correlates the result block.
+        "tool_use_id": "srvtoolu_citations",
+        "content": results,
+    }))
+}
+
 fn render_content_block(c: &Content) -> Option<serde_json::Value> {
     match c {
         Content::Text { text } => Some(serde_json::json!({ "type": "text", "text": text })),
@@ -1035,6 +1162,10 @@ fn render_content_block(c: &Content) -> Option<serde_json::Value> {
             };
             Some(serde_json::json!({ "type": block_type, "source": source }))
         }
+        // Citations are not a per-block render: they are collected across the
+        // whole reply and re-attached as one `web_search_tool_result` block by
+        // `render_response` (see `render_web_search_result_block`). Skip here.
+        Content::Source { .. } => None,
     }
 }
 
@@ -1250,6 +1381,27 @@ impl StreamDecoder for MessagesStreamDecoder {
             "content_block_start" => {
                 let index = json.get("index").and_then(|i| i.as_u64()).unwrap_or(0) as usize;
                 let block = json.get("content_block");
+                // A streamed `web_search_tool_result` block carries its full
+                // `content[]` result array up-front on the start frame (it is
+                // not chunked), so lift each hit into a whole `StreamPart::Source`
+                // here — no buffering needed. The companion `citations_delta`
+                // path (inline citations linked to text spans) is **not** wired:
+                // it would require buffering citations against an open text block
+                // and carries the `cited_text` char-range linkage the canonical
+                // `Source` drops anyway — documented gap, parsed only on the
+                // non-streaming path.
+                // <https://platform.claude.com/docs/en/agents-and-tools/tool-use/web-search-tool>
+                if let Some(block) = block
+                    && block.get("type").and_then(|t| t.as_str()) == Some("web_search_tool_result")
+                {
+                    let mut idx = 0usize;
+                    for content in parse_messages_block_sources(block, &mut idx) {
+                        if let Content::Source { source } = content {
+                            parts.push(StreamPart::Source { source });
+                        }
+                    }
+                    return Ok(parts);
+                }
                 let kind = match block.and_then(|b| b.get("type")).and_then(|t| t.as_str()) {
                     Some("thinking") | Some("redacted_thinking") => BlockKind::Thinking,
                     Some("tool_use") => BlockKind::ToolUse,
@@ -1621,6 +1773,43 @@ impl StreamEncoder for MessagesStreamEncoder {
                             "delta": { "type": "input_json_delta", "partial_json": arguments },
                         }),
                     ));
+                }
+            }
+            StreamPart::Source { source } => {
+                // Re-attach a streamed citation as its own
+                // `web_search_tool_result` content block (the decode path's
+                // mirror): close any open block, emit a `content_block_start`
+                // carrying a one-entry `content[]` result array, then close it.
+                // Only a URL source has a `web_search_result` form; a document
+                // citation is dropped here (no such block on this wire).
+                // <https://platform.claude.com/docs/en/agents-and-tools/tool-use/web-search-tool>
+                if let Source::Url { url, title, .. } = source {
+                    self.close_block(&mut frames);
+                    let mut entry = serde_json::Map::new();
+                    entry.insert("type".into(), "web_search_result".into());
+                    entry.insert("url".into(), url.clone().into());
+                    if let Some(title) = title {
+                        entry.insert("title".into(), title.clone().into());
+                    }
+                    frames.push(Self::ev(
+                        "content_block_start",
+                        serde_json::json!({
+                            "type": "content_block_start",
+                            "index": self.block_index,
+                            "content_block": {
+                                "type": "web_search_tool_result",
+                                "tool_use_id": "srvtoolu_citations",
+                                "content": [serde_json::Value::Object(entry)],
+                            },
+                        }),
+                    ));
+                    frames.push(Self::ev(
+                        "content_block_stop",
+                        serde_json::json!({
+                            "type": "content_block_stop", "index": self.block_index,
+                        }),
+                    ));
+                    self.block_index += 1;
                 }
             }
             StreamPart::Usage { .. } => {}

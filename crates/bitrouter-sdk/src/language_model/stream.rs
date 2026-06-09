@@ -86,6 +86,9 @@ impl StreamInterest {
             StreamPart::Usage { .. } => Self::USAGE,
             // No hook subscribes to file parts yet; they pass through unfiltered.
             StreamPart::File { .. } => 0,
+            // No hook subscribes to source (citation) parts; they pass through
+            // unfiltered, exactly like file parts.
+            StreamPart::Source { .. } => 0,
             StreamPart::ResponseStarted { .. } => Self::RESPONSE_STARTED,
             // `ResponseCompleted` is a terminal part — a hook interested in
             // `Finish` is, by construction, also interested in it.

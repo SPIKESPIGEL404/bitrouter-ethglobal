@@ -101,5 +101,5 @@ pub use stream::{
 pub use types::{
     ApiProtocol, Capability, Content, DataContent, ExecutionResult, FinishReason, GenerateResult,
     GenerationParams, Message, PipelineRequest, PipelineResponse, Prompt, Role, RoutingTarget,
-    StreamPart, Tool, ToolChoice, ToolResultContentPart, ToolResultOutput, Usage,
+    Source, StreamPart, Tool, ToolChoice, ToolResultContentPart, ToolResultOutput, Usage,
 };
