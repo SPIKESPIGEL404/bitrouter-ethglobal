@@ -202,13 +202,23 @@ pub struct MessagesRequest {
     /// <https://platform.claude.com/docs/en/build-with-claude/structured-outputs>
     #[serde(default)]
     output_config: Option<MessagesOutputConfig>,
+    /// Top-k sampling. Promoted to the canonical `top_k` slot so it translates
+    /// across protocols (e.g. to a Gemini upstream's `generationConfig.topK`).
+    /// <https://docs.anthropic.com/en/api/messages#body-top-k>
+    #[serde(default)]
+    top_k: Option<u32>,
+    /// Custom stop sequences. Promoted to the canonical `stop` slot, so it can
+    /// render as a Chat Completions `stop` or a Gemini `stopSequences`.
+    /// <https://docs.anthropic.com/en/api/messages#body-stop-sequences>
+    #[serde(default)]
+    stop_sequences: Option<Vec<String>>,
     #[serde(default)]
     stream: bool,
-    /// Every other field — `tool_choice`, `stop_sequences`, `top_k`, `metadata`,
-    /// `thinking`, the deprecated flat `output_format` alias, … — rides along
-    /// via `extra` and is splatted back on render. Skipped from the published
-    /// schema so the documented contract is the set of typed fields;
-    /// pass-through behavior is preserved at runtime.
+    /// Every other field — `tool_choice`, `metadata`, `thinking`, the deprecated
+    /// flat `output_format` alias, … — rides along via `extra` and is splatted
+    /// back on render. Skipped from the published schema so the documented
+    /// contract is the set of typed fields; pass-through behavior is preserved
+    /// at runtime.
     #[serde(flatten)]
     #[schemars(skip)]
     extra: std::collections::HashMap<String, serde_json::Value>,
@@ -863,6 +873,12 @@ impl InboundAdapter for MessagesAdapter {
                 reasoning_effort,
                 response_modalities: Vec::new(),
                 tool_choice,
+                top_k: req.top_k,
+                // Anthropic carries no seed or penalties on its wire.
+                seed: None,
+                stop: req.stop_sequences.unwrap_or_default(),
+                presence_penalty: None,
+                frequency_penalty: None,
                 extra,
             },
             response_format,
@@ -1018,8 +1034,18 @@ impl OutboundAdapter for MessagesAdapter {
         if let Some(tc) = &prompt.params.tool_choice {
             req.insert("tool_choice".into(), render_messages_tool_choice(tc));
         }
-        // Splat anthropic-specific extras (stop_sequences, top_k, …) back into
-        // the outbound request. Typed fields win over same-named extras.
+        // Render the typed sampling slots Anthropic carries: `top_k` and
+        // `stop_sequences`. Seed and presence/frequency penalties have no
+        // Messages wire field, so they are intentionally not rendered here.
+        // <https://docs.anthropic.com/en/api/messages>
+        if let Some(top_k) = prompt.params.top_k {
+            req.insert("top_k".into(), top_k.into());
+        }
+        if !prompt.params.stop.is_empty() {
+            req.insert("stop_sequences".into(), prompt.params.stop.clone().into());
+        }
+        // Splat anthropic-specific extras (metadata, thinking, …) back into the
+        // outbound request. Typed fields win over same-named extras.
         for (k, v) in &prompt.params.extra {
             req.entry(k.clone()).or_insert_with(|| v.clone());
         }

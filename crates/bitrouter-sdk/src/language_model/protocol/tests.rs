@@ -4921,6 +4921,289 @@ fn parsed_tool_choice_is_not_duplicated_in_extra() {
     );
 }
 
+// ===== typed sampling params (top_k / seed / stop / presence_penalty /
+// frequency_penalty) cross-protocol translation =====
+
+/// Each typed sampling slot the protocol carries survives a render→parse
+/// round-trip on its own wire — the same-protocol fidelity contract. Per the
+/// official wire shapes: Chat Completions carries `seed` / `stop` /
+/// `presence_penalty` / `frequency_penalty` but no top-k; Anthropic carries
+/// `top_k` / `stop_sequences`; Gemini carries all five; Responses carries none.
+#[test]
+fn sampling_params_same_protocol_round_trip() {
+    // Chat Completions: seed, stop, presence_penalty, frequency_penalty.
+    let chat = adapter_for(ApiProtocol::ChatCompletions);
+    let params = chat
+        .parse_request(serde_json::json!({
+            "model": "gpt-5",
+            "messages": [{"role": "user", "content": "hi"}],
+            "seed": 7,
+            "stop": ["END", "STOP"],
+            "presence_penalty": 0.5,
+            "frequency_penalty": -0.25
+        }))
+        .unwrap();
+    let back = chat
+        .parse_request(chat.render_request(&params).unwrap())
+        .unwrap()
+        .params;
+    assert_eq!(back.seed, Some(7));
+    assert_eq!(back.stop, vec!["END".to_string(), "STOP".to_string()]);
+    assert_eq!(back.presence_penalty, Some(0.5));
+    assert_eq!(back.frequency_penalty, Some(-0.25));
+    assert_eq!(back.top_k, None, "Chat Completions has no top-k");
+
+    // A scalar `stop` string normalises to a one-element list.
+    let scalar = chat
+        .parse_request(serde_json::json!({
+            "model": "gpt-5",
+            "messages": [{"role": "user", "content": "hi"}],
+            "stop": "END"
+        }))
+        .unwrap();
+    assert_eq!(scalar.params.stop, vec!["END".to_string()]);
+
+    // Anthropic: top_k, stop_sequences.
+    let anthropic = adapter_for(ApiProtocol::Messages);
+    let back = anthropic
+        .parse_request(
+            anthropic
+                .render_request(
+                    &anthropic
+                        .parse_request(serde_json::json!({
+                            "model": "claude-opus-4-8",
+                            "max_tokens": 16,
+                            "messages": [{"role": "user", "content": "hi"}],
+                            "top_k": 40,
+                            "stop_sequences": ["END"]
+                        }))
+                        .unwrap(),
+                )
+                .unwrap(),
+        )
+        .unwrap()
+        .params;
+    assert_eq!(back.top_k, Some(40));
+    assert_eq!(back.stop, vec!["END".to_string()]);
+
+    // Gemini: all five, nested under generationConfig.
+    let gemini = adapter_for(ApiProtocol::GenerateContent);
+    let back = gemini
+        .parse_request(
+            gemini
+                .render_request(
+                    &gemini
+                        .parse_request(serde_json::json!({
+                            "model": "gemini-2.0-flash",
+                            "contents": [{"role": "user", "parts": [{"text": "hi"}]}],
+                            "generationConfig": {
+                                "topK": 40,
+                                "seed": 7,
+                                "stopSequences": ["END", "STOP"],
+                                "presencePenalty": 0.1,
+                                "frequencyPenalty": -0.1
+                            }
+                        }))
+                        .unwrap(),
+                )
+                .unwrap(),
+        )
+        .unwrap()
+        .params;
+    assert_eq!(back.top_k, Some(40));
+    assert_eq!(back.seed, Some(7));
+    assert_eq!(back.stop, vec!["END".to_string(), "STOP".to_string()]);
+    assert_eq!(back.presence_penalty, Some(0.1));
+    assert_eq!(back.frequency_penalty, Some(-0.1));
+}
+
+/// Cross-protocol translation, Chat → others: `seed` + `stop` +
+/// `presence_penalty` + `frequency_penalty` authored on a Chat Completions body
+/// must reach Gemini as `generationConfig.{seed, stopSequences, presencePenalty,
+/// frequencyPenalty}` (the WHOLE point — these used to no-op as top-level keys
+/// against Gemini's nested-config wire) and `stop` must reach Anthropic as
+/// `stop_sequences`.
+#[test]
+fn sampling_params_translate_chat_to_gemini_and_anthropic() {
+    let chat = adapter_for(ApiProtocol::ChatCompletions);
+    let prompt = chat
+        .parse_request(serde_json::json!({
+            "model": "gpt-5",
+            "messages": [{"role": "user", "content": "hi"}],
+            "seed": 7,
+            "stop": ["END", "STOP"],
+            "presence_penalty": 0.5,
+            "frequency_penalty": -0.25
+        }))
+        .unwrap();
+
+    // Gemini: nested in generationConfig under the Google wire names.
+    let gc = &adapter_for(ApiProtocol::GenerateContent)
+        .render_request(&prompt)
+        .unwrap()["generationConfig"];
+    assert_eq!(gc["seed"], 7);
+    assert_eq!(gc["stopSequences"], serde_json::json!(["END", "STOP"]));
+    assert_eq!(gc["presencePenalty"], 0.5);
+    assert_eq!(gc["frequencyPenalty"], -0.25);
+
+    // Anthropic: `stop` becomes `stop_sequences`; seed / penalties have no
+    // Anthropic wire field and must not appear.
+    let anthropic = adapter_for(ApiProtocol::Messages)
+        .render_request(&prompt)
+        .unwrap();
+    assert_eq!(
+        anthropic["stop_sequences"],
+        serde_json::json!(["END", "STOP"])
+    );
+    assert!(anthropic.get("seed").is_none());
+    assert!(anthropic.get("presence_penalty").is_none());
+    assert!(anthropic.get("frequency_penalty").is_none());
+
+    // Responses carries none of these — they must not leak onto its wire.
+    let responses = adapter_for(ApiProtocol::Responses)
+        .render_request(&prompt)
+        .unwrap();
+    for key in ["seed", "stop", "presence_penalty", "frequency_penalty"] {
+        assert!(
+            responses.get(key).is_none(),
+            "Responses must not render `{key}`"
+        );
+    }
+}
+
+/// Cross-protocol translation, Gemini/Anthropic → others: a Gemini `topK` +
+/// `stopSequences` must reach Anthropic as `top_k` + `stop_sequences` and Chat
+/// Completions as `stop` (Chat has no top-k, so `topK` is dropped there, not
+/// leaked).
+#[test]
+fn sampling_params_translate_gemini_and_anthropic_to_others() {
+    // Author on Gemini, render to Anthropic + Chat.
+    let gemini = adapter_for(ApiProtocol::GenerateContent);
+    let prompt = gemini
+        .parse_request(serde_json::json!({
+            "model": "gemini-2.0-flash",
+            "contents": [{"role": "user", "parts": [{"text": "hi"}]}],
+            "generationConfig": {
+                "topK": 40,
+                "stopSequences": ["END"]
+            }
+        }))
+        .unwrap();
+    assert_eq!(prompt.params.top_k, Some(40));
+
+    // Anthropic: top_k + stop_sequences.
+    let anthropic = adapter_for(ApiProtocol::Messages)
+        .render_request(&prompt)
+        .unwrap();
+    assert_eq!(anthropic["top_k"], 40);
+    assert_eq!(anthropic["stop_sequences"], serde_json::json!(["END"]));
+
+    // Chat Completions: stop survives; top_k is dropped (no wire field), never
+    // splatted verbatim.
+    let chat = adapter_for(ApiProtocol::ChatCompletions)
+        .render_request(&prompt)
+        .unwrap();
+    assert_eq!(chat["stop"], serde_json::json!(["END"]));
+    assert!(
+        chat.get("top_k").is_none() && chat.get("topK").is_none(),
+        "Chat Completions must not carry top-k in any form: {chat}"
+    );
+
+    // Author an Anthropic `top_k` and confirm it reaches Gemini as `topK`.
+    let anthropic_in = adapter_for(ApiProtocol::Messages)
+        .parse_request(serde_json::json!({
+            "model": "claude-opus-4-8",
+            "max_tokens": 16,
+            "messages": [{"role": "user", "content": "hi"}],
+            "top_k": 64
+        }))
+        .unwrap();
+    let gc = &adapter_for(ApiProtocol::GenerateContent)
+        .render_request(&anthropic_in)
+        .unwrap()["generationConfig"];
+    assert_eq!(gc["topK"], 64);
+}
+
+/// A parsed sampling param must NOT also remain in the raw `extra` passthrough —
+/// otherwise it would be double-written (once from the typed slot, once verbatim
+/// from `extra`) and forwarded with its source-wire name into a cross-protocol
+/// target that ignores it.
+#[test]
+fn parsed_sampling_params_are_not_duplicated_in_extra() {
+    // Chat Completions: seed / stop / penalties leave `extra`.
+    let chat = adapter_for(ApiProtocol::ChatCompletions)
+        .parse_request(serde_json::json!({
+            "model": "gpt-5",
+            "messages": [{"role": "user", "content": "hi"}],
+            "seed": 7,
+            "stop": ["END"],
+            "presence_penalty": 0.5,
+            "frequency_penalty": -0.25
+        }))
+        .unwrap();
+    for key in ["seed", "stop", "presence_penalty", "frequency_penalty"] {
+        assert!(
+            !chat.params.extra.contains_key(key),
+            "Chat Completions `{key}` must be promoted out of extra, not duplicated"
+        );
+    }
+
+    // Anthropic: top_k / stop_sequences leave `extra`.
+    let anthropic = adapter_for(ApiProtocol::Messages)
+        .parse_request(serde_json::json!({
+            "model": "claude-opus-4-8",
+            "max_tokens": 16,
+            "messages": [{"role": "user", "content": "hi"}],
+            "top_k": 40,
+            "stop_sequences": ["END"]
+        }))
+        .unwrap();
+    for key in ["top_k", "stop_sequences"] {
+        assert!(
+            !anthropic.params.extra.contains_key(key),
+            "Anthropic `{key}` must be promoted out of extra, not duplicated"
+        );
+    }
+
+    // Gemini: all five leave the generationConfig-level `extra`. (The Gemini
+    // adapter only stashes top-level Google fields under the sentinel key, so
+    // generationConfig knobs that were promoted simply never land in `extra`.)
+    let gemini = adapter_for(ApiProtocol::GenerateContent)
+        .parse_request(serde_json::json!({
+            "model": "gemini-2.0-flash",
+            "contents": [{"role": "user", "parts": [{"text": "hi"}]}],
+            "generationConfig": {
+                "topK": 40,
+                "seed": 7,
+                "stopSequences": ["END"],
+                "presencePenalty": 0.1,
+                "frequencyPenalty": -0.1
+            }
+        }))
+        .unwrap();
+    for key in [
+        "topK",
+        "seed",
+        "stopSequences",
+        "presencePenalty",
+        "frequencyPenalty",
+    ] {
+        assert!(
+            !gemini.params.extra.contains_key(key),
+            "Gemini generationConfig `{key}` must be promoted out of extra"
+        );
+    }
+    // And the render carries each exactly once (no duplicate verbatim splat):
+    // re-rendering and re-parsing recovers the same typed values.
+    let rendered = adapter_for(ApiProtocol::GenerateContent)
+        .render_request(&gemini)
+        .unwrap();
+    let gc = &rendered["generationConfig"];
+    assert_eq!(gc["topK"], 40);
+    assert_eq!(gc["seed"], 7);
+    assert_eq!(gc["stopSequences"], serde_json::json!(["END"]));
+}
+
 /// An exotic `tool_choice` shape that does not map onto any V3 variant is
 /// preserved verbatim via [`ToolChoice::Other`] and round-trips losslessly on
 /// the same protocol.

@@ -4,6 +4,15 @@
   "description": "Chat Completions request body\n(<https://platform.openai.com/docs/api-reference/chat/create>).\n\n`pub` so downstream crates (notably `bitrouter-cloud`) can derive an\nOpenAPI schema from the canonical wire shape without redeclaring it.",
   "type": "object",
   "properties": {
+    "frequency_penalty": {
+      "description": "Frequency penalty. Promoted to the canonical `frequency_penalty` slot.\n<https://platform.openai.com/docs/api-reference/chat/create#chat-create-frequency_penalty>",
+      "type": [
+        "number",
+        "null"
+      ],
+      "format": "double",
+      "default": null
+    },
     "max_completion_tokens": {
       "type": [
         "integer",
@@ -31,6 +40,15 @@
     "model": {
       "type": "string"
     },
+    "presence_penalty": {
+      "description": "Presence penalty. Promoted to the canonical `presence_penalty` slot.\n<https://platform.openai.com/docs/api-reference/chat/create#chat-create-presence_penalty>",
+      "type": [
+        "number",
+        "null"
+      ],
+      "format": "double",
+      "default": null
+    },
     "reasoning_effort": {
       "type": [
         "string",
@@ -48,6 +66,19 @@
           "type": "null"
         }
       ],
+      "default": null
+    },
+    "seed": {
+      "description": "Deterministic-sampling seed. Promoted to the canonical `seed` slot so it\ntranslates across protocols (e.g. to a Gemini upstream's\n`generationConfig.seed`) instead of no-op'ing as a top-level key on a\nnested-config wire.\n<https://platform.openai.com/docs/api-reference/chat/create#chat-create-seed>",
+      "type": [
+        "integer",
+        "null"
+      ],
+      "format": "int64",
+      "default": null
+    },
+    "stop": {
+      "description": "Stop sequences — a single string or an array of up to four. Promoted to\nthe canonical `stop` slot.\n<https://platform.openai.com/docs/api-reference/chat/create#chat-create-stop>",
       "default": null
     },
     "stream": {

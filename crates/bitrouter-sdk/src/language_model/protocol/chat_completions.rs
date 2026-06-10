@@ -62,10 +62,29 @@ pub struct ChatRequest {
     /// <https://platform.openai.com/docs/guides/structured-outputs>
     #[serde(default)]
     response_format: Option<ChatResponseFormat>,
+    /// Deterministic-sampling seed. Promoted to the canonical `seed` slot so it
+    /// translates across protocols (e.g. to a Gemini upstream's
+    /// `generationConfig.seed`) instead of no-op'ing as a top-level key on a
+    /// nested-config wire.
+    /// <https://platform.openai.com/docs/api-reference/chat/create#chat-create-seed>
+    #[serde(default)]
+    seed: Option<i64>,
+    /// Stop sequences — a single string or an array of up to four. Promoted to
+    /// the canonical `stop` slot.
+    /// <https://platform.openai.com/docs/api-reference/chat/create#chat-create-stop>
+    #[serde(default)]
+    stop: Option<serde_json::Value>,
+    /// Presence penalty. Promoted to the canonical `presence_penalty` slot.
+    /// <https://platform.openai.com/docs/api-reference/chat/create#chat-create-presence_penalty>
+    #[serde(default)]
+    presence_penalty: Option<f64>,
+    /// Frequency penalty. Promoted to the canonical `frequency_penalty` slot.
+    /// <https://platform.openai.com/docs/api-reference/chat/create#chat-create-frequency_penalty>
+    #[serde(default)]
+    frequency_penalty: Option<f64>,
     #[serde(default)]
     stream: bool,
-    /// Every other field — `tool_choice`, `stop` / `stop_sequences`, `seed`,
-    /// `n`, `presence_penalty`, `frequency_penalty`, `logit_bias`, `logprobs`,
+    /// Every other field — `tool_choice`, `n`, `logit_bias`, `logprobs`,
     /// `top_logprobs`, `user`, `stream_options`, `parallel_tool_calls`, … —
     /// survives parse/render via `extra`. v0 passed these through; v1 must too.
     /// Skipped from the published schema so the documented contract is the set
@@ -568,9 +587,15 @@ impl InboundAdapter for ChatCompletionsAdapter {
                 reasoning_effort: req.reasoning_effort,
                 response_modalities,
                 tool_choice,
+                // Chat Completions carries no top-k.
+                top_k: None,
+                seed: req.seed,
+                stop: parse_chat_stop(req.stop),
+                presence_penalty: req.presence_penalty,
+                frequency_penalty: req.frequency_penalty,
                 // Every remaining Chat Completions field without a typed slot —
-                // stop / stop_sequences, seed, n, presence/frequency_penalty,
-                // logit_bias, … — rides in `extra` and is splatted back on render.
+                // n, logit_bias, … — rides in `extra` and is splatted back on
+                // render.
                 extra,
             },
             response_format,
@@ -761,9 +786,26 @@ impl OutboundAdapter for ChatCompletionsAdapter {
         if let Some(tc) = &prompt.params.tool_choice {
             req.insert("tool_choice".into(), render_chat_tool_choice(tc));
         }
+        // Render the typed sampling slots into their Chat Completions wire names.
+        // Chat Completions carries no top-k, so `top_k` is intentionally not
+        // rendered here (it reaches Anthropic/Gemini upstreams instead). `stop`
+        // renders as an array, which the API accepts for any count.
+        // <https://platform.openai.com/docs/api-reference/chat/create>
+        if let Some(seed) = prompt.params.seed {
+            req.insert("seed".into(), seed.into());
+        }
+        if !prompt.params.stop.is_empty() {
+            req.insert("stop".into(), prompt.params.stop.clone().into());
+        }
+        if let Some(pp) = prompt.params.presence_penalty {
+            req.insert("presence_penalty".into(), pp.into());
+        }
+        if let Some(fp) = prompt.params.frequency_penalty {
+            req.insert("frequency_penalty".into(), fp.into());
+        }
         // Splat the extras back into the outbound request — this is how
-        // `stop`, `seed`, etc. survive the round trip. Typed fields above win
-        // over any same-named extra.
+        // remaining untyped fields survive the round trip. Typed fields above
+        // win over any same-named extra.
         for (k, v) in &prompt.params.extra {
             req.entry(k.clone()).or_insert_with(|| v.clone());
         }
@@ -1022,6 +1064,26 @@ fn render_chat_response_format(rf: &ResponseFormat) -> serde_json::Value {
     }
     js.insert("schema".into(), schema.clone());
     serde_json::json!({ "type": "json_schema", "json_schema": serde_json::Value::Object(js) })
+}
+
+/// Normalize a Chat Completions `stop` value into the canonical stop-sequence
+/// list. The wire accepts either a single string or an array of strings;
+/// non-string array members and any other JSON shape are ignored (the canonical
+/// slot is string-only, matching Anthropic's `stop_sequences` and Gemini's
+/// `stopSequences`). `None`/empty yields an empty list, which renders nothing.
+/// <https://platform.openai.com/docs/api-reference/chat/create#chat-create-stop>
+fn parse_chat_stop(value: Option<serde_json::Value>) -> Vec<String> {
+    match value {
+        Some(serde_json::Value::String(s)) => vec![s],
+        Some(serde_json::Value::Array(items)) => items
+            .into_iter()
+            .filter_map(|v| match v {
+                serde_json::Value::String(s) => Some(s),
+                _ => None,
+            })
+            .collect(),
+        _ => Vec::new(),
+    }
 }
 
 /// Parse a Chat Completions `tool_choice` value into the canonical [`ToolChoice`].

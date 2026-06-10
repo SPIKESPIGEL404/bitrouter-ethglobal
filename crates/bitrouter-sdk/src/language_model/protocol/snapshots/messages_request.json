@@ -33,6 +33,17 @@
         }
       ]
     },
+    "stop_sequences": {
+      "description": "Custom stop sequences. Promoted to the canonical `stop` slot, so it can\nrender as a Chat Completions `stop` or a Gemini `stopSequences`.\n<https://docs.anthropic.com/en/api/messages#body-stop-sequences>",
+      "type": [
+        "array",
+        "null"
+      ],
+      "default": null,
+      "items": {
+        "type": "string"
+      }
+    },
     "stream": {
       "type": "boolean",
       "default": false
@@ -54,6 +65,16 @@
       "items": {
         "$ref": "#/$defs/MessagesTool"
       }
+    },
+    "top_k": {
+      "description": "Top-k sampling. Promoted to the canonical `top_k` slot so it translates\nacross protocols (e.g. to a Gemini upstream's `generationConfig.topK`).\n<https://docs.anthropic.com/en/api/messages#body-top-k>",
+      "type": [
+        "integer",
+        "null"
+      ],
+      "format": "uint32",
+      "default": null,
+      "minimum": 0
     },
     "top_p": {
       "type": [

@@ -155,11 +155,33 @@ pub struct GenerateContentGenerationConfig {
     /// `response_mime_type: "application/json"`).
     #[serde(default)]
     response_schema: Option<serde_json::Value>,
-    /// `stopSequences`, `seed`, `topK`, `responseLogprobs`, `presencePenalty`,
-    /// `frequencyPenalty`, … — every generation-config knob without a typed
-    /// slot rides via `extra` and is splatted back into `generationConfig` on
-    /// render. v0 passed these through. Skipped from the published schema for
-    /// the same reason as the top-level `extra` on [`GenerateContentRequest`].
+    /// Top-k sampling. Promoted to the canonical `top_k` slot so it translates
+    /// across protocols (e.g. to an Anthropic upstream's `top_k`).
+    /// <https://ai.google.dev/api/generate-content#GenerationConfig>
+    #[serde(default)]
+    top_k: Option<u32>,
+    /// Deterministic-sampling seed. Promoted to the canonical `seed` slot.
+    /// <https://ai.google.dev/api/generate-content#GenerationConfig>
+    #[serde(default)]
+    seed: Option<i64>,
+    /// Stop sequences. Promoted to the canonical `stop` slot, so it can render
+    /// as a Chat Completions `stop` or an Anthropic `stop_sequences`.
+    /// <https://ai.google.dev/api/generate-content#GenerationConfig>
+    #[serde(default)]
+    stop_sequences: Option<Vec<String>>,
+    /// Presence penalty. Promoted to the canonical `presence_penalty` slot.
+    /// <https://ai.google.dev/api/generate-content#GenerationConfig>
+    #[serde(default)]
+    presence_penalty: Option<f64>,
+    /// Frequency penalty. Promoted to the canonical `frequency_penalty` slot.
+    /// <https://ai.google.dev/api/generate-content#GenerationConfig>
+    #[serde(default)]
+    frequency_penalty: Option<f64>,
+    /// `responseLogprobs`, `candidateCount`, `thinkingConfig`, … — every
+    /// generation-config knob without a typed slot rides via `extra` and is
+    /// splatted back into `generationConfig` on render. v0 passed these through.
+    /// Skipped from the published schema for the same reason as the top-level
+    /// `extra` on [`GenerateContentRequest`].
     #[serde(flatten)]
     #[schemars(skip)]
     extra: std::collections::HashMap<String, serde_json::Value>,
@@ -768,6 +790,11 @@ impl InboundAdapter for GenerateContentAdapter {
                     max_output_tokens,
                     response_mime_type,
                     response_schema,
+                    top_k,
+                    seed,
+                    stop_sequences,
+                    presence_penalty,
+                    frequency_penalty,
                     mut extra,
                 } = g;
                 let response_format = match (
@@ -800,6 +827,11 @@ impl InboundAdapter for GenerateContentAdapter {
                         reasoning_effort: None,
                         response_modalities,
                         tool_choice: None,
+                        top_k,
+                        seed,
+                        stop: stop_sequences.unwrap_or_default(),
+                        presence_penalty,
+                        frequency_penalty,
                         extra,
                     },
                     response_format,
@@ -940,9 +972,30 @@ impl OutboundAdapter for GenerateContentAdapter {
                 .collect();
             gen_config.insert("responseModalities".into(), tokens.into());
         }
-        // Splat Google generation-config extras (stopSequences, topK, seed, …)
-        // back into the outbound config. Typed fields above win over a same-named
-        // extra; the sentinel key carries top-level fields and is skipped here.
+        // Render the typed sampling slots into their nested `generationConfig`
+        // wire names. Gemini carries all five, so a `stop` authored on a Chat
+        // client reaches here as `stopSequences`, an Anthropic `top_k` as `topK`,
+        // and so on.
+        // <https://ai.google.dev/api/generate-content#GenerationConfig>
+        if let Some(top_k) = prompt.params.top_k {
+            gen_config.insert("topK".into(), top_k.into());
+        }
+        if let Some(seed) = prompt.params.seed {
+            gen_config.insert("seed".into(), seed.into());
+        }
+        if !prompt.params.stop.is_empty() {
+            gen_config.insert("stopSequences".into(), prompt.params.stop.clone().into());
+        }
+        if let Some(pp) = prompt.params.presence_penalty {
+            gen_config.insert("presencePenalty".into(), pp.into());
+        }
+        if let Some(fp) = prompt.params.frequency_penalty {
+            gen_config.insert("frequencyPenalty".into(), fp.into());
+        }
+        // Splat remaining Google generation-config extras (responseLogprobs,
+        // candidateCount, …) back into the outbound config. Typed fields above
+        // win over a same-named extra; the sentinel key carries top-level fields
+        // and is skipped here.
         for (k, v) in &prompt.params.extra {
             if k == GOOGLE_TOP_LEVEL_EXTRA_KEY {
                 continue;

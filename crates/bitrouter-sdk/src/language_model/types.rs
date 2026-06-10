@@ -1016,6 +1016,34 @@ pub struct GenerationParams {
     /// protocols instead of leaking a raw provider-shaped value through `extra`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tool_choice: Option<ToolChoice>,
+    /// Top-k sampling cutoff. Carried by Anthropic (`top_k`) and Gemini
+    /// (`generationConfig.topK`); Chat Completions and Responses have no such
+    /// wire field and never render it. Like every typed sampling slot below,
+    /// each inbound adapter promotes its native field here and removes it from
+    /// `extra`; each outbound adapter renders it into the target's native shape,
+    /// so it translates across protocols instead of no-op'ing through `extra`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub top_k: Option<u32>,
+    /// Deterministic-sampling seed. Carried by Chat Completions (`seed`) and
+    /// Gemini (`generationConfig.seed`); Anthropic and Responses have no wire
+    /// field for it. `i64` matches the JSON integer range these wires accept.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub seed: Option<i64>,
+    /// Stop sequences — generation halts when any is produced. Empty means none.
+    /// Renders as Chat Completions `stop`, Anthropic `stop_sequences`, and Gemini
+    /// `generationConfig.stopSequences`; Responses has no wire field for it.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub stop: Vec<String>,
+    /// Presence penalty. Carried by Chat Completions (`presence_penalty`) and
+    /// Gemini (`generationConfig.presencePenalty`); Anthropic and Responses have
+    /// no wire field for it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub presence_penalty: Option<f64>,
+    /// Frequency penalty. Carried by Chat Completions (`frequency_penalty`) and
+    /// Gemini (`generationConfig.frequencyPenalty`); Anthropic and Responses have
+    /// no wire field for it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub frequency_penalty: Option<f64>,
     /// Any provider-specific extras passed through untouched.
     #[serde(skip_serializing_if = "HashMap::is_empty", default)]
     pub extra: HashMap<String, serde_json::Value>,

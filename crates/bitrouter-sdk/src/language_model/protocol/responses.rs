@@ -675,6 +675,17 @@ impl InboundAdapter for ResponsesAdapter {
                 reasoning_effort: req.reasoning.and_then(|r| r.effort),
                 response_modalities: Vec::new(),
                 tool_choice,
+                // The Responses API has no top-level top_k / seed / stop /
+                // presence_penalty / frequency_penalty — they are unsupported on
+                // this wire and dropped by the reference implementation, so the
+                // canonical slots stay empty here and the outbound adapter
+                // renders none of them.
+                // <https://github.com/vercel/ai/blob/main/packages/openai/src/responses/openai-responses-language-model.ts>
+                top_k: None,
+                seed: None,
+                stop: Vec::new(),
+                presence_penalty: None,
+                frequency_penalty: None,
                 // Splat every remaining Responses-API field without a typed slot
                 // — parallel_tool_calls, max_tool_calls, metadata, include[],
                 // previous_response_id, store, stream_options, … — into `extra`
