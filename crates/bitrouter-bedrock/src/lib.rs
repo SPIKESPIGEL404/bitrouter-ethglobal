@@ -200,6 +200,9 @@ impl Executor for BedrockExecutor {
                 // <https://docs.aws.amazon.com/bedrock/latest/APIReference/API_runtime_ConverseOutput.html>
                 response_id: None,
                 stop_details: None,
+                // Bedrock Converse exposes no result-level field that lacks a
+                // dedicated canonical slot, so no provider metadata is carried.
+                provider_metadata: Default::default(),
             },
             latency_ms: elapsed,
             generation_time_ms: elapsed,
@@ -293,7 +296,7 @@ fn canonical_content_to_bedrock(blocks: &[Content]) -> Result<Vec<ContentBlock>>
     let mut out = Vec::with_capacity(blocks.len());
     for c in blocks {
         match c {
-            Content::Text { text } => out.push(ContentBlock::Text(text.clone())),
+            Content::Text { text, .. } => out.push(ContentBlock::Text(text.clone())),
             // The Bedrock Converse content model has no provider-executed
             // server-tool block, so a `provider_executed` call degrades to a
             // plain `toolUse` block (the flag is dropped) — `..` ignores it.
@@ -446,7 +449,10 @@ fn bedrock_content_to_canonical(blocks: &[ContentBlock]) -> Vec<Content> {
     let mut out = Vec::with_capacity(blocks.len());
     for b in blocks {
         match b {
-            ContentBlock::Text(t) => out.push(Content::Text { text: t.clone() }),
+            ContentBlock::Text(t) => out.push(Content::Text {
+                text: t.clone(),
+                provider_metadata: Default::default(),
+            }),
             ContentBlock::ToolUse(tu) => {
                 let arguments = document_to_json(tu.input()).to_string();
                 out.push(Content::ToolCall {
@@ -456,6 +462,7 @@ fn bedrock_content_to_canonical(blocks: &[ContentBlock]) -> Vec<Content> {
                     // Bedrock `toolUse` blocks are client tool calls; the
                     // Converse content model has no provider-executed marker.
                     provider_executed: false,
+                    provider_metadata: Default::default(),
                 });
             }
             ContentBlock::ToolResult(tr) => {
@@ -501,6 +508,7 @@ fn bedrock_content_to_canonical(blocks: &[ContentBlock]) -> Vec<Content> {
                     call_id: tr.tool_use_id().to_string(),
                     tool_name: None,
                     output,
+                    provider_metadata: Default::default(),
                 });
             }
             _ => {
@@ -678,6 +686,7 @@ mod tests {
             call_id: "call_1".to_string(),
             tool_name: None,
             output,
+            provider_metadata: Default::default(),
         }])
         .expect("render to Bedrock content blocks");
         let back = bedrock_content_to_canonical(&blocks);
@@ -716,6 +725,7 @@ mod tests {
             call_id: "c1".to_string(),
             tool_name: None,
             output: output.clone(),
+            provider_metadata: Default::default(),
         }])
         .unwrap();
         // The rendered block carries `status = error`.

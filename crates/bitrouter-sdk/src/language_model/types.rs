@@ -6,9 +6,73 @@
 //! protocol-conversion surface (tool calls, reasoning variants, content blocks).
 
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 
 use crate::caller::CallerContext;
+
+/// A uniform, namespaced metadata slot carried on every content part, message,
+/// tool, and result — a faithful port of the Vercel AI SDK V3
+/// `SharedV3ProviderMetadata` / `SharedV3ProviderOptions`
+/// (`Record<string, Record<string, JSONValue>>`): the outer map is keyed by a
+/// provider id (`"anthropic"`, `"openai"`, `"google"`, …) and the inner object
+/// holds that provider's metadata for the part. On the AI SDK the input form is
+/// `providerOptions` and the output form is `providerMetadata`; both share this
+/// one wire shape, so the canonical IR carries a single `provider_metadata` slot
+/// in both directions.
+/// <https://github.com/vercel/ai/blob/main/packages/provider/src/shared/v3/shared-v3-provider-metadata.ts>
+///
+/// A [`BTreeMap`] (not a `HashMap`) so serialization is deterministic — the same
+/// metadata always renders in the same key order, which keeps round-trip tests
+/// and request hashing stable.
+///
+/// **Namespacing is load-bearing for cross-protocol routing.** Each adapter
+/// reads and writes **only its own** provider id's entry (see
+/// [`PROVIDER_ID_ANTHROPIC`](crate::language_model::protocol) etc.) and leaves
+/// every other namespace untouched, so e.g. an Anthropic `cacheControl` hint
+/// survives verbatim under `provider_metadata["anthropic"]` even when the part
+/// is routed to an OpenAI upstream (which simply ignores a foreign namespace).
+pub type ProviderMetadata = BTreeMap<String, serde_json::Value>;
+
+/// Read a single provider namespace's metadata object out of a
+/// [`ProviderMetadata`] map — the `{key: JSONValue}` inner record an adapter
+/// owns. Returns `None` when the provider has no entry, so a render path can
+/// cheaply skip parts that carry nothing for it.
+pub(crate) fn provider_namespace<'a>(
+    meta: &'a ProviderMetadata,
+    provider_id: &str,
+) -> Option<&'a serde_json::Map<String, serde_json::Value>> {
+    meta.get(provider_id).and_then(|v| v.as_object())
+}
+
+/// Insert `value` under `key` within `provider_id`'s namespace in a
+/// [`ProviderMetadata`] map, creating the namespace object on first write. The
+/// single mutation primitive every adapter uses to lift a provider-native hint
+/// (Anthropic `cacheControl`, a reasoning `signature`, an OpenAI image `detail`,
+/// …) into the canonical slot without disturbing other providers' namespaces.
+pub(crate) fn set_provider_metadata(
+    meta: &mut ProviderMetadata,
+    provider_id: &str,
+    key: &str,
+    value: serde_json::Value,
+) {
+    match meta
+        .entry(provider_id.to_string())
+        .or_insert_with(|| serde_json::Value::Object(serde_json::Map::new()))
+        .as_object_mut()
+    {
+        Some(obj) => {
+            obj.insert(key.to_string(), value);
+        }
+        // The entry existed but was not a JSON object (only reachable from a
+        // hand-built canonical value); replace it with a fresh single-key
+        // object so the write is never silently lost.
+        None => {
+            let mut obj = serde_json::Map::new();
+            obj.insert(key.to_string(), value);
+            meta.insert(provider_id.to_string(), serde_json::Value::Object(obj));
+        }
+    }
+}
 
 /// The wire protocol an upstream provider speaks.
 ///
@@ -106,12 +170,29 @@ pub enum Content {
     Text {
         /// The text body.
         text: String,
+        /// Per-part namespaced provider metadata (V3 `providerMetadata` /
+        /// `providerOptions`). On a text block this carries e.g. Anthropic
+        /// `provider_metadata["anthropic"]["cacheControl"]` — the prompt-caching
+        /// `{"type":"ephemeral"}` breakpoint that marks where the prompt cache
+        /// boundary sits.
+        /// <https://docs.anthropic.com/en/docs/build-with-claude/prompt-caching>
+        #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+        provider_metadata: ProviderMetadata,
     },
     /// Model reasoning / thinking content (kept distinct so it is never
     /// silently dropped — v0 #454-1 regression).
     Reasoning {
         /// The reasoning text.
         text: String,
+        /// Per-part namespaced provider metadata. Carries the reasoning trace's
+        /// cryptographic continuity tokens so multi-turn thinking round-trips:
+        /// Anthropic's thinking-block `signature` and the `redacted_thinking`
+        /// marker under `provider_metadata["anthropic"]`, and OpenAI/Gemini
+        /// reasoning continuity (`thoughtSignature` / encrypted reasoning) under
+        /// their own namespaces.
+        /// <https://docs.anthropic.com/en/docs/build-with-claude/extended-thinking>
+        #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+        provider_metadata: ProviderMetadata,
     },
     /// A media / file part — image, audio, video, or document. Modelled à la the
     /// Vercel AI SDK `LanguageModelV3File`: a single media-typed part rather than
@@ -125,10 +206,15 @@ pub enum Content {
         /// Original filename, when the provider supplies or requires it.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         filename: Option<String>,
-        /// Provider-specific per-part fields preserved verbatim (e.g. an image
-        /// `detail` hint). Mirrors the AI SDK's per-part `providerMetadata`.
-        #[serde(default, skip_serializing_if = "HashMap::is_empty")]
-        extra: HashMap<String, serde_json::Value>,
+        /// Per-part namespaced provider metadata (V3 `providerMetadata` /
+        /// `providerOptions`). Replaces the former ad-hoc `extra` map so there is
+        /// one metadata mechanism across every part: an OpenAI image `detail`
+        /// hint now rides at `provider_metadata["openai"]["detail"]`, and
+        /// Anthropic block-level `cacheControl` at
+        /// `provider_metadata["anthropic"]["cacheControl"]`.
+        /// <https://platform.openai.com/docs/guides/vision>
+        #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+        provider_metadata: ProviderMetadata,
     },
     /// A tool/function call requested by the model. Models the Vercel AI SDK
     /// `LanguageModelV3ToolCall` content part.
@@ -166,6 +252,13 @@ pub enum Content {
         /// <https://platform.claude.com/docs/en/agents-and-tools/mcp-connector>
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         provider_executed: bool,
+        /// Per-part namespaced provider metadata. On a `tool_use` block this
+        /// carries the Anthropic block-level `cacheControl` breakpoint
+        /// (`provider_metadata["anthropic"]["cacheControl"]`) — prompt caching
+        /// applies to `tool_use` blocks just like text/image/document blocks.
+        /// <https://docs.anthropic.com/en/docs/build-with-claude/prompt-caching>
+        #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+        provider_metadata: ProviderMetadata,
     },
     /// A tool/function result supplied back to the model. Models the Vercel AI
     /// SDK `LanguageModelV3ToolResultPart`: the result is a typed
@@ -191,6 +284,14 @@ pub enum Content {
         tool_name: Option<String>,
         /// The typed result body.
         output: ToolResultOutput,
+        /// Per-part namespaced provider metadata. On a `tool_result` block this
+        /// carries the Anthropic block-level `cacheControl` breakpoint
+        /// (`provider_metadata["anthropic"]["cacheControl"]`) — prompt caching
+        /// applies to `tool_result` blocks too, so a long tool output can mark a
+        /// cache boundary.
+        /// <https://docs.anthropic.com/en/docs/build-with-claude/prompt-caching>
+        #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+        provider_metadata: ProviderMetadata,
     },
     /// A citation / grounding source attached to the model's reply — the V3
     /// `LanguageModelV3Source` content part. Response-side only: an adapter's
@@ -202,6 +303,14 @@ pub enum Content {
     Source {
         /// The citation source (URL or document).
         source: Source,
+        /// Per-part namespaced provider metadata. Carries the Anthropic
+        /// originating `tool_use_id` — the `server_tool_use` id that pairs with
+        /// the `web_search_tool_result` block this source came from — under
+        /// `provider_metadata["anthropic"]["toolUseId"]`, so the Anthropic render
+        /// restores the *exact* pairing id rather than reusing one by position.
+        /// <https://platform.claude.com/docs/en/agents-and-tools/tool-use/web-search-tool>
+        #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+        provider_metadata: ProviderMetadata,
     },
 }
 
@@ -489,6 +598,14 @@ pub struct Message {
     pub role: Role,
     /// Ordered content blocks.
     pub content: Vec<Content>,
+    /// Message-level namespaced provider metadata (V3 `providerMetadata` /
+    /// `providerOptions` on a prompt message). Anthropic also accepts
+    /// `cache_control` at the message level (not only per content block), so a
+    /// whole turn can mark a prompt-cache breakpoint; it rides here under
+    /// `provider_metadata["anthropic"]["cacheControl"]`.
+    /// <https://docs.anthropic.com/en/docs/build-with-claude/prompt-caching>
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub provider_metadata: ProviderMetadata,
 }
 
 impl Message {
@@ -496,7 +613,11 @@ impl Message {
     pub fn text(role: Role, text: impl Into<String>) -> Self {
         Self {
             role,
-            content: vec![Content::Text { text: text.into() }],
+            content: vec![Content::Text {
+                text: text.into(),
+                provider_metadata: ProviderMetadata::new(),
+            }],
+            provider_metadata: ProviderMetadata::new(),
         }
     }
 }
@@ -547,6 +668,14 @@ pub enum Tool {
         /// and Gemini have no equivalent and drop it.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         strict: Option<bool>,
+        /// Per-part namespaced provider metadata. On a tool this carries the
+        /// Anthropic tool-level `cacheControl` breakpoint
+        /// (`provider_metadata["anthropic"]["cacheControl"]`) — placing
+        /// `cache_control` on the last tool definition caches the whole tools
+        /// array, a common prompt-caching pattern for large tool catalogs.
+        /// <https://docs.anthropic.com/en/docs/build-with-claude/prompt-caching>
+        #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+        provider_metadata: ProviderMetadata,
     },
     /// A provider-defined (server-side) tool: `{id, name, args}`, mirroring V3's
     /// `LanguageModelV3ProviderTool`. `id` is provider-namespaced as
@@ -560,6 +689,13 @@ pub enum Tool {
         name: String,
         /// Provider-specific configuration arguments, preserved verbatim.
         args: serde_json::Value,
+        /// Per-part namespaced provider metadata. Carries the Anthropic
+        /// tool-level `cacheControl` breakpoint
+        /// (`provider_metadata["anthropic"]["cacheControl"]`) for a server tool,
+        /// mirroring [`Self::Function`].
+        /// <https://docs.anthropic.com/en/docs/build-with-claude/prompt-caching>
+        #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+        provider_metadata: ProviderMetadata,
     },
 }
 
@@ -950,6 +1086,14 @@ pub struct GenerateResult {
     /// or responses that carry no detail.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub stop_details: Option<StopDetails>,
+    /// Result-level namespaced provider metadata (V3 `providerMetadata` on the
+    /// generation result). Carries response-level provider nuances that have no
+    /// dedicated canonical field: OpenAI `system_fingerprint`
+    /// (`provider_metadata["openai"]["systemFingerprint"]`) and Gemini
+    /// `modelVersion` (`provider_metadata["google"]["modelVersion"]`).
+    /// <https://platform.openai.com/docs/api-reference/chat/object>
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub provider_metadata: ProviderMetadata,
 }
 
 /// One part of a streaming response, in canonical internal form. `StreamHook`
@@ -1246,6 +1390,7 @@ mod tests {
             description: None,
             parameters: serde_json::json!({ "type": "object" }),
             strict: None,
+            provider_metadata: Default::default(),
         }];
         assert_eq!(p.required_capabilities(), vec![Capability::Tools]);
     }
@@ -1270,6 +1415,7 @@ mod tests {
             description: None,
             parameters: serde_json::json!({}),
             strict: None,
+            provider_metadata: Default::default(),
         }];
         p.params.reasoning_effort = Some("low".to_string());
         let caps = p.required_capabilities();
@@ -1289,8 +1435,9 @@ mod tests {
                     data: "AAAA".to_string(),
                 },
                 filename: None,
-                extra: Default::default(),
+                provider_metadata: Default::default(),
             }],
+            provider_metadata: Default::default(),
         }];
         p
     }
@@ -1335,12 +1482,13 @@ mod tests {
                 url: "https://example.invalid/a.png".to_string(),
             },
             filename: None,
-            extra: Default::default(),
+            provider_metadata: Default::default(),
         };
         let mut p = bare_prompt();
         p.messages = vec![Message {
             role: Role::User,
             content: vec![img(), img()],
+            provider_metadata: Default::default(),
         }];
         assert_eq!(p.required_capabilities(), vec![Capability::ImageInput]);
     }
@@ -1364,7 +1512,7 @@ mod tests {
                 url: "https://example.invalid/y.png".to_string(),
             },
             filename: Some("y.png".to_string()),
-            extra: Default::default(),
+            provider_metadata: Default::default(),
         };
         let value = serde_json::to_value(&original).unwrap();
         assert_eq!(value["type"], "file");

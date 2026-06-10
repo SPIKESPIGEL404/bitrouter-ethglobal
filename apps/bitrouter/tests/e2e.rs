@@ -107,7 +107,7 @@ async fn e2e_assembled_pipeline_routes_to_mock_provider() {
         .content
         .iter()
         .filter_map(|c| match c {
-            bitrouter_sdk::language_model::Content::Text { text } => Some(text.as_str()),
+            bitrouter_sdk::language_model::Content::Text { text, .. } => Some(text.as_str()),
             _ => None,
         })
         .collect();

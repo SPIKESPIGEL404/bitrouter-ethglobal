@@ -25,9 +25,140 @@ use crate::language_model::protocol::{
 use crate::language_model::stream::SseFrame;
 use crate::language_model::types::{
     ApiProtocol, AuthScheme, Content, DataContent, FinishReason, GenerateResult, GenerationParams,
-    Message, Prompt, ResponseFormat, Role, RoutingTarget, Source, StopDetails, StreamPart, Tool,
-    ToolChoice, ToolResultContentPart, ToolResultOutput, Usage,
+    Message, Prompt, ProviderMetadata, ResponseFormat, Role, RoutingTarget, Source, StopDetails,
+    StreamPart, Tool, ToolChoice, ToolResultContentPart, ToolResultOutput, Usage,
+    provider_namespace, set_provider_metadata,
 };
+
+/// The metadata key, within the `anthropic` namespace, under which a block /
+/// tool / message / system `cache_control` object rides. Matches the Vercel AI
+/// SDK's `providerOptions.anthropic.cacheControl` naming.
+/// <https://docs.anthropic.com/en/docs/build-with-claude/prompt-caching>
+const ANTHROPIC_CACHE_CONTROL: &str = "cacheControl";
+/// The metadata key carrying an Anthropic thinking block's `signature` — the
+/// opaque token that lets a thinking block be replayed on a follow-up turn.
+/// <https://docs.anthropic.com/en/docs/build-with-claude/extended-thinking>
+const ANTHROPIC_SIGNATURE: &str = "signature";
+/// The metadata key marking a `redacted_thinking` block, whose encrypted body
+/// rides under [`ANTHROPIC_REDACTED_DATA`]. A bare boolean `true`.
+const ANTHROPIC_REDACTED: &str = "redactedThinking";
+/// The metadata key carrying a `redacted_thinking` block's encrypted `data`
+/// payload, so the block round-trips byte-for-byte.
+const ANTHROPIC_REDACTED_DATA: &str = "redactedData";
+/// The metadata key carrying the originating `server_tool_use` `tool_use_id`
+/// that a `web_search_tool_result` block paired with, so the render path can
+/// restore the exact pairing id instead of reusing one by position.
+/// <https://platform.claude.com/docs/en/agents-and-tools/tool-use/web-search-tool>
+const ANTHROPIC_TOOL_USE_ID: &str = "toolUseId";
+
+/// Lift an Anthropic block/tool's `cache_control` object into a fresh
+/// [`ProviderMetadata`] under `anthropic.cacheControl`. Anthropic's prompt
+/// caching marks a cache breakpoint with `"cache_control":{"type":"ephemeral"}`
+/// on a content block, a tool, or the system prompt; the object is preserved
+/// verbatim so a same-protocol round-trip reproduces it exactly and a
+/// cross-protocol route carries it (namespaced, ignored by other providers).
+/// Returns an empty map when the value carries no `cache_control`.
+/// <https://docs.anthropic.com/en/docs/build-with-claude/prompt-caching>
+fn parse_cache_control(value: &serde_json::Value) -> ProviderMetadata {
+    let mut meta = ProviderMetadata::new();
+    if let Some(cc) = value.get("cache_control").filter(|v| !v.is_null()) {
+        set_provider_metadata(
+            &mut meta,
+            PROVIDER_ID_ANTHROPIC,
+            ANTHROPIC_CACHE_CONTROL,
+            cc.clone(),
+        );
+    }
+    meta
+}
+
+/// The Anthropic `cache_control` object carried in `provider_metadata`, if any —
+/// the inverse of [`parse_cache_control`]. Used by the render paths to splat
+/// `cache_control` back onto the block/tool/system it belongs to.
+fn cache_control_value(meta: &ProviderMetadata) -> Option<serde_json::Value> {
+    provider_namespace(meta, PROVIDER_ID_ANTHROPIC)
+        .and_then(|o| o.get(ANTHROPIC_CACHE_CONTROL))
+        .cloned()
+}
+
+/// Splat the Anthropic `cache_control` object from `meta` onto an existing block
+/// / tool / system JSON object (a no-op when there is none). Mutates in place so
+/// the render sites can build the block first and stamp caching last.
+fn apply_cache_control(target: &mut serde_json::Value, meta: &ProviderMetadata) {
+    if let Some(cc) = cache_control_value(meta)
+        && let Some(obj) = target.as_object_mut()
+    {
+        obj.insert("cache_control".to_string(), cc);
+    }
+}
+
+/// Lift an Anthropic `thinking` / `redacted_thinking` block's continuity fields
+/// into a [`ProviderMetadata`] under the `anthropic` namespace, alongside any
+/// block-level `cache_control`. A `thinking` block carries a `signature`; a
+/// `redacted_thinking` block carries an encrypted `data` payload and is marked
+/// with a `redactedThinking: true` flag so the render path re-emits the correct
+/// block type. Without this the signature is lost and Anthropic rejects a
+/// follow-up turn that replays the (now-unsigned) thinking block.
+/// <https://docs.anthropic.com/en/docs/build-with-claude/extended-thinking>
+fn parse_reasoning_metadata(block: &serde_json::Value, block_type: &str) -> ProviderMetadata {
+    let mut meta = parse_cache_control(block);
+    if block_type == "redacted_thinking" {
+        set_provider_metadata(
+            &mut meta,
+            PROVIDER_ID_ANTHROPIC,
+            ANTHROPIC_REDACTED,
+            serde_json::Value::Bool(true),
+        );
+        if let Some(data) = block.get("data") {
+            set_provider_metadata(
+                &mut meta,
+                PROVIDER_ID_ANTHROPIC,
+                ANTHROPIC_REDACTED_DATA,
+                data.clone(),
+            );
+        }
+    } else if let Some(sig) = block.get("signature").filter(|v| !v.is_null()) {
+        set_provider_metadata(
+            &mut meta,
+            PROVIDER_ID_ANTHROPIC,
+            ANTHROPIC_SIGNATURE,
+            sig.clone(),
+        );
+    }
+    meta
+}
+
+/// Render a canonical reasoning part back into its Anthropic block, inverting
+/// [`parse_reasoning_metadata`]. A `redactedThinking` flag re-emits a
+/// `redacted_thinking` block whose `data` is the preserved encrypted payload
+/// (falling back to `text` when absent); otherwise a `thinking` block, carrying
+/// its `signature` when one round-tripped. Any block-level `cache_control` is
+/// re-applied last.
+/// <https://docs.anthropic.com/en/docs/build-with-claude/extended-thinking>
+fn render_reasoning_block(text: &str, meta: &ProviderMetadata) -> serde_json::Value {
+    let ns = provider_namespace(meta, PROVIDER_ID_ANTHROPIC);
+    let is_redacted = ns
+        .and_then(|o| o.get(ANTHROPIC_REDACTED))
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    let mut block = if is_redacted {
+        // Prefer the preserved encrypted payload; the canonical `text` mirrors
+        // it on parse, so it is the correct fallback if metadata was stripped.
+        let data = ns
+            .and_then(|o| o.get(ANTHROPIC_REDACTED_DATA))
+            .cloned()
+            .unwrap_or_else(|| serde_json::Value::String(text.to_string()));
+        serde_json::json!({ "type": "redacted_thinking", "data": data })
+    } else {
+        let mut obj = serde_json::json!({ "type": "thinking", "thinking": text });
+        if let Some(sig) = ns.and_then(|o| o.get(ANTHROPIC_SIGNATURE)) {
+            obj["signature"] = sig.clone();
+        }
+        obj
+    };
+    apply_cache_control(&mut block, meta);
+    block
+}
 
 /// The Messages inbound + outbound protocol adapter.
 pub struct MessagesAdapter;
@@ -147,13 +278,27 @@ pub struct MessagesTool {
 /// config keys preserved verbatim as `args`); a typeless entry is a client
 /// function tool (`{name, description?, input_schema}`). An entry with neither a
 /// `type` nor a `name` is dropped — there is nothing to forward.
-fn parse_messages_tool(t: MessagesTool) -> Option<Tool> {
+fn parse_messages_tool(mut t: MessagesTool) -> Option<Tool> {
+    // `cache_control` on a tool is a prompt-caching breakpoint, not a config
+    // key — lift it out of `extra` (for both tool kinds) into the canonical
+    // metadata slot so it round-trips and is not re-rendered as opaque `args`.
+    // <https://docs.anthropic.com/en/docs/build-with-claude/prompt-caching>
+    let mut provider_metadata = ProviderMetadata::new();
+    if let Some(cc) = t.extra.remove("cache_control") {
+        set_provider_metadata(
+            &mut provider_metadata,
+            PROVIDER_ID_ANTHROPIC,
+            ANTHROPIC_CACHE_CONTROL,
+            cc,
+        );
+    }
     if let Some(kind) = t.kind {
         // Server tool: `{type:"web_search_20250305", name:"web_search", …config}`.
         return Some(Tool::ProviderDefined {
             id: format!("{PROVIDER_ID_ANTHROPIC}.{kind}"),
             name: t.name.unwrap_or_else(|| kind.clone()),
             args: serde_json::Value::Object(t.extra.into_iter().collect()),
+            provider_metadata,
         });
     }
     Some(Tool::Function {
@@ -162,6 +307,7 @@ fn parse_messages_tool(t: MessagesTool) -> Option<Tool> {
         parameters: t.input_schema,
         // Anthropic client tools carry no `strict` slot.
         strict: None,
+        provider_metadata,
     })
 }
 
@@ -183,14 +329,27 @@ fn render_messages_tool(tool: &Tool) -> serde_json::Value {
             description,
             parameters,
             strict: _,
+            provider_metadata,
         } => {
-            serde_json::json!({
+            let mut obj = serde_json::json!({
                 "name": name,
                 "description": description,
                 "input_schema": parameters,
-            })
+            });
+            // Restore a tool-level `cache_control` breakpoint when it round-tripped.
+            apply_cache_control(&mut obj, provider_metadata);
+            obj
         }
-        Tool::ProviderDefined { id, name, args } => provider_defined_native(id, name, args),
+        Tool::ProviderDefined {
+            id,
+            name,
+            args,
+            provider_metadata,
+        } => {
+            let mut obj = provider_defined_native(id, name, args);
+            apply_cache_control(&mut obj, provider_metadata);
+            obj
+        }
     }
 }
 
@@ -343,7 +502,10 @@ fn tool_result_text(value: &serde_json::Value) -> String {
 /// canonical [`Content`]. Block order is preserved (#416).
 fn parse_content(value: &serde_json::Value) -> Result<Vec<Content>> {
     match value {
-        serde_json::Value::String(s) => Ok(vec![Content::Text { text: s.clone() }]),
+        serde_json::Value::String(s) => Ok(vec![Content::Text {
+            text: s.clone(),
+            provider_metadata: ProviderMetadata::new(),
+        }]),
         serde_json::Value::Array(blocks) => {
             let mut out = Vec::with_capacity(blocks.len());
             for block in blocks {
@@ -357,8 +519,15 @@ fn parse_content(value: &serde_json::Value) -> Result<Vec<Content>> {
                             .and_then(|t| t.as_str())
                             .unwrap_or_default()
                             .to_string(),
+                        // Preserve a block-level `cache_control` breakpoint.
+                        provider_metadata: parse_cache_control(block),
                     }),
-                    // both `thinking` and `redacted_thinking` map to Reasoning
+                    // both `thinking` and `redacted_thinking` map to Reasoning.
+                    // The `signature` (thinking) and encrypted `data`
+                    // (redacted_thinking) are continuity tokens with no canonical
+                    // field — carry them in `provider_metadata` so a thinking
+                    // block can be replayed on a follow-up turn.
+                    // <https://docs.anthropic.com/en/docs/build-with-claude/extended-thinking>
                     "thinking" | "redacted_thinking" => out.push(Content::Reasoning {
                         text: block
                             .get("thinking")
@@ -366,6 +535,7 @@ fn parse_content(value: &serde_json::Value) -> Result<Vec<Content>> {
                             .and_then(|t| t.as_str())
                             .unwrap_or_default()
                             .to_string(),
+                        provider_metadata: parse_reasoning_metadata(block, block_type),
                     }),
                     // A client `tool_use` block, or a provider-executed
                     // `server_tool_use` block (web search, code execution, …).
@@ -389,6 +559,8 @@ fn parse_content(value: &serde_json::Value) -> Result<Vec<Content>> {
                             .map(|i| i.to_string())
                             .unwrap_or_else(|| "{}".to_string()),
                         provider_executed: block_type == "server_tool_use",
+                        // Preserve a block-level `cache_control` breakpoint.
+                        provider_metadata: parse_cache_control(block),
                     }),
                     // Anthropic `tool_result` block `{tool_use_id, content, is_error}`:
                     // `content` is a string or a block array (text / image); the
@@ -409,6 +581,8 @@ fn parse_content(value: &serde_json::Value) -> Result<Vec<Content>> {
                                 .and_then(|e| e.as_bool())
                                 .unwrap_or(false),
                         ),
+                        // Preserve a block-level `cache_control` breakpoint.
+                        provider_metadata: parse_cache_control(block),
                     }),
                     // image/* and documents (PDF, …) -> a canonical File part.
                     // <https://docs.anthropic.com/en/docs/build-with-claude/vision>
@@ -426,7 +600,8 @@ fn parse_content(value: &serde_json::Value) -> Result<Vec<Content>> {
                             media_type,
                             data,
                             filename: None,
-                            extra: Default::default(),
+                            // Preserve a block-level `cache_control` breakpoint.
+                            provider_metadata: parse_cache_control(block),
                         });
                     }
                     // Unknown block types are skipped, not fatal — forward
@@ -571,12 +746,14 @@ impl InboundAdapter for MessagesAdapter {
                 messages.push(Message {
                     role: Role::Tool,
                     content: tool_results,
+                    provider_metadata: ProviderMetadata::new(),
                 });
             }
             if !rest.is_empty() {
                 messages.push(Message {
                     role,
                     content: rest,
+                    provider_metadata: ProviderMetadata::new(),
                 });
             }
         }
@@ -814,19 +991,25 @@ impl OutboundAdapter for MessagesAdapter {
                             .and_then(|t| t.as_str())
                             .unwrap_or_default()
                             .to_string(),
+                        provider_metadata: parse_cache_control(block),
                     });
                     // A text block may carry inline web-search citations; lift
                     // them into `Content::Source` parts right after the text.
                     content.extend(parse_messages_block_sources(block, &mut source_index));
                 }
-                Some("thinking") | Some("redacted_thinking") => content.push(Content::Reasoning {
-                    text: block
-                        .get("thinking")
-                        .or_else(|| block.get("data"))
-                        .and_then(|t| t.as_str())
-                        .unwrap_or_default()
-                        .to_string(),
-                }),
+                Some(thinking @ ("thinking" | "redacted_thinking")) => {
+                    content.push(Content::Reasoning {
+                        text: block
+                            .get("thinking")
+                            .or_else(|| block.get("data"))
+                            .and_then(|t| t.as_str())
+                            .unwrap_or_default()
+                            .to_string(),
+                        // Carry the thinking `signature` / redacted `data` so the
+                        // reasoning block can be replayed on a follow-up turn.
+                        provider_metadata: parse_reasoning_metadata(block, thinking),
+                    });
+                }
                 // A client `tool_use` block, or a provider-executed
                 // `server_tool_use` block. Anthropic runs server tools (e.g.
                 // `web_search`) itself and emits a `server_tool_use` block with
@@ -851,6 +1034,7 @@ impl OutboundAdapter for MessagesAdapter {
                         .map(|i| i.to_string())
                         .unwrap_or_else(|| "{}".to_string()),
                     provider_executed: kind == "server_tool_use",
+                    provider_metadata: parse_cache_control(block),
                 }),
                 // A `web_search_tool_result` block carries the raw search hits
                 // (`content[]` of `web_search_result`). Lift each into a
@@ -886,6 +1070,12 @@ impl OutboundAdapter for MessagesAdapter {
             finish_reason,
             response_id,
             stop_details,
+            // Anthropic's Messages response carries no result-level metadata
+            // field without a dedicated canonical slot (unlike OpenAI's
+            // `system_fingerprint` or Gemini's `modelVersion`); the per-block
+            // signature / cache_control above are where its provider metadata
+            // lives. Left empty rather than inventing an unconstructed slot.
+            provider_metadata: ProviderMetadata::new(),
         })
     }
 
@@ -1033,6 +1223,14 @@ fn parse_messages_block_sources(block: &serde_json::Value, next_index: &mut usiz
     let Some(entries) = entries else {
         return Vec::new();
     };
+    // A `web_search_tool_result` block carries the originating `server_tool_use`
+    // id that paired it on the wire; preserve it so the render path restores the
+    // EXACT pairing id rather than reusing one by position.
+    // <https://platform.claude.com/docs/en/agents-and-tools/tool-use/web-search-tool>
+    let tool_use_id = block
+        .get("tool_use_id")
+        .and_then(|i| i.as_str())
+        .filter(|s| !s.is_empty());
     let mut out = Vec::new();
     for entry in entries {
         // A text block's `citations[]` may also carry non-web citation kinds
@@ -1052,12 +1250,22 @@ fn parse_messages_block_sources(block: &serde_json::Value, next_index: &mut usiz
             .get("title")
             .and_then(|t| t.as_str())
             .map(str::to_string);
+        let mut provider_metadata = ProviderMetadata::new();
+        if let Some(id) = tool_use_id {
+            set_provider_metadata(
+                &mut provider_metadata,
+                PROVIDER_ID_ANTHROPIC,
+                ANTHROPIC_TOOL_USE_ID,
+                serde_json::Value::String(id.to_string()),
+            );
+        }
         out.push(Content::Source {
             source: Source::Url {
                 id: Source::synthesize_id(url, *next_index),
                 url: url.to_string(),
                 title,
             },
+            provider_metadata,
         });
         *next_index += 1;
     }
@@ -1107,22 +1315,26 @@ fn is_web_search_call(c: &Content) -> bool {
 /// [`Source::Document`] citations have no `web_search_result` form and are
 /// skipped here. Returns an empty Vec when the result carries no URL sources.
 ///
-/// **Pairing strategy (correlate by order).** On the Anthropic wire a
-/// `web_search_tool_result` is invalid on its own: it must pair with a
-/// `server_tool_use` block sharing one `tool_use_id`, or a client echoing the
-/// assistant turn into a follow-up triggers `invalid_request_error`.
-/// - Same-protocol: the upstream `server_tool_use` parsed to a
-///   `ToolCall{provider_executed:true, name:"web_search"}` and is re-rendered as
-///   a real `server_tool_use` by [`render_content_block`]. Here we detect that
-///   preceding call and **reuse its id** as `tool_use_id` (real pairing; no
-///   second `server_tool_use` is emitted), so `srvtoolu_…` ids correlate.
-/// - Cross-protocol (no such call, e.g. Gemini grounding → Anthropic client):
-///   we **synthesize** a matching `server_tool_use{id, name:"web_search",
-///   input:{}}` immediately before the result block so the pair is still valid.
+/// **Pairing strategy.** On the Anthropic wire a `web_search_tool_result` is
+/// invalid on its own: it must pair with a `server_tool_use` block sharing one
+/// `tool_use_id`, or a client echoing the assistant turn into a follow-up
+/// triggers `invalid_request_error`. The `tool_use_id` is resolved in priority
+/// order:
+/// 1. **Real call present** — the upstream `server_tool_use` parsed to a
+///    `ToolCall{provider_executed:true, name:"web_search"}` and is re-rendered as
+///    a real `server_tool_use` by [`render_content_block`]. Reuse its id as
+///    `tool_use_id` (real pairing; no second `server_tool_use` is emitted).
+/// 2. **Exact id preserved** — no originating call survived (e.g. a cross-protocol
+///    route, or a result that carried only the citations), but the `Source`'s
+///    `provider_metadata["anthropic"]["toolUseId"]` preserved the *exact*
+///    originating id from parse. Synthesize a `server_tool_use` carrying that
+///    exact id, so the pair reproduces the original `tool_use_id` byte-for-byte.
+/// 3. **Fallback** — no id at all (a genuinely foreign source, e.g. Gemini
+///    grounding): synthesize a `server_tool_use` with a stable placeholder id so
+///    the emitted pair is at least valid.
 ///
-/// Preserving the *exact* original id across a full canonical round-trip is
-/// deferred to provider-metadata plumbing; the emitted wire must never be
-/// invalid in the meantime.
+/// [`Source::Document`] citations have no `web_search_result` form and are
+/// skipped here.
 /// <https://platform.claude.com/docs/en/agents-and-tools/tool-use/web-search-tool>
 fn render_web_search_result_blocks(result: &GenerateResult) -> Vec<serde_json::Value> {
     let results: Vec<serde_json::Value> = result
@@ -1131,6 +1343,7 @@ fn render_web_search_result_blocks(result: &GenerateResult) -> Vec<serde_json::V
         .filter_map(|c| match c {
             Content::Source {
                 source: Source::Url { url, title, .. },
+                ..
             } => {
                 let mut entry = serde_json::Map::new();
                 entry.insert("type".into(), "web_search_result".into());
@@ -1146,57 +1359,71 @@ fn render_web_search_result_blocks(result: &GenerateResult) -> Vec<serde_json::V
     if results.is_empty() {
         return Vec::new();
     }
-    // Correlate by order: borrow the id of the originating provider-executed
-    // `web_search` call. All URL sources collapse into one result block, and
-    // Anthropic emits one web-search call per result block, so the last such
-    // call in the content is the originator. That call is already re-rendered as
-    // a real `server_tool_use` by `render_content_block`, so reusing its id
-    // keeps the pair correlated without emitting a duplicate call block — and
-    // crucially without leaving that real call orphaned (the bug the synthetic
-    // `srvtoolu_citations` placeholder used to cause). Scanning the whole
-    // content (not just before the first source) covers the wire shape where an
-    // inline-cited text block's `Source` precedes the `server_tool_use`.
-    let paired_id = result.content.iter().rev().find_map(|c| match c {
+    // (1) Borrow the id of the originating provider-executed `web_search` call.
+    // All URL sources collapse into one result block, and Anthropic emits one
+    // web-search call per result block, so the last such call in the content is
+    // the originator. That call is already re-rendered as a real
+    // `server_tool_use` by `render_content_block`, so reusing its id keeps the
+    // pair correlated without emitting a duplicate (or orphaning the real call).
+    let call_id = result.content.iter().rev().find_map(|c| match c {
         Content::ToolCall { id, .. } if is_web_search_call(c) => Some(id.clone()),
         _ => None,
     });
-    match paired_id {
-        // Real pairing: the originating `server_tool_use` already rendered with
-        // this id; only the result block is added, sharing that id.
-        Some(id) => vec![serde_json::json!({
+    if let Some(id) = call_id {
+        return vec![serde_json::json!({
             "type": "web_search_tool_result",
             "tool_use_id": id,
             "content": results,
-        })],
-        // No originating call (cross-protocol): synthesize the `server_tool_use`
-        // so the emitted pair is valid, both blocks sharing one synthetic id.
-        None => vec![
-            serde_json::json!({
-                "type": "server_tool_use",
-                "id": SYNTHETIC_WEB_SEARCH_ID,
-                "name": ANTHROPIC_WEB_SEARCH_TOOL,
-                "input": {},
-            }),
-            serde_json::json!({
-                "type": "web_search_tool_result",
-                "tool_use_id": SYNTHETIC_WEB_SEARCH_ID,
-                "content": results,
-            }),
-        ],
+        })];
     }
+    // (2) No surviving call — fall back to the EXACT originating `tool_use_id`
+    // preserved on a `Source`'s provider metadata, if any, so the pair restores
+    // the original id rather than the placeholder. (3) Otherwise the placeholder.
+    let preserved_id = result.content.iter().find_map(|c| match c {
+        Content::Source {
+            provider_metadata, ..
+        } => provider_namespace(provider_metadata, PROVIDER_ID_ANTHROPIC)
+            .and_then(|o| o.get(ANTHROPIC_TOOL_USE_ID))
+            .and_then(|v| v.as_str())
+            .map(str::to_string),
+        _ => None,
+    });
+    let tool_use_id = preserved_id.unwrap_or_else(|| SYNTHETIC_WEB_SEARCH_ID.to_string());
+    vec![
+        serde_json::json!({
+            "type": "server_tool_use",
+            "id": tool_use_id,
+            "name": ANTHROPIC_WEB_SEARCH_TOOL,
+            "input": {},
+        }),
+        serde_json::json!({
+            "type": "web_search_tool_result",
+            "tool_use_id": tool_use_id,
+            "content": results,
+        }),
+    ]
 }
 
 fn render_content_block(c: &Content) -> Option<serde_json::Value> {
     match c {
-        Content::Text { text } => Some(serde_json::json!({ "type": "text", "text": text })),
-        Content::Reasoning { text } => {
-            Some(serde_json::json!({ "type": "thinking", "thinking": text }))
+        Content::Text {
+            text,
+            provider_metadata,
+        } => {
+            let mut block = serde_json::json!({ "type": "text", "text": text });
+            apply_cache_control(&mut block, provider_metadata);
+            Some(block)
         }
+        Content::Reasoning {
+            text,
+            provider_metadata,
+        } => Some(render_reasoning_block(text, provider_metadata)),
         Content::ToolCall {
             id,
             name,
             arguments,
             provider_executed,
+            provider_metadata,
         } => {
             let input: serde_json::Value =
                 serde_json::from_str(arguments).unwrap_or(serde_json::json!({}));
@@ -1211,9 +1438,11 @@ fn render_content_block(c: &Content) -> Option<serde_json::Value> {
             } else {
                 "tool_use"
             };
-            Some(serde_json::json!({
+            let mut block = serde_json::json!({
                 "type": block_type, "id": id, "name": name, "input": input,
-            }))
+            });
+            apply_cache_control(&mut block, provider_metadata);
+            Some(block)
         }
         // tool results are request-side only; not part of an assistant reply
         Content::ToolResult { .. } => None,
@@ -1221,7 +1450,10 @@ fn render_content_block(c: &Content) -> Option<serde_json::Value> {
         // Source is `{type:base64,media_type,data}` or `{type:url,url}`.
         // <https://docs.anthropic.com/en/docs/build-with-claude/vision>
         Content::File {
-            media_type, data, ..
+            media_type,
+            data,
+            provider_metadata,
+            ..
         } => {
             let source = match data {
                 DataContent::Base64 { data } => serde_json::json!({
@@ -1238,7 +1470,9 @@ fn render_content_block(c: &Content) -> Option<serde_json::Value> {
             } else {
                 "document"
             };
-            Some(serde_json::json!({ "type": block_type, "source": source }))
+            let mut block = serde_json::json!({ "type": block_type, "source": source });
+            apply_cache_control(&mut block, provider_metadata);
+            Some(block)
         }
         // Citations are not a per-block render: they are collected across the
         // whole reply and re-attached as a `server_tool_use` ↔
@@ -1308,7 +1542,10 @@ fn render_message(m: &Message) -> serde_json::Value {
             .iter()
             .filter_map(|c| match c {
                 Content::ToolResult {
-                    call_id, output, ..
+                    call_id,
+                    output,
+                    provider_metadata,
+                    ..
                 } => {
                     let (content, is_error) = render_tool_result_content(output);
                     let mut block = serde_json::json!({
@@ -1321,6 +1558,8 @@ fn render_message(m: &Message) -> serde_json::Value {
                     if is_error {
                         block["is_error"] = serde_json::Value::Bool(true);
                     }
+                    // Restore a `tool_result`-level `cache_control` breakpoint.
+                    apply_cache_control(&mut block, provider_metadata);
                     Some(block)
                 }
                 _ => None,
@@ -1342,7 +1581,12 @@ fn render_message(m: &Message) -> serde_json::Value {
     };
     let blocks: Vec<serde_json::Value> =
         m.content.iter().filter_map(render_content_block).collect();
-    serde_json::json!({ "role": role, "content": blocks })
+    let mut out = serde_json::json!({ "role": role, "content": blocks });
+    // A message may also carry a turn-level `cache_control` breakpoint (Anthropic
+    // accepts `cache_control` on a message, not only its blocks).
+    // <https://docs.anthropic.com/en/docs/build-with-claude/prompt-caching>
+    apply_cache_control(&mut out, &m.provider_metadata);
+    out
 }
 
 fn parse_usage(value: &serde_json::Value) -> Option<Usage> {
@@ -1475,7 +1719,7 @@ impl StreamDecoder for MessagesStreamDecoder {
                 {
                     let mut idx = 0usize;
                     for content in parse_messages_block_sources(block, &mut idx) {
-                        if let Content::Source { source } = content {
+                        if let Content::Source { source, .. } = content {
                             parts.push(StreamPart::Source { source });
                         }
                     }

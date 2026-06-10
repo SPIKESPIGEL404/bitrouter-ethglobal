@@ -329,11 +329,13 @@ async fn fallback_tries_next_on_5xx_then_succeeds() {
             MockResponse::Generate(GenerateResult {
                 content: vec![Content::Text {
                     text: "from b".into(),
+                    provider_metadata: Default::default(),
                 }],
                 usage: None,
                 finish_reason: Some(FinishReason::Stop),
                 response_id: None,
                 stop_details: None,
+                provider_metadata: Default::default(),
             }),
         ])),
         |_b| {},
@@ -343,7 +345,8 @@ async fn fallback_tries_next_on_5xx_then_succeeds() {
     assert_eq!(
         resp.result.content,
         vec![Content::Text {
-            text: "from b".into()
+            text: "from b".into(),
+            provider_metadata: Default::default(),
         }]
     );
 }
@@ -364,11 +367,13 @@ async fn fallback_tries_next_on_payment_required_then_succeeds() {
             MockResponse::Generate(GenerateResult {
                 content: vec![Content::Text {
                     text: "from account b".into(),
+                    provider_metadata: Default::default(),
                 }],
                 usage: None,
                 finish_reason: Some(FinishReason::Stop),
                 response_id: None,
                 stop_details: None,
+                provider_metadata: Default::default(),
             }),
         ])),
         |_b| {},
@@ -381,7 +386,8 @@ async fn fallback_tries_next_on_payment_required_then_succeeds() {
     assert_eq!(
         resp.result.content,
         vec![Content::Text {
-            text: "from account b".into()
+            text: "from account b".into(),
+            provider_metadata: Default::default(),
         }]
     );
 }
@@ -397,11 +403,15 @@ async fn fallback_does_not_retry_on_4xx() {
             }),
             // b would succeed, but a 400 must not fall through to it.
             MockResponse::Generate(GenerateResult {
-                content: vec![Content::Text { text: "b".into() }],
+                content: vec![Content::Text {
+                    text: "b".into(),
+                    provider_metadata: Default::default(),
+                }],
                 usage: None,
                 finish_reason: None,
                 response_id: None,
                 stop_details: None,
+                provider_metadata: Default::default(),
             }),
         ])),
         |_b| {},
@@ -451,11 +461,15 @@ async fn fallback_does_not_retry_on_4xx_even_with_observe_only_execution_hook() 
                 message: "bad".into(),
             }),
             MockResponse::Generate(GenerateResult {
-                content: vec![Content::Text { text: "b".into() }],
+                content: vec![Content::Text {
+                    text: "b".into(),
+                    provider_metadata: Default::default(),
+                }],
                 usage: None,
                 finish_reason: None,
                 response_id: None,
                 stop_details: None,
+                provider_metadata: Default::default(),
             }),
         ])),
         |b| {

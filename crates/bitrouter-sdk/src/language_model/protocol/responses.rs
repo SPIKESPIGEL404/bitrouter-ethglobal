@@ -29,8 +29,8 @@ use crate::language_model::protocol::{
 use crate::language_model::stream::SseFrame;
 use crate::language_model::types::{
     ApiProtocol, Content, DataContent, FinishReason, GenerateResult, GenerationParams, Message,
-    Prompt, ResponseFormat, Role, RoutingTarget, Source, StreamPart, Tool, ToolChoice,
-    ToolResultContentPart, ToolResultOutput, Usage,
+    Prompt, ProviderMetadata, ResponseFormat, Role, RoutingTarget, Source, StreamPart, Tool,
+    ToolChoice, ToolResultContentPart, ToolResultOutput, Usage,
 };
 
 /// The Responses protocol adapter.
@@ -187,7 +187,10 @@ fn role_str(role: Role) -> &'static str {
 /// ordered canonical content.
 fn parse_responses_content(value: Option<&serde_json::Value>) -> Vec<Content> {
     match value {
-        Some(serde_json::Value::String(s)) => vec![Content::Text { text: s.clone() }],
+        Some(serde_json::Value::String(s)) => vec![Content::Text {
+            text: s.clone(),
+            provider_metadata: ProviderMetadata::new(),
+        }],
         Some(serde_json::Value::Array(parts)) => {
             parts.iter().filter_map(parse_responses_part).collect()
         }
@@ -201,6 +204,7 @@ fn parse_responses_part(part: &serde_json::Value) -> Option<Content> {
     match part.get("type").and_then(|t| t.as_str())? {
         "input_text" | "output_text" | "text" => Some(Content::Text {
             text: part.get("text").and_then(|t| t.as_str())?.to_string(),
+            provider_metadata: ProviderMetadata::new(),
         }),
         "input_image" => {
             let url = part.get("image_url").and_then(|u| u.as_str())?;
@@ -209,7 +213,7 @@ fn parse_responses_part(part: &serde_json::Value) -> Option<Content> {
                 media_type: media_type.unwrap_or_else(|| "image/*".to_string()),
                 data,
                 filename: None,
-                extra: Default::default(),
+                provider_metadata: ProviderMetadata::new(),
             })
         }
         "input_file" => {
@@ -222,7 +226,7 @@ fn parse_responses_part(part: &serde_json::Value) -> Option<Content> {
                     .get("filename")
                     .and_then(|f| f.as_str())
                     .map(str::to_string),
-                extra: Default::default(),
+                provider_metadata: ProviderMetadata::new(),
             })
         }
         _ => None,
@@ -296,7 +300,10 @@ fn parse_responses_annotations(
             }
             _ => continue,
         };
-        out.push(Content::Source { source });
+        out.push(Content::Source {
+            source,
+            provider_metadata: ProviderMetadata::new(),
+        });
         *next_index += 1;
     }
     out
@@ -315,7 +322,7 @@ fn render_responses_annotations(result: &GenerateResult) -> Vec<serde_json::Valu
         .content
         .iter()
         .filter_map(|c| match c {
-            Content::Source { source } => Some(render_source_annotation(source)),
+            Content::Source { source, .. } => Some(render_source_annotation(source)),
             _ => None,
         })
         .collect()
@@ -368,7 +375,11 @@ fn parse_input(value: &serde_json::Value) -> Result<Vec<Message>> {
                         if let Some(role) = item.get("role").and_then(|r| r.as_str()) {
                             let role = parse_role(role)?;
                             let content = parse_responses_content(item.get("content"));
-                            messages.push(Message { role, content });
+                            messages.push(Message {
+                                role,
+                                content,
+                                provider_metadata: ProviderMetadata::new(),
+                            });
                         }
                     }
                     Some("function_call") => {
@@ -397,7 +408,9 @@ fn parse_input(value: &serde_json::Value) -> Result<Vec<Message>> {
                                 // (`web_search_call`, …) are never re-sent as
                                 // input items.
                                 provider_executed: false,
+                                provider_metadata: ProviderMetadata::new(),
                             }],
+                            provider_metadata: ProviderMetadata::new(),
                         });
                     }
                     // OpenAI Responses `function_call_output {call_id, output}`:
@@ -423,7 +436,9 @@ fn parse_input(value: &serde_json::Value) -> Result<Vec<Message>> {
                                     .to_string(),
                                 tool_name: None,
                                 output,
+                                provider_metadata: ProviderMetadata::new(),
                             }],
+                            provider_metadata: ProviderMetadata::new(),
                         });
                     }
                     Some("reasoning") => {
@@ -440,7 +455,11 @@ fn parse_input(value: &serde_json::Value) -> Result<Vec<Message>> {
                         if !text.is_empty() {
                             messages.push(Message {
                                 role: Role::Assistant,
-                                content: vec![Content::Reasoning { text }],
+                                content: vec![Content::Reasoning {
+                                    text,
+                                    provider_metadata: ProviderMetadata::new(),
+                                }],
+                                provider_metadata: ProviderMetadata::new(),
                             });
                         }
                     }
@@ -709,6 +728,7 @@ impl OutboundAdapter for ResponsesAdapter {
                             if let Some(text) = part.get("text").and_then(|t| t.as_str()) {
                                 content.push(Content::Text {
                                     text: text.to_string(),
+                                    provider_metadata: ProviderMetadata::new(),
                                 });
                             }
                             // An `output_text` part may carry web-search / file
@@ -733,7 +753,10 @@ impl OutboundAdapter for ResponsesAdapter {
                         })
                         .unwrap_or_default();
                     if !text.is_empty() {
-                        content.push(Content::Reasoning { text });
+                        content.push(Content::Reasoning {
+                            text,
+                            provider_metadata: ProviderMetadata::new(),
+                        });
                     }
                 }
                 Some("function_call") => {
@@ -755,6 +778,7 @@ impl OutboundAdapter for ResponsesAdapter {
                             .to_string(),
                         // A `function_call` output item is a client tool call.
                         provider_executed: false,
+                        provider_metadata: ProviderMetadata::new(),
                     });
                 }
                 // OpenAI Responses built-in (server-side) tools surface as their
@@ -791,6 +815,7 @@ impl OutboundAdapter for ResponsesAdapter {
                         // emits an empty input object.
                         arguments: "{}".to_string(),
                         provider_executed: true,
+                        provider_metadata: ProviderMetadata::new(),
                     });
                 }
                 Some("code_interpreter_call") => {
@@ -813,6 +838,7 @@ impl OutboundAdapter for ResponsesAdapter {
                         name: "code_interpreter".to_string(),
                         arguments: serde_json::Value::Object(input).to_string(),
                         provider_executed: true,
+                        provider_metadata: ProviderMetadata::new(),
                     });
                 }
                 // Deferred output-item types — intentionally skipped, not parsed,
@@ -853,6 +879,10 @@ impl OutboundAdapter for ResponsesAdapter {
             finish_reason,
             response_id,
             stop_details: None,
+            // The Responses object carries no result-level field that lacks a
+            // dedicated canonical slot (no `system_fingerprint`, unlike Chat
+            // Completions), so result-level provider metadata is empty here.
+            provider_metadata: ProviderMetadata::new(),
         })
     }
 
@@ -883,6 +913,7 @@ fn parse_responses_tool(t: ResponsesTool) -> Option<Tool> {
                 t.parameters
             },
             strict: t.strict,
+            provider_metadata: ProviderMetadata::new(),
         });
     }
     // Provider-defined server tool. `type` is the tool kind (and the tool name);
@@ -893,6 +924,7 @@ fn parse_responses_tool(t: ResponsesTool) -> Option<Tool> {
         id: format!("{PROVIDER_ID_OPENAI}.{kind}"),
         name: t.name.unwrap_or_else(|| kind.clone()),
         args: serde_json::Value::Object(t.extra.into_iter().collect()),
+        provider_metadata: ProviderMetadata::new(),
     })
 }
 
@@ -913,6 +945,7 @@ fn render_responses_tool(tool: &Tool) -> serde_json::Value {
             description,
             parameters,
             strict,
+            ..
         } => {
             let mut obj = serde_json::Map::new();
             obj.insert("type".into(), "function".into());
@@ -929,7 +962,7 @@ fn render_responses_tool(tool: &Tool) -> serde_json::Value {
             }
             serde_json::Value::Object(obj)
         }
-        Tool::ProviderDefined { id, name, args } => provider_defined_native(id, name, args),
+        Tool::ProviderDefined { id, name, args, .. } => provider_defined_native(id, name, args),
     }
 }
 
@@ -1034,7 +1067,7 @@ fn render_message_items(m: &Message) -> Vec<serde_json::Value> {
     let mut text_parts = Vec::new();
     for c in &m.content {
         match c {
-            Content::Text { text } => {
+            Content::Text { text, .. } => {
                 let kind = if m.role == Role::Assistant {
                     "output_text"
                 } else {
@@ -1050,6 +1083,7 @@ fn render_message_items(m: &Message) -> Vec<serde_json::Value> {
                 name,
                 arguments,
                 provider_executed,
+                ..
             } => {
                 // A provider-executed server-tool call is NOT re-sent as a client
                 // `function_call` input item — the provider already ran it, and
@@ -1258,7 +1292,7 @@ fn render_output_items(result: &GenerateResult) -> Vec<serde_json::Value> {
         .content
         .iter()
         .filter_map(|c| match c {
-            Content::Reasoning { text } => Some(text.as_str()),
+            Content::Reasoning { text, .. } => Some(text.as_str()),
             _ => None,
         })
         .collect();
@@ -1272,7 +1306,7 @@ fn render_output_items(result: &GenerateResult) -> Vec<serde_json::Value> {
         .content
         .iter()
         .filter_map(|c| match c {
-            Content::Text { text } => Some(text.as_str()),
+            Content::Text { text, .. } => Some(text.as_str()),
             _ => None,
         })
         .collect();
@@ -1299,6 +1333,7 @@ fn render_output_items(result: &GenerateResult) -> Vec<serde_json::Value> {
             name,
             arguments,
             provider_executed,
+            ..
         } = c
         {
             if *provider_executed {
@@ -1495,7 +1530,7 @@ impl StreamDecoder for ResponsesStreamDecoder {
                 if let Some(annotation) = json.get("annotation") {
                     let arr = serde_json::Value::Array(vec![annotation.clone()]);
                     for content in parse_responses_annotations(Some(&arr), &mut self.source_index) {
-                        if let Content::Source { source } = content {
+                        if let Content::Source { source, .. } = content {
                             parts.push(StreamPart::Source { source });
                         }
                     }

@@ -312,6 +312,7 @@ impl PipelineContext {
                 finish_reason: None,
                 response_id: None,
                 stop_details: None,
+                provider_metadata: Default::default(),
             },
         );
         PipelineResponse {
@@ -398,6 +399,7 @@ mod tests {
             messages: vec![Message {
                 role: Role::User,
                 content: vec![],
+                provider_metadata: Default::default(),
             }],
             tools: vec![],
             params: Default::default(),

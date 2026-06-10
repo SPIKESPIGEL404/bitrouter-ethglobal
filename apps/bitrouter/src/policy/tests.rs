@@ -48,6 +48,7 @@ fn ctx_with_tools(tools: &[&str], policy_id: Option<&str>) -> PipelineContext {
                 description: None,
                 parameters: serde_json::json!({}),
                 strict: None,
+                provider_metadata: Default::default(),
             })
             .collect(),
         params: GenerationParams::default(),

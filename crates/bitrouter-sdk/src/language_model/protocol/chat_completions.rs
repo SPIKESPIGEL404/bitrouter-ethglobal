@@ -14,14 +14,15 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::{BitrouterError, Result};
 use crate::language_model::protocol::{
-    InboundAdapter, OutboundAdapter, SseEvent, StreamDecoder, StreamEncoder, Transport,
-    describe_deser_error,
+    InboundAdapter, OutboundAdapter, PROVIDER_ID_OPENAI, SseEvent, StreamDecoder, StreamEncoder,
+    Transport, describe_deser_error,
 };
 use crate::language_model::stream::SseFrame;
 use crate::language_model::types::{
     ApiProtocol, Content, DataContent, FinishReason, GenerateResult, GenerationParams, Message,
-    Modality, Prompt, ResponseFormat, Role, RoutingTarget, Source, StreamPart, Tool, ToolChoice,
-    ToolResultContentPart, ToolResultOutput, Usage,
+    Modality, Prompt, ProviderMetadata, ResponseFormat, Role, RoutingTarget, Source, StreamPart,
+    Tool, ToolChoice, ToolResultContentPart, ToolResultOutput, Usage, provider_namespace,
+    set_provider_metadata,
 };
 
 /// The Chat Completions inbound + outbound protocol adapter.
@@ -246,7 +247,7 @@ fn parse_tool_result_output(value: &serde_json::Value) -> ToolResultOutput {
 /// other content kind yields `None`.
 fn content_to_tool_result_part(c: Content) -> Option<ToolResultContentPart> {
     match c {
-        Content::Text { text } => Some(ToolResultContentPart::Text { text }),
+        Content::Text { text, .. } => Some(ToolResultContentPart::Text { text }),
         Content::File {
             media_type, data, ..
         } => Some(ToolResultContentPart::Media { media_type, data }),
@@ -259,7 +260,10 @@ fn content_to_tool_result_part(c: Content) -> Option<ToolResultContentPart> {
 /// part shapes are skipped.
 fn parse_chat_content(value: &serde_json::Value) -> Vec<Content> {
     match value {
-        serde_json::Value::String(s) if !s.is_empty() => vec![Content::Text { text: s.clone() }],
+        serde_json::Value::String(s) if !s.is_empty() => vec![Content::Text {
+            text: s.clone(),
+            provider_metadata: ProviderMetadata::new(),
+        }],
         serde_json::Value::Array(parts) => parts.iter().filter_map(parse_chat_part).collect(),
         _ => Vec::new(),
     }
@@ -270,20 +274,35 @@ fn parse_chat_part(part: &serde_json::Value) -> Option<Content> {
     match part.get("type").and_then(|t| t.as_str())? {
         "text" => {
             let text = part.get("text").and_then(|t| t.as_str())?.to_string();
-            (!text.is_empty()).then_some(Content::Text { text })
+            (!text.is_empty()).then_some(Content::Text {
+                text,
+                provider_metadata: ProviderMetadata::new(),
+            })
         }
         // <https://platform.openai.com/docs/guides/vision>
         "image_url" => {
-            let url = part
-                .get("image_url")
-                .and_then(|i| i.get("url"))
-                .and_then(|u| u.as_str())?;
+            let image_url = part.get("image_url")?;
+            let url = image_url.get("url").and_then(|u| u.as_str())?;
             let (media_type, data) = DataContent::from_url(url);
+            // The OpenAI image `detail` hint (`auto` | `low` | `high`) is
+            // provider metadata, not a payload field — preserve it under the
+            // `openai` namespace so it survives a round-trip (and is ignored,
+            // not leaked, on a non-OpenAI upstream).
+            // <https://platform.openai.com/docs/guides/vision>
+            let mut provider_metadata = ProviderMetadata::new();
+            if let Some(detail) = image_url.get("detail") {
+                set_provider_metadata(
+                    &mut provider_metadata,
+                    PROVIDER_ID_OPENAI,
+                    "detail",
+                    detail.clone(),
+                );
+            }
             Some(Content::File {
                 media_type: media_type.unwrap_or_else(|| "image/*".to_string()),
                 data,
                 filename: None,
-                extra: Default::default(),
+                provider_metadata,
             })
         }
         // <https://platform.openai.com/docs/guides/audio>
@@ -306,7 +325,7 @@ fn parse_chat_part(part: &serde_json::Value) -> Option<Content> {
                 media_type: format!("audio/{format}"),
                 data,
                 filename: None,
-                extra: Default::default(),
+                provider_metadata: ProviderMetadata::new(),
             })
         }
         "file" => {
@@ -320,7 +339,7 @@ fn parse_chat_part(part: &serde_json::Value) -> Option<Content> {
                     .get("filename")
                     .and_then(|f| f.as_str())
                     .map(str::to_string),
-                extra: Default::default(),
+                provider_metadata: ProviderMetadata::new(),
             })
         }
         _ => None,
@@ -357,6 +376,7 @@ fn parse_chat_annotations(annotations: Option<&serde_json::Value>) -> Vec<Conten
                     url,
                     title,
                 },
+                provider_metadata: ProviderMetadata::new(),
             })
         })
         .collect()
@@ -376,6 +396,7 @@ fn render_chat_annotations(result: &GenerateResult) -> Vec<serde_json::Value> {
         .filter_map(|c| match c {
             Content::Source {
                 source: Source::Url { url, title, .. },
+                ..
             } => {
                 let mut cite = serde_json::Map::new();
                 cite.insert("url".into(), url.clone().into());
@@ -390,6 +411,7 @@ fn render_chat_annotations(result: &GenerateResult) -> Vec<serde_json::Value> {
             // Document citations have no `url_citation` form on the Chat wire.
             Content::Source {
                 source: Source::Document { .. },
+                ..
             } => None,
             _ => None,
         })
@@ -424,7 +446,10 @@ impl InboundAdapter for ChatCompletionsAdapter {
             if let Some(reasoning) = m.reasoning_content
                 && !reasoning.is_empty()
             {
-                content.push(Content::Reasoning { text: reasoning });
+                content.push(Content::Reasoning {
+                    text: reasoning,
+                    provider_metadata: ProviderMetadata::new(),
+                });
             }
             if role == Role::Tool {
                 // OpenAI tool messages carry `{role:"tool", tool_call_id, content}`;
@@ -447,6 +472,7 @@ impl InboundAdapter for ChatCompletionsAdapter {
                     call_id,
                     tool_name: None,
                     output,
+                    provider_metadata: ProviderMetadata::new(),
                 });
             } else {
                 if let Some(value) = &m.content {
@@ -460,10 +486,15 @@ impl InboundAdapter for ChatCompletionsAdapter {
                         // Chat Completions `tool_calls` are always client tools —
                         // there is no server-tool slot on this wire.
                         provider_executed: false,
+                        provider_metadata: ProviderMetadata::new(),
                     });
                 }
             }
-            messages.push(Message { role, content });
+            messages.push(Message {
+                role,
+                content,
+                provider_metadata: ProviderMetadata::new(),
+            });
         }
 
         // Chat Completions is function-only on the wire — there is no
@@ -479,6 +510,9 @@ impl InboundAdapter for ChatCompletionsAdapter {
                 description: t.function.description,
                 parameters: t.function.parameters,
                 strict: t.function.strict,
+                // Chat Completions has no per-tool `cache_control`; no provider
+                // metadata to lift here.
+                provider_metadata: ProviderMetadata::new(),
             })
             .collect();
 
@@ -569,7 +603,7 @@ impl InboundAdapter for ChatCompletionsAdapter {
                 .content
                 .iter()
                 .filter_map(|c| match c {
-                    Content::Text { text } => Some(text.as_str()),
+                    Content::Text { text, .. } => Some(text.as_str()),
                     _ => None,
                 })
                 .collect();
@@ -581,7 +615,7 @@ impl InboundAdapter for ChatCompletionsAdapter {
             .content
             .iter()
             .filter_map(|c| match c {
-                Content::Reasoning { text } => Some(text.as_str()),
+                Content::Reasoning { text, .. } => Some(text.as_str()),
                 _ => None,
             })
             .collect();
@@ -637,6 +671,15 @@ impl InboundAdapter for ChatCompletionsAdapter {
         );
         if let Some(usage) = result.usage {
             response.insert("usage".into(), render_usage(&usage));
+        }
+        // Restore the OpenAI `system_fingerprint` from result-level provider
+        // metadata when present (only ever set by this protocol's
+        // `parse_response`), so a same-protocol round-trip reproduces it.
+        // <https://platform.openai.com/docs/api-reference/chat/object>
+        if let Some(fp) = provider_namespace(&result.provider_metadata, PROVIDER_ID_OPENAI)
+            .and_then(|o| o.get("systemFingerprint"))
+        {
+            response.insert("system_fingerprint".into(), fp.clone());
         }
         Ok(serde_json::Value::Object(response))
     }
@@ -764,6 +807,7 @@ impl OutboundAdapter for ChatCompletionsAdapter {
         {
             content.push(Content::Reasoning {
                 text: reasoning.to_string(),
+                provider_metadata: ProviderMetadata::new(),
             });
         }
         if let Some(text) = message
@@ -772,7 +816,10 @@ impl OutboundAdapter for ChatCompletionsAdapter {
             .map(content_text)
             .filter(|s| !s.is_empty())
         {
-            content.push(Content::Text { text });
+            content.push(Content::Text {
+                text,
+                provider_metadata: ProviderMetadata::new(),
+            });
         }
         // Chat Completions' `message.refusal` (when non-empty) is the model's
         // declined-response text. Carry it through so the caller sees the
@@ -786,6 +833,7 @@ impl OutboundAdapter for ChatCompletionsAdapter {
         {
             content.push(Content::Text {
                 text: refusal.to_string(),
+                provider_metadata: ProviderMetadata::new(),
             });
             refusal_seen = true;
         }
@@ -812,6 +860,7 @@ impl OutboundAdapter for ChatCompletionsAdapter {
                     // The Chat Completions response wire has no server-tool item;
                     // every `tool_calls` entry is a client tool call.
                     provider_executed: false,
+                    provider_metadata: ProviderMetadata::new(),
                 });
             }
         }
@@ -844,6 +893,19 @@ impl OutboundAdapter for ChatCompletionsAdapter {
             .get("id")
             .and_then(|v| v.as_str())
             .map(|s| s.to_string());
+        // OpenAI's `system_fingerprint` identifies the backend config the
+        // response was produced with — it has no dedicated canonical field, so
+        // carry it at result level under the `openai` namespace.
+        // <https://platform.openai.com/docs/api-reference/chat/object>
+        let mut provider_metadata = ProviderMetadata::new();
+        if let Some(fp) = body.get("system_fingerprint").filter(|v| !v.is_null()) {
+            set_provider_metadata(
+                &mut provider_metadata,
+                PROVIDER_ID_OPENAI,
+                "systemFingerprint",
+                fp.clone(),
+            );
+        }
 
         Ok(GenerateResult {
             content,
@@ -851,6 +913,7 @@ impl OutboundAdapter for ChatCompletionsAdapter {
             finish_reason,
             response_id,
             stop_details: None,
+            provider_metadata,
         })
     }
 
@@ -884,6 +947,7 @@ fn render_chat_tool(tool: &Tool) -> serde_json::Value {
             description,
             parameters,
             strict,
+            ..
         } => {
             let mut function = serde_json::Map::new();
             function.insert("name".into(), name.clone().into());
@@ -901,7 +965,9 @@ fn render_chat_tool(tool: &Tool) -> serde_json::Value {
             }
             serde_json::json!({ "type": "function", "function": function })
         }
-        Tool::ProviderDefined { id, name, args } => super::provider_defined_native(id, name, args),
+        Tool::ProviderDefined { id, name, args, .. } => {
+            super::provider_defined_native(id, name, args)
+        }
     }
 }
 
@@ -1010,17 +1076,28 @@ impl Transport for ChatCompletionsTransport {
 /// array, so they yield `None` here.
 fn render_input_part(c: &Content) -> Option<serde_json::Value> {
     match c {
-        Content::Text { text } => Some(serde_json::json!({ "type": "text", "text": text })),
+        Content::Text { text, .. } => Some(serde_json::json!({ "type": "text", "text": text })),
         Content::File {
             media_type,
             data,
             filename,
-            ..
+            provider_metadata,
         } => Some(if media_type.starts_with("image/") {
             // <https://platform.openai.com/docs/guides/vision>
+            let mut image_url = serde_json::Map::new();
+            image_url.insert("url".into(), data.to_url(media_type).into());
+            // Restore the OpenAI `detail` hint from the `openai` namespace when
+            // it round-tripped through `provider_metadata` (set by this
+            // protocol's `parse_chat_part`).
+            // <https://platform.openai.com/docs/guides/vision>
+            if let Some(detail) = provider_namespace(provider_metadata, PROVIDER_ID_OPENAI)
+                .and_then(|o| o.get("detail"))
+            {
+                image_url.insert("detail".into(), detail.clone());
+            }
             serde_json::json!({
                 "type": "image_url",
-                "image_url": { "url": data.to_url(media_type) }
+                "image_url": serde_json::Value::Object(image_url),
             })
         } else if let Some(format) = media_type.strip_prefix("audio/") {
             // <https://platform.openai.com/docs/guides/audio>
@@ -1072,12 +1149,15 @@ fn render_tool_result_content(output: &ToolResultOutput) -> serde_json::Value {
 /// <https://platform.openai.com/docs/api-reference/chat/create#chat-create-messages>
 fn tool_result_part_to_content(part: &ToolResultContentPart) -> Option<Content> {
     match part {
-        ToolResultContentPart::Text { text } => Some(Content::Text { text: text.clone() }),
+        ToolResultContentPart::Text { text } => Some(Content::Text {
+            text: text.clone(),
+            provider_metadata: ProviderMetadata::new(),
+        }),
         ToolResultContentPart::Media { media_type, data } => Some(Content::File {
             media_type: media_type.clone(),
             data: data.clone(),
             filename: None,
-            extra: Default::default(),
+            provider_metadata: ProviderMetadata::new(),
         }),
         ToolResultContentPart::FileId { .. } => None,
     }
@@ -1116,7 +1196,7 @@ fn render_message(m: &Message) -> serde_json::Value {
             .content
             .iter()
             .filter_map(|c| match c {
-                Content::Text { text } => Some(text.as_str()),
+                Content::Text { text, .. } => Some(text.as_str()),
                 _ => None,
             })
             .collect();
@@ -1127,7 +1207,7 @@ fn render_message(m: &Message) -> serde_json::Value {
         .content
         .iter()
         .filter_map(|c| match c {
-            Content::Reasoning { text } => Some(text.as_str()),
+            Content::Reasoning { text, .. } => Some(text.as_str()),
             _ => None,
         })
         .collect();
@@ -1330,7 +1410,7 @@ impl StreamDecoder for ChatStreamDecoder {
                 // synthesized from the url + this chunk's annotation index.
                 // <https://github.com/vercel/ai/blob/main/packages/openai/src/chat/openai-chat-language-model.ts>
                 for content in parse_chat_annotations(delta.get("annotations")) {
-                    if let Content::Source { source } = content {
+                    if let Content::Source { source, .. } = content {
                         parts.push(StreamPart::Source { source });
                     }
                 }

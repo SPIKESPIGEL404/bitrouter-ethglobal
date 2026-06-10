@@ -45,7 +45,7 @@ fn request_text(ctx: &PipelineContext) -> String {
     for message in &prompt.messages {
         for content in &message.content {
             match content {
-                Content::Text { text } | Content::Reasoning { text } => {
+                Content::Text { text, .. } | Content::Reasoning { text, .. } => {
                     buf.push_str(text);
                     buf.push('\n');
                 }

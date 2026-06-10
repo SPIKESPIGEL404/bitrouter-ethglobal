@@ -45,6 +45,7 @@ fn sample_prompt() -> Prompt {
             description: Some("does math".to_string()),
             parameters: serde_json::json!({ "type": "object" }),
             strict: None,
+            provider_metadata: Default::default(),
         }],
         params: GenerationParams {
             temperature: Some(0.5),
@@ -63,15 +64,18 @@ fn sample_result() -> GenerateResult {
         content: vec![
             Content::Reasoning {
                 text: "thinking...".to_string(),
+                provider_metadata: Default::default(),
             },
             Content::Text {
                 text: "the answer is 4".to_string(),
+                provider_metadata: Default::default(),
             },
             Content::ToolCall {
                 id: "call_1".to_string(),
                 name: "calculator".to_string(),
                 arguments: "{\"op\":\"add\"}".to_string(),
                 provider_executed: false,
+                provider_metadata: Default::default(),
             },
         ],
         usage: Some(Usage {
@@ -83,6 +87,7 @@ fn sample_result() -> GenerateResult {
         finish_reason: Some(FinishReason::Stop),
         response_id: None,
         stop_details: None,
+        provider_metadata: Default::default(),
     }
 }
 
@@ -90,7 +95,7 @@ fn text_of(content: &[Content]) -> String {
     content
         .iter()
         .filter_map(|c| match c {
-            Content::Text { text } => Some(text.as_str()),
+            Content::Text { text, .. } => Some(text.as_str()),
             _ => None,
         })
         .collect()
@@ -976,6 +981,7 @@ fn messages_outbound_renders_refusal_stop_details() {
             category: Some("bio".to_string()),
             explanation: None,
         }),
+        provider_metadata: Default::default(),
     };
     let rendered = adapter
         .render_response(&result, &sample_prompt(), "msg_1")
@@ -1494,7 +1500,7 @@ fn chat_completions_parse_captures_refusal_and_reasoning_aliases() {
     let result = adapter.parse_response(body).unwrap();
     assert_eq!(result.finish_reason, Some(FinishReason::ContentFilter));
     assert!(result.content.iter().any(|c| match c {
-        Content::Text { text } => text == "I cannot help.",
+        Content::Text { text, .. } => text == "I cannot help.",
         _ => false,
     }));
 
@@ -1507,7 +1513,7 @@ fn chat_completions_parse_captures_refusal_and_reasoning_aliases() {
     });
     let result = adapter.parse_response(body).unwrap();
     assert!(
-        matches!(result.content.first(), Some(Content::Reasoning { text }) if text == "step by step")
+        matches!(result.content.first(), Some(Content::Reasoning { text, .. }) if text == "step by step")
     );
 
     // `thinking` alias (Aliyun-style)
@@ -1519,7 +1525,7 @@ fn chat_completions_parse_captures_refusal_and_reasoning_aliases() {
     });
     let result = adapter.parse_response(body).unwrap();
     assert!(
-        matches!(result.content.first(), Some(Content::Reasoning { text }) if text == "internal monologue")
+        matches!(result.content.first(), Some(Content::Reasoning { text, .. }) if text == "internal monologue")
     );
 }
 
@@ -1750,11 +1756,13 @@ fn responses_omits_usage_when_none() {
     let result = GenerateResult {
         content: vec![Content::Text {
             text: "ok".to_string(),
+            provider_metadata: Default::default(),
         }],
         usage: None,
         finish_reason: Some(FinishReason::Stop),
         response_id: None,
         stop_details: None,
+        provider_metadata: Default::default(),
     };
     let rendered = adapter
         .render_response(&result, &sample_prompt(), "resp_n")
@@ -2119,11 +2127,13 @@ fn regression_454_5_no_null_on_the_wire() {
     let result = GenerateResult {
         content: vec![Content::Text {
             text: "hi".to_string(),
+            provider_metadata: Default::default(),
         }],
         usage: None,
         finish_reason: None,
         response_id: None,
         stop_details: None,
+        provider_metadata: Default::default(),
     };
     // Chat Completions: `usage` key is absent when there is no usage.
     let chat = adapter_for(ApiProtocol::ChatCompletions)
@@ -2144,6 +2154,7 @@ fn regression_454_5_no_null_on_the_wire() {
         finish_reason: None,
         response_id: None,
         stop_details: None,
+        provider_metadata: Default::default(),
     };
     let chat_empty = adapter_for(ApiProtocol::ChatCompletions)
         .render_response(&empty, &sample_prompt(), "c2")
@@ -2610,6 +2621,7 @@ fn regression_454_5_usage_zero_is_numeric_not_null() {
     let result = GenerateResult {
         content: vec![Content::Text {
             text: "hi".to_string(),
+            provider_metadata: Default::default(),
         }],
         usage: Some(Usage {
             prompt_tokens: 0,
@@ -2620,6 +2632,7 @@ fn regression_454_5_usage_zero_is_numeric_not_null() {
         finish_reason: Some(FinishReason::Stop),
         response_id: None,
         stop_details: None,
+        provider_metadata: Default::default(),
     };
     let chat = adapter_for(ApiProtocol::ChatCompletions)
         .render_response(&result, &sample_prompt(), "c1")
@@ -2755,8 +2768,9 @@ fn image_file_prompt() -> Prompt {
                     data: IMG_B64.to_string(),
                 },
                 filename: None,
-                extra: Default::default(),
+                provider_metadata: Default::default(),
             }],
+            provider_metadata: Default::default(),
         }],
         tools: vec![],
         params: GenerationParams {
@@ -2930,8 +2944,9 @@ fn pdf_file_renders_to_messages_document_block() {
                 data: IMG_B64.to_string(),
             },
             filename: Some("doc.pdf".to_string()),
-            extra: Default::default(),
+            provider_metadata: Default::default(),
         }],
+        provider_metadata: Default::default(),
     }];
     assert!(
         prompt
@@ -3097,12 +3112,13 @@ fn generated_image_renders_into_chat_response_best_effort() {
                 data: IMG_B64.to_string(),
             },
             filename: None,
-            extra: Default::default(),
+            provider_metadata: Default::default(),
         }],
         usage: None,
         finish_reason: Some(FinishReason::Stop),
         response_id: None,
         stop_details: None,
+        provider_metadata: Default::default(),
     };
     let rendered = adapter
         .render_response(&result, &sample_prompt(), "id")
@@ -3163,7 +3179,9 @@ fn tool_result_prompt(call_id: &str, tool_name: Option<&str>, output: ToolResult
                 call_id: call_id.to_string(),
                 tool_name: tool_name.map(str::to_string),
                 output,
+                provider_metadata: Default::default(),
             }],
+            provider_metadata: Default::default(),
         }],
         tools: vec![],
         params: GenerationParams {
@@ -3186,6 +3204,7 @@ fn first_tool_result(prompt: &Prompt) -> (&str, Option<&str>, &ToolResultOutput)
                 call_id,
                 tool_name,
                 output,
+                ..
             } => Some((call_id.as_str(), tool_name.as_deref(), output)),
             _ => None,
         })
@@ -3812,6 +3831,7 @@ fn tool_result_content_serde_round_trips() {
                 },
             ],
         },
+        provider_metadata: Default::default(),
     };
     let value = serde_json::to_value(&original).unwrap();
     assert_eq!(value["type"], "tool_result");
@@ -3830,6 +3850,7 @@ fn tool_result_without_tool_name_omits_the_field() {
         output: ToolResultOutput::Text {
             value: "x".to_string(),
         },
+        provider_metadata: Default::default(),
     })
     .unwrap();
     assert!(
@@ -3885,18 +3906,21 @@ fn messages_renders_provider_executed_as_server_tool_use() {
                 name: "get_weather".to_string(),
                 arguments: "{}".to_string(),
                 provider_executed: false,
+                provider_metadata: Default::default(),
             },
             Content::ToolCall {
                 id: "srvtoolu_1".to_string(),
                 name: "web_search".to_string(),
                 arguments: "{\"query\":\"x\"}".to_string(),
                 provider_executed: true,
+                provider_metadata: Default::default(),
             },
         ],
         usage: None,
         finish_reason: Some(FinishReason::Stop),
         response_id: None,
         stop_details: None,
+        provider_metadata: Default::default(),
     };
     let prompt = sample_prompt();
     let rendered = adapter.render_response(&result, &prompt, "msg_1").unwrap();
@@ -3982,14 +4006,17 @@ fn responses_render_request_drops_provider_executed_calls() {
                     name: "get_weather".to_string(),
                     arguments: "{}".to_string(),
                     provider_executed: false,
+                    provider_metadata: Default::default(),
                 },
                 Content::ToolCall {
                     id: "ws_1".to_string(),
                     name: "web_search".to_string(),
                     arguments: "{}".to_string(),
                     provider_executed: true,
+                    provider_metadata: Default::default(),
                 },
             ],
+            provider_metadata: Default::default(),
         }],
         tools: Vec::new(),
         params: GenerationParams::default(),
@@ -4021,11 +4048,13 @@ fn responses_render_response_reproduces_server_tool_item() {
             name: "web_search".to_string(),
             arguments: "{}".to_string(),
             provider_executed: true,
+            provider_metadata: Default::default(),
         }],
         usage: None,
         finish_reason: Some(FinishReason::Stop),
         response_id: Some("resp_1".to_string()),
         stop_details: None,
+        provider_metadata: Default::default(),
     };
     let rendered = adapter
         .render_response(&result, &sample_prompt(), "resp_1")
@@ -4113,6 +4142,7 @@ fn tool_call_provider_executed_omitted_when_false() {
         name: "t".to_string(),
         arguments: "{}".to_string(),
         provider_executed: false,
+        provider_metadata: Default::default(),
     })
     .unwrap();
     assert!(
@@ -4124,6 +4154,7 @@ fn tool_call_provider_executed_omitted_when_false() {
         name: "t".to_string(),
         arguments: "{}".to_string(),
         provider_executed: true,
+        provider_metadata: Default::default(),
     })
     .unwrap();
     assert_eq!(value_true["provider_executed"], true);
@@ -4153,6 +4184,7 @@ fn prompt_with_tool_choice(choice: ToolChoice) -> Prompt {
             description: None,
             parameters: serde_json::json!({"type": "object"}),
             strict: None,
+            provider_metadata: Default::default(),
         }],
         params: GenerationParams {
             tool_choice: Some(choice),
@@ -4586,6 +4618,7 @@ fn function_tool_strict_round_trips_on_openai_protocols() {
                 description: Some("look up weather".to_string()),
                 parameters: serde_json::json!({ "type": "object" }),
                 strict: Some(true),
+                provider_metadata: Default::default(),
             }],
         );
         assert_eq!(
@@ -4595,6 +4628,7 @@ fn function_tool_strict_round_trips_on_openai_protocols() {
                 description: Some("look up weather".to_string()),
                 parameters: serde_json::json!({ "type": "object" }),
                 strict: Some(true),
+                provider_metadata: Default::default(),
             }],
             "{protocol:?} must preserve function-tool strict"
         );
@@ -4609,6 +4643,7 @@ fn function_tool_strict_renders_in_native_position() {
         description: None,
         parameters: serde_json::json!({ "type": "object" }),
         strict: Some(true),
+        provider_metadata: Default::default(),
     };
     let chat = rendered_tools_json(&ApiProtocol::ChatCompletions, vec![tool.clone()]);
     assert_eq!(chat[0]["type"], "function");
@@ -4627,6 +4662,7 @@ fn function_tool_strict_omitted_when_absent() {
         description: None,
         parameters: serde_json::json!({ "type": "object" }),
         strict: None,
+        provider_metadata: Default::default(),
     };
     let chat = rendered_tools_json(&ApiProtocol::ChatCompletions, vec![tool.clone()]);
     assert!(
@@ -4653,6 +4689,7 @@ fn function_tool_strict_dropped_on_anthropic_and_gemini() {
                 description: Some("desc".to_string()),
                 parameters: serde_json::json!({ "type": "object" }),
                 strict: Some(true),
+                provider_metadata: Default::default(),
             }],
         );
         assert_eq!(
@@ -4662,6 +4699,7 @@ fn function_tool_strict_dropped_on_anthropic_and_gemini() {
                 description: Some("desc".to_string()),
                 parameters: serde_json::json!({ "type": "object" }),
                 strict: None,
+                provider_metadata: Default::default(),
             }],
             "{protocol:?} has no strict slot; it must drop to None but keep the tool"
         );
@@ -4673,6 +4711,7 @@ fn function_tool_strict_dropped_on_anthropic_and_gemini() {
                 description: None,
                 parameters: serde_json::json!({}),
                 strict: Some(true),
+                provider_metadata: Default::default(),
             }],
         );
         assert!(
@@ -4693,26 +4732,31 @@ fn responses_provider_defined_tools_round_trip() {
             id: "openai.web_search_preview".to_string(),
             name: "web_search_preview".to_string(),
             args: serde_json::json!({ "search_context_size": "high" }),
+            provider_metadata: Default::default(),
         },
         Tool::ProviderDefined {
             id: "openai.code_interpreter".to_string(),
             name: "code_interpreter".to_string(),
             args: serde_json::json!({ "container": { "type": "auto" } }),
+            provider_metadata: Default::default(),
         },
         Tool::ProviderDefined {
             id: "openai.file_search".to_string(),
             name: "file_search".to_string(),
             args: serde_json::json!({ "vector_store_ids": ["vs_1"], "max_num_results": 5 }),
+            provider_metadata: Default::default(),
         },
         Tool::ProviderDefined {
             id: "openai.image_generation".to_string(),
             name: "image_generation".to_string(),
             args: serde_json::json!({ "quality": "high" }),
+            provider_metadata: Default::default(),
         },
         Tool::ProviderDefined {
             id: "openai.computer_use_preview".to_string(),
             name: "computer_use_preview".to_string(),
             args: serde_json::json!({ "display_width": 1024, "display_height": 768, "environment": "browser" }),
+            provider_metadata: Default::default(),
         },
     ];
     for tool in cases {
@@ -4730,6 +4774,7 @@ fn responses_provider_defined_renders_flat_native_shape() {
             id: "openai.web_search_preview".to_string(),
             name: "web_search_preview".to_string(),
             args: serde_json::json!({ "search_context_size": "low" }),
+            provider_metadata: Default::default(),
         }],
     );
     assert_eq!(rendered[0]["type"], "web_search_preview");
@@ -4748,16 +4793,19 @@ fn messages_provider_defined_tools_round_trip() {
             id: "anthropic.web_search_20250305".to_string(),
             name: "web_search".to_string(),
             args: serde_json::json!({ "max_uses": 5 }),
+            provider_metadata: Default::default(),
         },
         Tool::ProviderDefined {
             id: "anthropic.code_execution_20250522".to_string(),
             name: "code_execution".to_string(),
             args: serde_json::json!({}),
+            provider_metadata: Default::default(),
         },
         Tool::ProviderDefined {
             id: "anthropic.computer_20250124".to_string(),
             name: "computer".to_string(),
             args: serde_json::json!({ "display_width_px": 1024, "display_height_px": 768 }),
+            provider_metadata: Default::default(),
         },
     ];
     for tool in cases {
@@ -4775,6 +4823,7 @@ fn messages_provider_defined_renders_versioned_native_shape() {
             id: "anthropic.web_search_20250305".to_string(),
             name: "web_search".to_string(),
             args: serde_json::json!({ "max_uses": 3 }),
+            provider_metadata: Default::default(),
         }],
     );
     assert_eq!(rendered[0]["type"], "web_search_20250305");
@@ -4791,21 +4840,25 @@ fn generate_content_provider_defined_tools_round_trip() {
             id: "google.googleSearch".to_string(),
             name: "googleSearch".to_string(),
             args: serde_json::json!({}),
+            provider_metadata: Default::default(),
         },
         Tool::ProviderDefined {
             id: "google.codeExecution".to_string(),
             name: "codeExecution".to_string(),
             args: serde_json::json!({}),
+            provider_metadata: Default::default(),
         },
         Tool::ProviderDefined {
             id: "google.googleSearchRetrieval".to_string(),
             name: "googleSearchRetrieval".to_string(),
             args: serde_json::json!({ "dynamicRetrievalConfig": { "mode": "MODE_DYNAMIC" } }),
+            provider_metadata: Default::default(),
         },
         Tool::ProviderDefined {
             id: "google.urlContext".to_string(),
             name: "urlContext".to_string(),
             args: serde_json::json!({}),
+            provider_metadata: Default::default(),
         },
     ];
     for tool in cases {
@@ -4823,6 +4876,7 @@ fn generate_content_provider_defined_renders_single_key_object() {
             id: "google.googleSearch".to_string(),
             name: "googleSearch".to_string(),
             args: serde_json::json!({}),
+            provider_metadata: Default::default(),
         }],
     );
     // The built-in tool is its own tool-array element with the camelCase key.
@@ -4874,11 +4928,13 @@ fn responses_mixed_function_and_server_tools_round_trip() {
             description: None,
             parameters: serde_json::json!({ "type": "object" }),
             strict: Some(true),
+            provider_metadata: Default::default(),
         },
         Tool::ProviderDefined {
             id: "openai.web_search_preview".to_string(),
             name: "web_search_preview".to_string(),
             args: serde_json::json!({ "search_context_size": "high" }),
+            provider_metadata: Default::default(),
         },
     ];
     let round_tripped = round_trip_tools(&ApiProtocol::Responses, tools.clone());
@@ -4900,6 +4956,7 @@ fn provider_defined_tool_cross_protocol_is_preserved_verbatim() {
         id: "anthropic.web_search_20250305".to_string(),
         name: "web_search".to_string(),
         args: serde_json::json!({ "max_uses": 5 }),
+        provider_metadata: Default::default(),
     };
 
     // Render the Anthropic-native tool onto a Responses (OpenAI) request.
@@ -4924,7 +4981,7 @@ fn provider_defined_tool_cross_protocol_is_preserved_verbatim() {
         .unwrap();
     assert_eq!(reparsed.tools.len(), 1, "tool is forwarded, not dropped");
     match &reparsed.tools[0] {
-        Tool::ProviderDefined { id, name, args } => {
+        Tool::ProviderDefined { id, name, args, .. } => {
             assert_eq!(id, "openai.web_search_20250305");
             assert_eq!(name, "web_search");
             assert_eq!(args["max_uses"], 5);
@@ -4946,6 +5003,7 @@ fn provider_defined_tool_cross_protocol_onto_anthropic_is_preserved() {
         id: "openai.web_search_preview".to_string(),
         name: "web_search_preview".to_string(),
         args: serde_json::json!({ "search_context_size": "high" }),
+        provider_metadata: Default::default(),
     };
     let rendered = rendered_tools_json(&ApiProtocol::Messages, vec![openai_tool]);
     assert_eq!(rendered[0]["type"], "web_search_preview");
@@ -4965,6 +5023,7 @@ fn provider_defined_tool_preserved_into_chat_completions() {
         id: "openai.web_search_preview".to_string(),
         name: "web_search_preview".to_string(),
         args: serde_json::json!({ "search_context_size": "low" }),
+        provider_metadata: Default::default(),
     };
     let rendered = rendered_tools_json(&ApiProtocol::ChatCompletions, vec![tool]);
     assert_eq!(rendered[0]["type"], "web_search_preview");
@@ -4980,6 +5039,7 @@ fn tool_serde_uses_type_tag() {
         description: None,
         parameters: serde_json::json!({}),
         strict: None,
+        provider_metadata: Default::default(),
     })
     .unwrap();
     assert_eq!(function["type"], "function");
@@ -4991,6 +5051,7 @@ fn tool_serde_uses_type_tag() {
         id: "openai.web_search_preview".to_string(),
         name: "web_search_preview".to_string(),
         args: serde_json::json!({}),
+        provider_metadata: Default::default(),
     })
     .unwrap();
     assert_eq!(provider["type"], "provider_defined");
@@ -5004,7 +5065,7 @@ fn sources_of(content: &[Content]) -> Vec<&Source> {
     content
         .iter()
         .filter_map(|c| match c {
-            Content::Source { source } => Some(source),
+            Content::Source { source, .. } => Some(source),
             _ => None,
         })
         .collect()
@@ -5020,6 +5081,7 @@ fn source_serde_round_trips_both_variants() {
             url: "https://example.invalid/a".to_string(),
             title: Some("A".to_string()),
         },
+        provider_metadata: Default::default(),
     };
     let v = serde_json::to_value(&url).unwrap();
     assert_eq!(v["type"], "source");
@@ -5034,6 +5096,7 @@ fn source_serde_round_trips_both_variants() {
             title: "report.pdf".to_string(),
             filename: Some("report.pdf".to_string()),
         },
+        provider_metadata: Default::default(),
     };
     let v = serde_json::to_value(&doc).unwrap();
     assert_eq!(v["source"]["source_type"], "document");
@@ -5047,6 +5110,7 @@ fn source_serde_round_trips_both_variants() {
             url: "https://example.invalid/x".to_string(),
             title: None,
         },
+        provider_metadata: Default::default(),
     })
     .unwrap();
     assert!(no_title["source"].get("title").is_none());
@@ -5811,4 +5875,609 @@ fn responses_streams_and_reencodes_annotation() {
     assert_eq!(ann["type"], "url_citation");
     assert_eq!(ann["url"], "https://example.invalid/s");
     assert_eq!(ann["title"], "S");
+}
+
+// ===== per-part provider_metadata (V3 providerMetadata / providerOptions) =====
+
+/// Read the `anthropic.cacheControl` object out of a part's provider metadata.
+fn anthropic_cache_control(meta: &ProviderMetadata) -> Option<&serde_json::Value> {
+    meta.get("anthropic")?.get("cacheControl")
+}
+
+/// An ephemeral cache-control breakpoint, as Anthropic spells it on the wire.
+fn ephemeral() -> serde_json::Value {
+    serde_json::json!({ "type": "ephemeral" })
+}
+
+/// Anthropic `cache_control` on a request text block survives a full
+/// same-protocol round-trip (parse → render), landing back on the rendered block
+/// as a `cache_control` field. This is prompt caching — the breakpoint must be
+/// reproduced exactly or the cache boundary moves.
+#[test]
+fn messages_cache_control_on_text_block_round_trips() {
+    let adapter = messages::MessagesAdapter;
+    let body = serde_json::json!({
+        "model": "claude-3-5-sonnet",
+        "max_tokens": 64,
+        "messages": [{
+            "role": "user",
+            "content": [{
+                "type": "text",
+                "text": "cache me",
+                "cache_control": { "type": "ephemeral" },
+            }],
+        }],
+    });
+    let prompt = adapter.parse_request(body).unwrap();
+    // It landed in the canonical slot under the anthropic namespace.
+    let user = prompt
+        .messages
+        .iter()
+        .find(|m| m.role == Role::User)
+        .unwrap();
+    match &user.content[0] {
+        Content::Text {
+            provider_metadata, ..
+        } => assert_eq!(
+            anthropic_cache_control(provider_metadata),
+            Some(&ephemeral())
+        ),
+        other => panic!("expected text content, got {other:?}"),
+    }
+    // And it renders back onto the Anthropic text block.
+    let rendered = adapter.render_request(&prompt).unwrap();
+    let block = &rendered["messages"][0]["content"][0];
+    assert_eq!(block["type"], "text");
+    assert_eq!(block["cache_control"], ephemeral());
+}
+
+/// Anthropic tool-level `cache_control` (the "cache the whole tools array"
+/// pattern) round-trips: lifted off the tool on parse, rendered back on the tool.
+#[test]
+fn messages_cache_control_on_tool_round_trips() {
+    let adapter = messages::MessagesAdapter;
+    let body = serde_json::json!({
+        "model": "claude-3-5-sonnet",
+        "max_tokens": 64,
+        "messages": [{ "role": "user", "content": "hi" }],
+        "tools": [{
+            "name": "get_weather",
+            "description": "weather",
+            "input_schema": { "type": "object" },
+            "cache_control": { "type": "ephemeral" },
+        }],
+    });
+    let prompt = adapter.parse_request(body).unwrap();
+    match &prompt.tools[0] {
+        Tool::Function {
+            provider_metadata, ..
+        } => assert_eq!(
+            anthropic_cache_control(provider_metadata),
+            Some(&ephemeral())
+        ),
+        other => panic!("expected function tool, got {other:?}"),
+    }
+    let rendered = adapter.render_request(&prompt).unwrap();
+    assert_eq!(rendered["tools"][0]["cache_control"], ephemeral());
+    // The breakpoint did NOT leak into the tool's `input_schema` / args.
+    assert!(
+        rendered["tools"][0]["input_schema"]
+            .get("cache_control")
+            .is_none()
+    );
+}
+
+/// Anthropic `cache_control` on a `tool_result` block round-trips: a long tool
+/// output can mark a cache boundary, and the breakpoint must survive.
+#[test]
+fn messages_cache_control_on_tool_result_round_trips() {
+    let adapter = messages::MessagesAdapter;
+    let body = serde_json::json!({
+        "model": "claude-3-5-sonnet",
+        "max_tokens": 64,
+        "messages": [{
+            "role": "user",
+            "content": [{
+                "type": "tool_result",
+                "tool_use_id": "toolu_1",
+                "content": "the result",
+                "cache_control": { "type": "ephemeral" },
+            }],
+        }],
+    });
+    let prompt = adapter.parse_request(body).unwrap();
+    let tool_msg = prompt
+        .messages
+        .iter()
+        .find(|m| m.role == Role::Tool)
+        .unwrap();
+    match &tool_msg.content[0] {
+        Content::ToolResult {
+            provider_metadata, ..
+        } => assert_eq!(
+            anthropic_cache_control(provider_metadata),
+            Some(&ephemeral())
+        ),
+        other => panic!("expected tool result, got {other:?}"),
+    }
+    let rendered = adapter.render_request(&prompt).unwrap();
+    // Tool results render inside a user-role message's content blocks.
+    let block = &rendered["messages"][0]["content"][0];
+    assert_eq!(block["type"], "tool_result");
+    assert_eq!(block["cache_control"], ephemeral());
+}
+
+/// Cross-protocol preservation: an Anthropic `cache_control` hint parsed from a
+/// Messages request is preserved (namespaced) when the same canonical prompt is
+/// rendered to a *Chat Completions* upstream. Chat Completions has no
+/// `cache_control` on its wire, so it does not express the hint — but it also
+/// must not lose it: the canonical slot still carries it for any later hop back
+/// to Anthropic, and the OpenAI namespace is untouched.
+#[test]
+fn anthropic_cache_control_preserved_across_protocols() {
+    let inbound = messages::MessagesAdapter;
+    let outbound = chat_completions::ChatCompletionsAdapter;
+    let body = serde_json::json!({
+        "model": "claude-3-5-sonnet",
+        "max_tokens": 64,
+        "messages": [{
+            "role": "user",
+            "content": [{
+                "type": "text",
+                "text": "cache me",
+                "cache_control": { "type": "ephemeral" },
+            }],
+        }],
+    });
+    let prompt = inbound.parse_request(body).unwrap();
+    // The canonical prompt still carries the anthropic-namespaced hint.
+    let user = prompt
+        .messages
+        .iter()
+        .find(|m| m.role == Role::User)
+        .unwrap();
+    match &user.content[0] {
+        Content::Text {
+            provider_metadata, ..
+        } => assert_eq!(
+            anthropic_cache_control(provider_metadata),
+            Some(&ephemeral())
+        ),
+        other => panic!("expected text content, got {other:?}"),
+    }
+    // Rendering to Chat Completions does not surface (or corrupt) the hint: no
+    // `cache_control` appears anywhere in the Chat request body.
+    let rendered = outbound.render_request(&prompt).unwrap();
+    assert!(
+        !rendered.to_string().contains("cache_control"),
+        "Chat Completions must not emit Anthropic cache_control on its wire"
+    );
+    // The canonical IR is unchanged — the hint is still there for a later
+    // Anthropic hop (faithful namespaced preservation).
+    match &prompt
+        .messages
+        .iter()
+        .find(|m| m.role == Role::User)
+        .unwrap()
+        .content[0]
+    {
+        Content::Text {
+            provider_metadata, ..
+        } => assert_eq!(
+            anthropic_cache_control(provider_metadata),
+            Some(&ephemeral())
+        ),
+        other => panic!("expected text content, got {other:?}"),
+    }
+}
+
+/// An Anthropic thinking block's `signature` round-trips through Messages so a
+/// multi-turn thinking conversation can replay the signed reasoning block. The
+/// signature has no canonical field; it rides `provider_metadata["anthropic"]`.
+#[test]
+fn messages_reasoning_signature_round_trips() {
+    let adapter = messages::MessagesAdapter;
+    let response = serde_json::json!({
+        "id": "msg_1",
+        "type": "message",
+        "role": "assistant",
+        "content": [{
+            "type": "thinking",
+            "thinking": "let me think",
+            "signature": "SIG-abc-123",
+        }],
+        "stop_reason": "end_turn",
+        "usage": { "input_tokens": 1, "output_tokens": 1 },
+    });
+    let result = adapter.parse_response(response).unwrap();
+    match &result.content[0] {
+        Content::Reasoning {
+            text,
+            provider_metadata,
+        } => {
+            assert_eq!(text, "let me think");
+            assert_eq!(
+                provider_metadata
+                    .get("anthropic")
+                    .and_then(|a| a.get("signature")),
+                Some(&serde_json::Value::String("SIG-abc-123".into()))
+            );
+        }
+        other => panic!("expected reasoning, got {other:?}"),
+    }
+    // Re-render the reasoning as a request block: the signature reappears.
+    let block = render_content_block_via_request(&adapter, &result.content[0]);
+    assert_eq!(block["type"], "thinking");
+    assert_eq!(block["thinking"], "let me think");
+    assert_eq!(block["signature"], "SIG-abc-123");
+}
+
+/// A `redacted_thinking` block round-trips byte-for-byte: the encrypted `data`
+/// and the `redacted_thinking` block type are both restored on render.
+#[test]
+fn messages_redacted_thinking_round_trips() {
+    let adapter = messages::MessagesAdapter;
+    let response = serde_json::json!({
+        "id": "msg_1",
+        "type": "message",
+        "role": "assistant",
+        "content": [{
+            "type": "redacted_thinking",
+            "data": "ENCRYPTED-PAYLOAD",
+        }],
+        "stop_reason": "end_turn",
+        "usage": { "input_tokens": 1, "output_tokens": 1 },
+    });
+    let result = adapter.parse_response(response).unwrap();
+    let block = render_content_block_via_request(&adapter, &result.content[0]);
+    assert_eq!(block["type"], "redacted_thinking");
+    assert_eq!(block["data"], "ENCRYPTED-PAYLOAD");
+    // It is NOT re-emitted as a plaintext `thinking` block.
+    assert!(block.get("thinking").is_none());
+}
+
+/// Render a single canonical assistant content block through the Messages
+/// request renderer (assistant message) and return the one rendered block.
+fn render_content_block_via_request(
+    adapter: &messages::MessagesAdapter,
+    content: &Content,
+) -> serde_json::Value {
+    let prompt = Prompt {
+        model: "claude-3-5-sonnet".to_string(),
+        system: None,
+        messages: vec![Message {
+            role: Role::Assistant,
+            content: vec![content.clone()],
+            provider_metadata: Default::default(),
+        }],
+        tools: vec![],
+        params: GenerationParams {
+            max_tokens: Some(64),
+            ..Default::default()
+        },
+        response_format: None,
+        stream: false,
+    };
+    let rendered = adapter.render_request(&prompt).unwrap();
+    rendered["messages"][0]["content"][0].clone()
+}
+
+/// OpenAI `system_fingerprint` survives a same-protocol round-trip: it is lifted
+/// from the response into the result's `provider_metadata["openai"]` and
+/// rendered back onto the Chat Completions response object.
+#[test]
+fn chat_system_fingerprint_round_trips_on_result() {
+    let adapter = chat_completions::ChatCompletionsAdapter;
+    let response = serde_json::json!({
+        "id": "chatcmpl-1",
+        "object": "chat.completion",
+        "model": "gpt-4o",
+        "system_fingerprint": "fp_44709d6fcb",
+        "choices": [{
+            "index": 0,
+            "message": { "role": "assistant", "content": "hi" },
+            "finish_reason": "stop",
+        }],
+    });
+    let result = adapter.parse_response(response).unwrap();
+    assert_eq!(
+        result
+            .provider_metadata
+            .get("openai")
+            .and_then(|o| o.get("systemFingerprint")),
+        Some(&serde_json::Value::String("fp_44709d6fcb".into()))
+    );
+    let prompt = Prompt {
+        model: "gpt-4o".to_string(),
+        system: None,
+        messages: vec![],
+        tools: vec![],
+        params: GenerationParams::default(),
+        response_format: None,
+        stream: false,
+    };
+    let rendered = adapter
+        .render_response(&result, &prompt, "chatcmpl-1")
+        .unwrap();
+    assert_eq!(rendered["system_fingerprint"], "fp_44709d6fcb");
+}
+
+/// Gemini `modelVersion` (no canonical field) round-trips through Generate
+/// Content at result level under `provider_metadata["google"]`.
+#[test]
+fn generate_content_model_version_round_trips_on_result() {
+    let adapter = generate_content::GenerateContentAdapter;
+    let response = serde_json::json!({
+        "candidates": [{
+            "content": { "role": "model", "parts": [{ "text": "hi" }] },
+            "finishReason": "STOP",
+            "index": 0,
+        }],
+        "modelVersion": "gemini-2.0-flash-001",
+        "usageMetadata": { "promptTokenCount": 1, "candidatesTokenCount": 1, "totalTokenCount": 2 },
+    });
+    let result = adapter.parse_response(response).unwrap();
+    assert_eq!(
+        result
+            .provider_metadata
+            .get("google")
+            .and_then(|g| g.get("modelVersion")),
+        Some(&serde_json::Value::String("gemini-2.0-flash-001".into()))
+    );
+    let prompt = Prompt {
+        model: "gemini-2.0-flash".to_string(),
+        system: None,
+        messages: vec![],
+        tools: vec![],
+        params: GenerationParams::default(),
+        response_format: None,
+        stream: false,
+    };
+    let rendered = adapter.render_response(&result, &prompt, "resp_1").unwrap();
+    assert_eq!(rendered["modelVersion"], "gemini-2.0-flash-001");
+}
+
+/// Gemini `thoughtSignature` on a thinking part round-trips so a multi-turn
+/// thinking conversation can replay the signed reasoning.
+#[test]
+fn generate_content_thought_signature_round_trips() {
+    let adapter = generate_content::GenerateContentAdapter;
+    let response = serde_json::json!({
+        "candidates": [{
+            "content": { "role": "model", "parts": [
+                { "text": "reasoning", "thought": true, "thoughtSignature": "TS-xyz" },
+            ] },
+            "finishReason": "STOP",
+            "index": 0,
+        }],
+        "usageMetadata": { "promptTokenCount": 1, "candidatesTokenCount": 1, "totalTokenCount": 2 },
+    });
+    let result = adapter.parse_response(response).unwrap();
+    match &result.content[0] {
+        Content::Reasoning {
+            provider_metadata, ..
+        } => assert_eq!(
+            provider_metadata
+                .get("google")
+                .and_then(|g| g.get("thoughtSignature")),
+            Some(&serde_json::Value::String("TS-xyz".into()))
+        ),
+        other => panic!("expected reasoning, got {other:?}"),
+    }
+    // Re-render to a request: the signature reappears on the thought part.
+    let prompt = Prompt {
+        model: "gemini-2.0-flash".to_string(),
+        system: None,
+        messages: vec![Message {
+            role: Role::Assistant,
+            content: vec![result.content[0].clone()],
+            provider_metadata: Default::default(),
+        }],
+        tools: vec![],
+        params: GenerationParams::default(),
+        response_format: None,
+        stream: false,
+    };
+    let rendered = adapter.render_request(&prompt).unwrap();
+    let part = &rendered["contents"][0]["parts"][0];
+    assert_eq!(part["thought"], true);
+    assert_eq!(part["thoughtSignature"], "TS-xyz");
+}
+
+/// The `File.extra` → `provider_metadata` migration is real: an OpenAI image
+/// `detail` hint (the canonical example of the former ad-hoc `extra`) is parsed
+/// under `provider_metadata["openai"]["detail"]` and rendered back onto the
+/// `image_url`. There is no `extra` mechanism anymore — this is the single slot.
+#[test]
+fn chat_image_detail_round_trips_via_provider_metadata() {
+    let adapter = chat_completions::ChatCompletionsAdapter;
+    let body = serde_json::json!({
+        "model": "gpt-4o",
+        "messages": [{
+            "role": "user",
+            "content": [{
+                "type": "image_url",
+                "image_url": { "url": "https://example.invalid/a.png", "detail": "high" },
+            }],
+        }],
+    });
+    let prompt = adapter.parse_request(body).unwrap();
+    match &prompt.messages[0].content[0] {
+        Content::File {
+            provider_metadata, ..
+        } => assert_eq!(
+            provider_metadata
+                .get("openai")
+                .and_then(|o| o.get("detail")),
+            Some(&serde_json::Value::String("high".into()))
+        ),
+        other => panic!("expected file content, got {other:?}"),
+    }
+    let rendered = adapter.render_request(&prompt).unwrap();
+    assert_eq!(
+        rendered["messages"][0]["content"][0]["image_url"]["detail"],
+        "high"
+    );
+}
+
+/// The OpenAI image `detail` hint is preserved (namespaced) across protocols:
+/// routed to an Anthropic upstream, which has no `detail` field, it is not
+/// expressed but also not lost from the canonical IR.
+#[test]
+fn openai_image_detail_preserved_across_protocols() {
+    let inbound = chat_completions::ChatCompletionsAdapter;
+    let outbound = messages::MessagesAdapter;
+    let body = serde_json::json!({
+        "model": "gpt-4o",
+        "messages": [{
+            "role": "user",
+            "content": [{
+                "type": "image_url",
+                "image_url": { "url": "https://example.invalid/a.png", "detail": "low" },
+            }],
+        }],
+    });
+    let prompt = inbound.parse_request(body).unwrap();
+    // Render to Anthropic — the image block carries no `detail`.
+    let rendered = outbound.render_request(&prompt).unwrap();
+    let block = &rendered["messages"][0]["content"][0];
+    assert_eq!(block["type"], "image");
+    assert!(block.get("detail").is_none());
+    // The canonical IR still carries it under the openai namespace.
+    match &prompt.messages[0].content[0] {
+        Content::File {
+            provider_metadata, ..
+        } => assert_eq!(
+            provider_metadata
+                .get("openai")
+                .and_then(|o| o.get("detail")),
+            Some(&serde_json::Value::String("low".into()))
+        ),
+        other => panic!("expected file content, got {other:?}"),
+    }
+}
+
+/// The Anthropic Source ↔ ToolCall correlation is *exact*: the originating
+/// `server_tool_use` id paired with a `web_search_tool_result` block is captured
+/// into the Source's `provider_metadata` on parse, and — when the originating
+/// call did not survive into the rendered content — restored as the synthesized
+/// pair's `tool_use_id`, rather than the by-position placeholder.
+#[test]
+fn messages_source_tool_use_id_correlation_is_exact() {
+    let adapter = messages::MessagesAdapter;
+    let response = serde_json::json!({
+        "id": "msg_1",
+        "type": "message",
+        "role": "assistant",
+        "content": [
+            { "type": "server_tool_use", "id": "srvtoolu_REAL", "name": "web_search", "input": {} },
+            {
+                "type": "web_search_tool_result",
+                "tool_use_id": "srvtoolu_REAL",
+                "content": [{ "type": "web_search_result", "url": "https://example.invalid/x", "title": "X" }],
+            },
+        ],
+        "stop_reason": "end_turn",
+        "usage": { "input_tokens": 1, "output_tokens": 1 },
+    });
+    let result = adapter.parse_response(response).unwrap();
+    // The Source captured the exact originating id.
+    let source = result
+        .content
+        .iter()
+        .find_map(|c| match c {
+            Content::Source {
+                provider_metadata, ..
+            } => Some(provider_metadata.clone()),
+            _ => None,
+        })
+        .expect("a Source was lifted from the web_search_tool_result");
+    assert_eq!(
+        source.get("anthropic").and_then(|a| a.get("toolUseId")),
+        Some(&serde_json::Value::String("srvtoolu_REAL".into()))
+    );
+
+    // Drop the originating call from the content (simulating a hop that did not
+    // round-trip the provider-executed call) and confirm the render falls back
+    // to the EXACT preserved id, not the `srvtoolu_citations` placeholder.
+    let mut result_without_call = result.clone();
+    result_without_call
+        .content
+        .retain(|c| !matches!(c, Content::ToolCall { .. }));
+    let prompt = Prompt {
+        model: "claude-3-5-sonnet".to_string(),
+        system: None,
+        messages: vec![],
+        tools: vec![],
+        params: GenerationParams::default(),
+        response_format: None,
+        stream: false,
+    };
+    let rendered = adapter
+        .render_response(&result_without_call, &prompt, "msg_1")
+        .unwrap();
+    let blocks = rendered["content"].as_array().unwrap();
+    let pair_id = blocks
+        .iter()
+        .find(|b| b["type"] == "web_search_tool_result")
+        .and_then(|b| b["tool_use_id"].as_str())
+        .unwrap();
+    assert_eq!(
+        pair_id, "srvtoolu_REAL",
+        "the synthesized pair must reuse the exact originating tool_use_id"
+    );
+    // The synthesized server_tool_use shares that exact id, so the pair is valid.
+    let call_id = blocks
+        .iter()
+        .find(|b| b["type"] == "server_tool_use")
+        .and_then(|b| b["id"].as_str())
+        .unwrap();
+    assert_eq!(call_id, "srvtoolu_REAL");
+}
+
+/// When the originating provider-executed call *does* survive into the content,
+/// the render reuses its real id and emits no duplicate `server_tool_use` — the
+/// exact-id metadata does not change that established same-protocol behavior.
+#[test]
+fn messages_source_with_surviving_call_reuses_call_id() {
+    let adapter = messages::MessagesAdapter;
+    let response = serde_json::json!({
+        "id": "msg_1",
+        "type": "message",
+        "role": "assistant",
+        "content": [
+            { "type": "server_tool_use", "id": "srvtoolu_REAL", "name": "web_search", "input": {} },
+            {
+                "type": "web_search_tool_result",
+                "tool_use_id": "srvtoolu_REAL",
+                "content": [{ "type": "web_search_result", "url": "https://example.invalid/x", "title": "X" }],
+            },
+        ],
+        "stop_reason": "end_turn",
+        "usage": { "input_tokens": 1, "output_tokens": 1 },
+    });
+    let result = adapter.parse_response(response).unwrap();
+    let prompt = Prompt {
+        model: "claude-3-5-sonnet".to_string(),
+        system: None,
+        messages: vec![],
+        tools: vec![],
+        params: GenerationParams::default(),
+        response_format: None,
+        stream: false,
+    };
+    let rendered = adapter.render_response(&result, &prompt, "msg_1").unwrap();
+    let blocks = rendered["content"].as_array().unwrap();
+    // Exactly one server_tool_use (the originating call), keyed by the real id.
+    let calls: Vec<_> = blocks
+        .iter()
+        .filter(|b| b["type"] == "server_tool_use")
+        .collect();
+    assert_eq!(calls.len(), 1);
+    assert_eq!(calls[0]["id"], "srvtoolu_REAL");
+    let result_block = blocks
+        .iter()
+        .find(|b| b["type"] == "web_search_tool_result")
+        .unwrap();
+    assert_eq!(result_block["tool_use_id"], "srvtoolu_REAL");
 }
