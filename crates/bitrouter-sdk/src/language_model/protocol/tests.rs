@@ -3803,7 +3803,7 @@ fn tool_result_json_degrades_to_text_on_string_wires() {
     // stringified and re-parses as Text (a lossless degrade). The Responses case
     // is the audit-proven fix: `output` is `JSON.stringify`d, never a raw object.
     // <https://platform.openai.com/docs/api-reference/chat/create#chat-create-messages>
-    // <https://github.com/vercel/ai/blob/main/packages/openai/src/responses/convert-to-openai-responses-input.ts>
+    // <https://github.com/vercel/ai/blob/8e650ab809ac47de5d16f26bf544a9a73b0d39a3/packages/openai/src/responses/convert-to-openai-responses-input.ts>
     let output = ToolResultOutput::Json {
         value: serde_json::json!({ "celsius": 21, "unit": "C" }),
     };
@@ -4037,7 +4037,7 @@ fn tool_result_json_renders_responses_output_as_string() {
     // must be emitted as a *stringified* JSON value (the reference does
     // `JSON.stringify(output.value)`), never as a raw object — otherwise the
     // OpenAI wire rejects it.
-    // <https://github.com/vercel/ai/blob/main/packages/openai/src/responses/convert-to-openai-responses-input.ts>
+    // <https://github.com/vercel/ai/blob/8e650ab809ac47de5d16f26bf544a9a73b0d39a3/packages/openai/src/responses/convert-to-openai-responses-input.ts>
     let value = serde_json::json!({ "celsius": 21, "unit": "C" });
     for output in [
         ToolResultOutput::Json {
@@ -4143,7 +4143,7 @@ fn tool_result_content_renders_responses_part_array() {
     // The rendered Responses wire carries the multimodal result as a part array:
     // text → input_text, image/* → input_image (image_url), other media →
     // input_file (file_data). It must NOT collapse to a string.
-    // <https://github.com/vercel/ai/blob/main/packages/openai/src/responses/convert-to-openai-responses-input.ts>
+    // <https://github.com/vercel/ai/blob/8e650ab809ac47de5d16f26bf544a9a73b0d39a3/packages/openai/src/responses/convert-to-openai-responses-input.ts>
     let output = ToolResultOutput::Content {
         value: vec![
             ToolResultContentPart::Text {
@@ -4194,7 +4194,7 @@ fn tool_result_content_file_id_round_trips_through_responses() {
     // `file_id`. It round-trips as a `FileId` content part. This is the only wire
     // that carries the construct, so the variant is constructed (parse) and
     // consumed (render) here in non-test code.
-    // <https://github.com/vercel/ai/blob/main/packages/openai/src/responses/convert-to-openai-responses-input.ts>
+    // <https://github.com/vercel/ai/blob/8e650ab809ac47de5d16f26bf544a9a73b0d39a3/packages/openai/src/responses/convert-to-openai-responses-input.ts>
     let output = ToolResultOutput::Content {
         value: vec![
             ToolResultContentPart::FileId {
@@ -5122,6 +5122,76 @@ fn sampling_params_translate_gemini_and_anthropic_to_others() {
         .render_request(&anthropic_in)
         .unwrap()["generationConfig"];
     assert_eq!(gc["topK"], 64);
+}
+
+/// Cross-protocol no-leak, Gemini/Anthropic → Responses: the Responses API has no
+/// wire field for `top_k` / `seed` / `stop` / `presence_penalty` /
+/// `frequency_penalty`, so a source request carrying any of them must render to
+/// Responses with NONE of those values present — in neither the native (snake)
+/// nor the source-wire (camel) spelling, and not leaked through the `extra`
+/// splat. The params Responses *does* support (`temperature`, `top_p`,
+/// `max_output_tokens`) still survive. Locks in the "Responses carries none"
+/// contract the [`GenerationParams`] field docs assert.
+#[test]
+fn sampling_params_do_not_leak_to_responses() {
+    let responses = adapter_for(ApiProtocol::Responses);
+
+    // Gemini source: all five generationConfig knobs, plus supported params.
+    let gemini = adapter_for(ApiProtocol::GenerateContent)
+        .parse_request(serde_json::json!({
+            "model": "gemini-2.0-flash",
+            "contents": [{"role": "user", "parts": [{"text": "hi"}]}],
+            "generationConfig": {
+                "temperature": 0.5,
+                "topP": 0.9,
+                "maxOutputTokens": 32,
+                "topK": 40,
+                "seed": 7,
+                "stopSequences": ["END"],
+                "presencePenalty": 0.1,
+                "frequencyPenalty": -0.1
+            }
+        }))
+        .unwrap();
+    let from_gemini = responses.render_request(&gemini).unwrap();
+    // None of the unsupported five appears in any spelling.
+    for key in [
+        "top_k",
+        "topK",
+        "seed",
+        "stop",
+        "stop_sequences",
+        "stopSequences",
+        "presence_penalty",
+        "presencePenalty",
+        "frequency_penalty",
+        "frequencyPenalty",
+    ] {
+        assert!(
+            from_gemini.get(key).is_none(),
+            "Responses must not carry `{key}` from a Gemini source: {from_gemini}"
+        );
+    }
+    // The supported params survive the route.
+    assert_eq!(from_gemini["temperature"], 0.5);
+    assert_eq!(from_gemini["top_p"], 0.9);
+    assert_eq!(from_gemini["max_output_tokens"], 32);
+
+    // Anthropic source: `top_k` must not reach Responses in any form.
+    let anthropic = adapter_for(ApiProtocol::Messages)
+        .parse_request(serde_json::json!({
+            "model": "claude-opus-4-8",
+            "max_tokens": 16,
+            "messages": [{"role": "user", "content": "hi"}],
+            "top_k": 64
+        }))
+        .unwrap();
+    assert_eq!(anthropic.params.top_k, Some(64));
+    let from_anthropic = responses.render_request(&anthropic).unwrap();
+    assert!(
+        from_anthropic.get("top_k").is_none() && from_anthropic.get("topK").is_none(),
+        "Responses must not carry top-k from an Anthropic source: {from_anthropic}"
+    );
 }
 
 /// A parsed sampling param must NOT also remain in the raw `extra` passthrough —
@@ -7687,10 +7757,24 @@ fn responses_mcp_approval_request_round_trips() {
     assert_eq!(item["server_label"], "dmcp");
     assert_eq!(item["name"], "roll");
     assert_eq!(item["arguments"], "{\"diceRollExpression\":\"2d4 + 1\"}");
+    // Single-id source: no distinct `itemId` was stored, so the render must NOT
+    // add a redundant `approval_request_id` (the `id` alone conveys it).
+    assert!(
+        item.get("approval_request_id").is_none(),
+        "single-id approval item must not gain a redundant approval_request_id: {item}"
+    );
+    let openai = meta.get("openai").and_then(|o| o.as_object()).unwrap();
+    assert!(
+        !openai.contains_key("itemId"),
+        "coinciding id must not be stored as itemId: {openai:?}"
+    );
 }
 
-/// A Responses `mcp_approval_request` with no `approval_request_id` falls back to
-/// the item `id` for the approval id (mirroring the AI SDK reference).
+/// A Responses `mcp_approval_request` with an `approval_request_id` *distinct*
+/// from its item `id` uses the former as the approval/correlation id, preserves
+/// the latter under `provider_metadata["openai"]["itemId"]`, and re-emits BOTH on
+/// render so the two-id form round-trips losslessly (mirroring the AI SDK
+/// reference's `approval_request_id ?? id` choice while not dropping the raw id).
 #[test]
 fn responses_mcp_approval_request_prefers_approval_request_id() {
     let adapter = adapter_for(ApiProtocol::Responses);
@@ -7708,16 +7792,39 @@ fn responses_mcp_approval_request_prefers_approval_request_id() {
         ]
     });
     let result = adapter.parse_response(body).unwrap();
-    let approval_id = result
+    let (approval_id, meta) = result
         .content
         .iter()
         .find_map(|c| match c {
-            Content::ToolApprovalRequest { approval_id, .. } => Some(approval_id.as_str()),
+            Content::ToolApprovalRequest {
+                approval_id,
+                provider_metadata,
+                ..
+            } => Some((approval_id.as_str(), provider_metadata)),
             _ => None,
         })
         .unwrap();
-    // `approval_request_id` wins over the item `id`.
+    // `approval_request_id` wins over the item `id` as the correlation key.
     assert_eq!(approval_id, "mcpr_real");
+    // The distinct raw item id is preserved, not dropped.
+    let openai = meta.get("openai").and_then(|o| o.as_object()).unwrap();
+    assert_eq!(openai["itemId"], "item_xyz");
+
+    // Render back: both ids reappear on the item (`id` = raw item id,
+    // `approval_request_id` = correlation key), so the original round-trips.
+    let rendered = adapter
+        .render_response(&result, &sample_prompt(), "resp_1")
+        .unwrap();
+    let item = rendered["output"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|i| i["type"] == "mcp_approval_request")
+        .expect("mcp_approval_request re-emitted");
+    assert_eq!(item["id"], "item_xyz");
+    assert_eq!(item["approval_request_id"], "mcpr_real");
+    assert_eq!(item["server_label"], "dmcp");
+    assert_eq!(item["name"], "roll");
 }
 
 /// An approved `mcp_approval_response` input item round-trips through Responses as

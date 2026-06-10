@@ -142,7 +142,7 @@ fn parse_reasoning_metadata(block: &serde_json::Value, block_type: &str) -> Prov
 /// the field. Any `cacheControl` that rode in `provider_metadata` is therefore
 /// dropped on render rather than producing a request the API would reject.
 /// <https://docs.anthropic.com/en/docs/build-with-claude/extended-thinking>
-/// <https://github.com/vercel/ai/blob/main/packages/anthropic/src/convert-to-anthropic-prompt.ts>
+/// <https://github.com/vercel/ai/blob/8e650ab809ac47de5d16f26bf544a9a73b0d39a3/packages/anthropic/src/convert-to-anthropic-messages-prompt.ts>
 fn render_reasoning_block(text: &str, meta: &ProviderMetadata) -> serde_json::Value {
     let ns = provider_namespace(meta, PROVIDER_ID_ANTHROPIC);
     let is_redacted = ns
@@ -1578,7 +1578,7 @@ fn render_content_block(c: &Content) -> Option<serde_json::Value> {
         // (`continue`), so both approval parts are skipped here. A denied
         // execution still degrades to a plain `tool_result` string on the
         // request side (`render_tool_result_content` via `to_provider_string`).
-        // <https://github.com/vercel/ai/blob/main/packages/anthropic/src/convert-to-anthropic-prompt.ts>
+        // <https://github.com/vercel/ai/blob/8e650ab809ac47de5d16f26bf544a9a73b0d39a3/packages/anthropic/src/convert-to-anthropic-messages-prompt.ts>
         Content::ToolApprovalRequest { .. } | Content::ToolApprovalResponse { .. } => None,
     }
 }
@@ -1687,7 +1687,7 @@ fn render_message(m: &Message) -> serde_json::Value {
     // breakpoint belongs on a content block, and the Vercel reference folds a
     // message's `cacheControl` onto its last content block rather than the
     // message object — so the per-block render above already covers caching.
-    // <https://github.com/vercel/ai/blob/main/packages/anthropic/src/convert-to-anthropic-prompt.ts>
+    // <https://github.com/vercel/ai/blob/8e650ab809ac47de5d16f26bf544a9a73b0d39a3/packages/anthropic/src/convert-to-anthropic-messages-prompt.ts>
     serde_json::json!({ "role": role, "content": blocks })
 }
 

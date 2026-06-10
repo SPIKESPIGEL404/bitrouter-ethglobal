@@ -536,7 +536,7 @@ fn parse_parts(parts: &[serde_json::Value]) -> Vec<Content> {
 /// path's extension (e.g. a `gs://…/report.pdf` uri). Mirrors the AI SDK's
 /// extension table; an unrecognized extension falls back to
 /// `application/octet-stream`.
-/// <https://github.com/vercel/ai/blob/main/packages/google/src/google-language-model.ts>
+/// <https://github.com/vercel/ai/blob/8e650ab809ac47de5d16f26bf544a9a73b0d39a3/packages/google/src/google-generative-ai-language-model.ts>
 fn grounding_doc_media_type(uri: &str) -> &'static str {
     if uri.ends_with(".pdf") {
         "application/pdf"
@@ -578,7 +578,7 @@ fn grounding_filename(uri: &str) -> Option<String> {
 /// `maps`/`retrievedContext` chunk with neither uri nor store) — these are the
 /// only documented drops, and they carry nothing representable.
 /// <https://ai.google.dev/api/generate-content#GroundingChunk>
-/// <https://github.com/vercel/ai/blob/main/packages/google/src/google-language-model.ts>
+/// <https://github.com/vercel/ai/blob/8e650ab809ac47de5d16f26bf544a9a73b0d39a3/packages/google/src/google-generative-ai-language-model.ts>
 fn parse_grounding_chunk(chunk: &serde_json::Value, index: usize) -> Option<Content> {
     let title_of = |obj: &serde_json::Value| {
         obj.get("title")
@@ -657,7 +657,7 @@ fn parse_grounding_chunk(chunk: &serde_json::Value, index: usize) -> Option<Cont
 /// carries no citation id, so one is synthesized from the uri/filename + index.
 /// Mirrors the AI SDK `extractSources`.
 /// <https://ai.google.dev/gemini-api/docs/grounding>
-/// <https://github.com/vercel/ai/blob/main/packages/google/src/google-language-model.ts>
+/// <https://github.com/vercel/ai/blob/8e650ab809ac47de5d16f26bf544a9a73b0d39a3/packages/google/src/google-generative-ai-language-model.ts>
 fn parse_grounding_sources(grounding: Option<&serde_json::Value>) -> Vec<Content> {
     let Some(chunks) = grounding
         .and_then(|g| g.get("groundingChunks"))
@@ -1215,7 +1215,7 @@ fn render_part(c: &Content) -> Option<serde_json::Value> {
         // (`continue`), so both approval parts are skipped here. A denied
         // execution degrades to a `functionResponse {result: <denial string>}`
         // via the `ToolResult` arm above (`to_provider_string`).
-        // <https://github.com/vercel/ai/blob/main/packages/google/src/convert-to-google-messages.ts>
+        // <https://github.com/vercel/ai/blob/8e650ab809ac47de5d16f26bf544a9a73b0d39a3/packages/google/src/convert-to-google-generative-ai-messages.ts>
         Content::ToolApprovalRequest { .. } | Content::ToolApprovalResponse { .. } => None,
     }
 }
@@ -1266,7 +1266,7 @@ struct GenerateContentStreamDecoder {
     /// [`Source::Document`]. `streamGenerateContent` repeats the accumulating
     /// `groundingMetadata` on successive chunks, so dedupe to emit each citation
     /// once — matching the AI SDK's `emittedSourceUrls` set.
-    /// <https://github.com/vercel/ai/blob/main/packages/google/src/google-language-model.ts>
+    /// <https://github.com/vercel/ai/blob/8e650ab809ac47de5d16f26bf544a9a73b0d39a3/packages/google/src/google-generative-ai-language-model.ts>
     emitted_source_keys: std::collections::HashSet<String>,
 }
 

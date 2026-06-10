@@ -40,7 +40,7 @@ use crate::language_model::types::{
 /// `ToolApprovalRequest` requires one (the AI SDK generates a fresh id here);
 /// deriving it deterministically from the approval id (`approval:<id>`) keeps a
 /// same-protocol round-trip stable without fabricating provider-side identity.
-/// <https://github.com/vercel/ai/blob/main/packages/provider/src/language-model/v3/language-model-v3-tool-approval-request.ts>
+/// <https://github.com/vercel/ai/blob/8e650ab809ac47de5d16f26bf544a9a73b0d39a3/packages/provider/src/language-model/v3/language-model-v3-tool-approval-request.ts>
 fn synthesize_approval_tool_call_id(approval_id: &str) -> String {
     format!("approval:{approval_id}")
 }
@@ -280,7 +280,7 @@ fn parse_responses_part(part: &serde_json::Value) -> Option<Content> {
 /// `file_id`/`filename` for documents) + index. The `index`/`start_index` text
 /// offsets and the `file_id`/`container_id` provider fields have no canonical
 /// slot and are dropped — see [`Source`].
-/// <https://github.com/vercel/ai/blob/main/packages/openai/src/responses/openai-responses-language-model.ts>
+/// <https://github.com/vercel/ai/blob/8e650ab809ac47de5d16f26bf544a9a73b0d39a3/packages/openai/src/responses/openai-responses-language-model.ts>
 fn parse_responses_annotations(
     annotations: Option<&serde_json::Value>,
     next_index: &mut usize,
@@ -478,7 +478,7 @@ fn parse_input(value: &serde_json::Value) -> Result<Vec<Message>> {
                     // approval item and skips re-emitting it as a string — matching
                     // the AI SDK's `execution-denied` skip rule.
                     // <https://platform.openai.com/docs/api-reference/responses/object>
-                    // <https://github.com/vercel/ai/blob/main/packages/openai/src/responses/convert-to-openai-responses-input.ts>
+                    // <https://github.com/vercel/ai/blob/8e650ab809ac47de5d16f26bf544a9a73b0d39a3/packages/openai/src/responses/convert-to-openai-responses-input.ts>
                     Some("mcp_approval_response") => {
                         let approval_id = item
                             .get("approval_request_id")
@@ -680,7 +680,7 @@ impl InboundAdapter for ResponsesAdapter {
                 // this wire and dropped by the reference implementation, so the
                 // canonical slots stay empty here and the outbound adapter
                 // renders none of them.
-                // <https://github.com/vercel/ai/blob/main/packages/openai/src/responses/openai-responses-language-model.ts>
+                // <https://github.com/vercel/ai/blob/8e650ab809ac47de5d16f26bf544a9a73b0d39a3/packages/openai/src/responses/openai-responses-language-model.ts>
                 top_k: None,
                 seed: None,
                 stop: Vec::new(),
@@ -892,7 +892,7 @@ impl OutboundAdapter for ResponsesAdapter {
                 // `web_search_call`/`file_search_call` — only the call itself is
                 // modeled here; it round-trips via `render_output_items`, which
                 // re-emits `<name>_call` keyed by `id`.
-                // <https://github.com/vercel/ai/blob/main/packages/openai/src/responses/openai-responses-language-model.ts>
+                // <https://github.com/vercel/ai/blob/8e650ab809ac47de5d16f26bf544a9a73b0d39a3/packages/openai/src/responses/openai-responses-language-model.ts>
                 Some(
                     server_tool @ ("web_search_call"
                     | "file_search_call"
@@ -938,22 +938,34 @@ impl OutboundAdapter for ResponsesAdapter {
                     });
                 }
                 // OpenAI Responses `mcp_approval_request {id, server_label, name,
-                // arguments}` — a provider-executed MCP tool call paused for
-                // human approval. It becomes a `Content::ToolApprovalRequest`. The
-                // MCP server identity (`server_label` / `name` / `arguments`) has
-                // no slot on the flat content shape, so it rides in
-                // `provider_metadata["openai"]` to reproduce the exact item on
-                // render. `approval_id` is the item's `approval_request_id`,
-                // falling back to its `id`; `tool_call_id` is synthesized from it
-                // (the wire carries no separate tool-call id), mirroring the AI
-                // SDK reference which generates a fresh id here.
+                // arguments, approval_request_id?}` — a provider-executed MCP tool
+                // call paused for human approval. It becomes a
+                // `Content::ToolApprovalRequest`. The MCP server identity
+                // (`server_label` / `name` / `arguments`) has no slot on the flat
+                // content shape, so it rides in `provider_metadata["openai"]` to
+                // reproduce the exact item on render.
+                //
+                // The wire carries TWO ids that can differ: the item `id` and the
+                // optional `approval_request_id` (the correlation key the later
+                // `mcp_approval_response.approval_request_id` and any `mcp_call`
+                // reference). `approval_id` takes the correlation key —
+                // `approval_request_id`, falling back to `id` — matching the AI SDK
+                // reference (`approval_request_id ?? id`). When the item ALSO had a
+                // distinct `id`, that raw item id would otherwise be lost on a
+                // same-protocol round-trip (render keys the item by `approval_id`),
+                // so it is preserved under `provider_metadata["openai"]["itemId"]`
+                // — the same key the AI SDK uses for the OpenAI item id — and
+                // restored on render. `tool_call_id` is synthesized from
+                // `approval_id` (the wire carries no separate tool-call id),
+                // mirroring the AI SDK reference which generates a fresh id here.
                 // <https://platform.openai.com/docs/api-reference/responses/object>
-                // <https://github.com/vercel/ai/blob/main/packages/openai/src/responses/openai-responses-language-model.ts>
+                // <https://github.com/vercel/ai/blob/8e650ab809ac47de5d16f26bf544a9a73b0d39a3/packages/openai/src/responses/openai-responses-language-model.ts>
                 Some("mcp_approval_request") => {
+                    let item_id = item.get("id").and_then(|i| i.as_str());
                     let approval_id = item
                         .get("approval_request_id")
-                        .or_else(|| item.get("id"))
                         .and_then(|i| i.as_str())
+                        .or(item_id)
                         .unwrap_or_default()
                         .to_string();
                     let mut meta = ProviderMetadata::new();
@@ -974,20 +986,47 @@ impl OutboundAdapter for ResponsesAdapter {
                             );
                         }
                     }
+                    // Preserve the raw item `id` only when it differs from the
+                    // chosen `approval_id`, so it round-trips without bloating the
+                    // common case (where the two coincide and `id` is recoverable).
+                    if let Some(id) = item_id
+                        && id != approval_id
+                    {
+                        set_provider_metadata(
+                            &mut meta,
+                            PROVIDER_ID_OPENAI,
+                            "itemId",
+                            serde_json::Value::String(id.to_string()),
+                        );
+                    }
                     content.push(Content::ToolApprovalRequest {
                         tool_call_id: synthesize_approval_tool_call_id(&approval_id),
                         approval_id,
                         provider_metadata: meta,
                     });
                 }
-                // Deferred output-item types — intentionally skipped, not parsed,
-                // and documented here so the omission is explicit rather than a
-                // silent drop:
-                //   - `mcp_call`: the AI SDK models this as a provider-executed
-                //     `mcp.<name>` call *plus* a separate tool-result carrying the
-                //     remote MCP tool's `output`/`error`. The flat `ToolCall`
-                //     cannot hold that result, so faithfully representing it needs
-                //     a richer content shape than exists today.
+                // KNOWN LIMITATION — these output items are dropped on parse,
+                // which is a fidelity gap (not a clean N/A) honestly recorded
+                // here. Carrying them faithfully needs a content-shape change
+                // that is deliberately out of scope for this change:
+                //   - `mcp_call`: a provider-executed remote MCP tool call whose
+                //     *result* is carried **inline** on the same item
+                //     (`{ server_label, name, arguments, output?, error? }`). The
+                //     AI SDK reference lowers it to a provider-executed tool-call
+                //     PLUS a separate tool-result whose body is an MCP-specific
+                //     `{ type: 'call', serverLabel, name, arguments, output?,
+                //     error? }` structure. bitrouter's flat `ToolCall` has no
+                //     server-identifier slot and its `ToolResult` renders only as
+                //     a *separate* `function_call_output` input item — so there is
+                //     no shape today that re-emits a single `mcp_call` item with
+                //     its inline output. Mapping `output`/`error` onto a paired
+                //     `ToolResult`/`ExecutionDenied` would NOT round-trip (it
+                //     would split one wire item into two, and `ExecutionDenied`
+                //     means *approval-denied*, not a tool error), so it is left
+                //     uncarried rather than mis-modeled — the same deferral as the
+                //     `Content::ToolCall` `dynamic` flag and Anthropic
+                //     `mcp_tool_use`. **Result: Responses MCP tool-call results
+                //     are not yet carried; this is a deferred gap.**
                 //   - `local_shell_call`: a *client*-executed call (the AI SDK
                 //     leaves `providerExecuted` unset and keys it by `call_id`),
                 //     which must round-trip its `action` payload and be paired
@@ -997,7 +1036,7 @@ impl OutboundAdapter for ResponsesAdapter {
                 //   - any other unknown item type is skipped for forward
                 //     compatibility (mirrors the input-side `Some(_) => {}`),
                 //     rather than failing the whole response.
-                // <https://github.com/vercel/ai/blob/main/packages/openai/src/responses/openai-responses-language-model.ts>
+                // <https://github.com/vercel/ai/blob/8e650ab809ac47de5d16f26bf544a9a73b0d39a3/packages/openai/src/responses/openai-responses-language-model.ts>
                 _ => {}
             }
         }
@@ -1235,7 +1274,7 @@ fn render_message_items(m: &Message) -> Vec<serde_json::Value> {
                 // the Responses input wire has no slot to replay a server-tool
                 // call (the AI SDK reference drops it / emits an item_reference).
                 // Only client tool calls round-trip as `function_call`.
-                // <https://github.com/vercel/ai/blob/main/packages/openai/src/responses/convert-to-openai-responses-input.ts>
+                // <https://github.com/vercel/ai/blob/8e650ab809ac47de5d16f26bf544a9a73b0d39a3/packages/openai/src/responses/convert-to-openai-responses-input.ts>
                 if !provider_executed {
                     items.push(serde_json::json!({
                         "type": "function_call",
@@ -1293,7 +1332,7 @@ fn render_message_items(m: &Message) -> Vec<serde_json::Value> {
             // `function_call_output` too would duplicate it. An *unpaired* denial
             // (no approval id) falls through and degrades to the denial string.
             // <https://platform.openai.com/docs/api-reference/responses/create>
-            // <https://github.com/vercel/ai/blob/main/packages/openai/src/responses/convert-to-openai-responses-input.ts>
+            // <https://github.com/vercel/ai/blob/8e650ab809ac47de5d16f26bf544a9a73b0d39a3/packages/openai/src/responses/convert-to-openai-responses-input.ts>
             Content::ToolResult {
                 call_id,
                 output,
@@ -1318,7 +1357,7 @@ fn render_message_items(m: &Message) -> Vec<serde_json::Value> {
             // the input wire. The optional canonical `reason` has no slot on this
             // item and is dropped (the wire carries none).
             // <https://platform.openai.com/docs/api-reference/responses/object>
-            // <https://github.com/vercel/ai/blob/main/packages/openai/src/responses/convert-to-openai-responses-input.ts>
+            // <https://github.com/vercel/ai/blob/8e650ab809ac47de5d16f26bf544a9a73b0d39a3/packages/openai/src/responses/convert-to-openai-responses-input.ts>
             Content::ToolApprovalResponse {
                 approval_id,
                 approved,
@@ -1362,7 +1401,7 @@ fn render_message_items(m: &Message) -> Vec<serde_json::Value> {
 /// rather than being flattened to text. The error flag and tool name have no
 /// slot here and are dropped.
 /// <https://platform.openai.com/docs/api-reference/responses/create>
-/// <https://github.com/vercel/ai/blob/main/packages/openai/src/responses/convert-to-openai-responses-input.ts>
+/// <https://github.com/vercel/ai/blob/8e650ab809ac47de5d16f26bf544a9a73b0d39a3/packages/openai/src/responses/convert-to-openai-responses-input.ts>
 fn render_responses_tool_output(output: &ToolResultOutput) -> serde_json::Value {
     match output {
         // `output` is a string slot, not a JSON-value slot: stringify the value
@@ -1386,7 +1425,7 @@ fn render_responses_tool_output(output: &ToolResultOutput) -> serde_json::Value 
 /// `input_image`; any other media or file reference → `input_file`. Media bytes
 /// ride as a `data:` URL or a plain URL; a provider file reference rides as
 /// `file_id`.
-/// <https://github.com/vercel/ai/blob/main/packages/openai/src/responses/convert-to-openai-responses-input.ts>
+/// <https://github.com/vercel/ai/blob/8e650ab809ac47de5d16f26bf544a9a73b0d39a3/packages/openai/src/responses/convert-to-openai-responses-input.ts>
 fn render_responses_tool_output_part(part: &ToolResultContentPart) -> serde_json::Value {
     match part {
         ToolResultContentPart::Text { text } => {
@@ -1438,7 +1477,7 @@ fn parse_responses_tool_output(value: &serde_json::Value) -> ToolResultOutput {
 /// `input_text` → text; `input_image` / `input_file` carry either a `file_id`
 /// (→ [`ToolResultContentPart::FileId`]) or an inline/URL payload
 /// (→ [`ToolResultContentPart::Media`]).
-/// <https://github.com/vercel/ai/blob/main/packages/openai/src/responses/convert-to-openai-responses-input.ts>
+/// <https://github.com/vercel/ai/blob/8e650ab809ac47de5d16f26bf544a9a73b0d39a3/packages/openai/src/responses/convert-to-openai-responses-input.ts>
 fn parse_responses_tool_output_part(part: &serde_json::Value) -> Option<ToolResultContentPart> {
     match part.get("type").and_then(|t| t.as_str())? {
         "input_text" | "text" => Some(ToolResultContentPart::Text {
@@ -1538,7 +1577,7 @@ fn render_output_items(result: &GenerateResult) -> Vec<serde_json::Value> {
                 // (e.g. `web_search_call`) and keys them by item `id` rather than
                 // `call_id`. `code_interpreter_call` carries its `code` /
                 // `container_id` back out; the others have no echoed input.
-                // <https://github.com/vercel/ai/blob/main/packages/openai/src/responses/openai-responses-language-model.ts>
+                // <https://github.com/vercel/ai/blob/8e650ab809ac47de5d16f26bf544a9a73b0d39a3/packages/openai/src/responses/openai-responses-language-model.ts>
                 let mut item = serde_json::Map::new();
                 item.insert("type".into(), format!("{name}_call").into());
                 item.insert("id".into(), id.clone().into());
@@ -1566,9 +1605,12 @@ fn render_output_items(result: &GenerateResult) -> Vec<serde_json::Value> {
     }
     // Reproduce a `mcp_approval_request` output item from each
     // `Content::ToolApprovalRequest`. The MCP server identity (`server_label` /
-    // `name` / `arguments`) is restored from `provider_metadata["openai"]`; the
-    // item is keyed by the approval id, matching the wire shape the parse path
-    // reads. <https://platform.openai.com/docs/api-reference/responses/object>
+    // `name` / `arguments`) is restored from `provider_metadata["openai"]`. The
+    // item `id` is the preserved raw `itemId` when the source carried one distinct
+    // from the correlation key; otherwise it falls back to `approval_id`. When a
+    // distinct `itemId` was preserved, `approval_request_id` is emitted alongside
+    // (= `approval_id`) so the original two-id item round-trips byte-faithfully —
+    // inverting the parse path. <https://platform.openai.com/docs/api-reference/responses/object>
     for c in &result.content {
         if let Content::ToolApprovalRequest {
             approval_id,
@@ -1578,8 +1620,18 @@ fn render_output_items(result: &GenerateResult) -> Vec<serde_json::Value> {
         {
             let mut item = serde_json::Map::new();
             item.insert("type".into(), "mcp_approval_request".into());
-            item.insert("id".into(), approval_id.clone().into());
-            if let Some(openai) = provider_namespace(provider_metadata, PROVIDER_ID_OPENAI) {
+            let openai = provider_namespace(provider_metadata, PROVIDER_ID_OPENAI);
+            let item_id = openai
+                .and_then(|o| o.get("itemId"))
+                .and_then(|v| v.as_str());
+            item.insert("id".into(), item_id.unwrap_or(approval_id).into());
+            // The correlation key is carried separately only when it differs from
+            // the item id (i.e. the source had both); otherwise `id` alone conveys
+            // it, matching the single-id items the parse path also accepts.
+            if item_id.is_some() {
+                item.insert("approval_request_id".into(), approval_id.clone().into());
+            }
+            if let Some(openai) = openai {
                 if let Some(label) = openai.get("serverLabel") {
                     item.insert("server_label".into(), label.clone());
                 }

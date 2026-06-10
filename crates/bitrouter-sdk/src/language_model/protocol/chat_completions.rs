@@ -377,7 +377,7 @@ fn parse_chat_part(part: &serde_json::Value) -> Option<Content> {
 /// synthesized from the url + index (the wire carries none); the `start_index`/
 /// `end_index` text offsets are dropped (no canonical slot). Mirrors the AI SDK
 /// OpenAI chat mapping.
-/// <https://github.com/vercel/ai/blob/main/packages/openai/src/chat/openai-chat-language-model.ts>
+/// <https://github.com/vercel/ai/blob/8e650ab809ac47de5d16f26bf544a9a73b0d39a3/packages/openai/src/chat/openai-chat-language-model.ts>
 fn parse_chat_annotations(annotations: Option<&serde_json::Value>) -> Vec<Content> {
     let Some(arr) = annotations.and_then(|a| a.as_array()) else {
         return Vec::new();
@@ -1500,7 +1500,7 @@ impl StreamDecoder for ChatStreamDecoder {
                 // (same `url_citation` shape as the non-streaming response).
                 // Each becomes one whole `StreamPart::Source`; the id is
                 // synthesized from the url + this chunk's annotation index.
-                // <https://github.com/vercel/ai/blob/main/packages/openai/src/chat/openai-chat-language-model.ts>
+                // <https://github.com/vercel/ai/blob/8e650ab809ac47de5d16f26bf544a9a73b0d39a3/packages/openai/src/chat/openai-chat-language-model.ts>
                 for content in parse_chat_annotations(delta.get("annotations")) {
                     if let Content::Source { source, .. } = content {
                         parts.push(StreamPart::Source { source });
@@ -1639,7 +1639,7 @@ impl StreamEncoder for ChatStreamEncoder {
                 // `url_citation` chunk — the location the decoder reads. Only a
                 // URL source has a Chat representation; a document citation is
                 // dropped here (no `url_citation` form on this wire).
-                // <https://github.com/vercel/ai/blob/main/packages/openai/src/chat/openai-chat-language-model.ts>
+                // <https://github.com/vercel/ai/blob/8e650ab809ac47de5d16f26bf544a9a73b0d39a3/packages/openai/src/chat/openai-chat-language-model.ts>
                 if let Source::Url { url, title, .. } = source {
                     let mut cite = serde_json::Map::new();
                     cite.insert("url".into(), url.clone().into());

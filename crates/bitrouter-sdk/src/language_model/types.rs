@@ -19,7 +19,7 @@ use crate::caller::CallerContext;
 /// `providerOptions` and the output form is `providerMetadata`; both share this
 /// one wire shape, so the canonical IR carries a single `provider_metadata` slot
 /// in both directions.
-/// <https://github.com/vercel/ai/blob/main/packages/provider/src/shared/v3/shared-v3-provider-metadata.ts>
+/// <https://github.com/vercel/ai/blob/8e650ab809ac47de5d16f26bf544a9a73b0d39a3/packages/provider/src/shared/v3/shared-v3-provider-metadata.ts>
 ///
 /// A [`BTreeMap`] (not a `HashMap`) so serialization is deterministic — the same
 /// metadata always renders in the same key order, which keeps round-trip tests
@@ -201,7 +201,7 @@ pub enum Content {
     /// A media / file part — image, audio, video, or document. Modelled à la the
     /// Vercel AI SDK `LanguageModelV3File`: a single media-typed part rather than
     /// a per-modality variant, identified by its IANA `media_type`.
-    /// <https://github.com/vercel/ai/blob/main/packages/provider/src/language-model/v3/language-model-v3-file.ts>
+    /// <https://github.com/vercel/ai/blob/8e650ab809ac47de5d16f26bf544a9a73b0d39a3/packages/provider/src/language-model/v3/language-model-v3-file.ts>
     File {
         /// IANA media type, e.g. `image/png`, `audio/mpeg`, `application/pdf`.
         media_type: String,
@@ -222,7 +222,7 @@ pub enum Content {
     },
     /// A tool/function call requested by the model. Models the Vercel AI SDK
     /// `LanguageModelV3ToolCall` content part.
-    /// <https://github.com/vercel/ai/blob/main/packages/provider/src/language-model/v3/language-model-v3-tool-call.ts>
+    /// <https://github.com/vercel/ai/blob/8e650ab809ac47de5d16f26bf544a9a73b0d39a3/packages/provider/src/language-model/v3/language-model-v3-tool-call.ts>
     ToolCall {
         /// Provider-assigned call id.
         id: String,
@@ -240,7 +240,7 @@ pub enum Content {
         /// load-bearing: a provider-executed call must **not** be re-sent to the
         /// upstream as a client `function_call` on a follow-up turn (the
         /// provider already ran it), so render paths branch on this flag.
-        /// <https://github.com/vercel/ai/blob/main/packages/provider/src/language-model/v3/language-model-v3-tool-call.ts>
+        /// <https://github.com/vercel/ai/blob/8e650ab809ac47de5d16f26bf544a9a73b0d39a3/packages/provider/src/language-model/v3/language-model-v3-tool-call.ts>
         ///
         /// The sibling V3 `dynamic` flag (provider-executed MCP tools defined at
         /// runtime) is intentionally **not** modeled. It arises only from
@@ -269,7 +269,7 @@ pub enum Content {
     /// [`ToolResultOutput`] union (text / JSON / error / multimodal content)
     /// rather than a flat opaque string, so structure, the error flag, and
     /// multimodal results survive cross-protocol routing.
-    /// <https://github.com/vercel/ai/blob/main/packages/provider/src/language-model/v3/language-model-v3-prompt.ts>
+    /// <https://github.com/vercel/ai/blob/8e650ab809ac47de5d16f26bf544a9a73b0d39a3/packages/provider/src/language-model/v3/language-model-v3-prompt.ts>
     ToolResult {
         /// The call id this result answers.
         call_id: String,
@@ -303,7 +303,7 @@ pub enum Content {
     /// entries into these parts, and `render_response` re-attaches them to the
     /// provider's citation location. Sources never appear in a request, so
     /// request-side render paths skip this variant (documented at each site).
-    /// <https://github.com/vercel/ai/blob/main/packages/provider/src/language-model/v3/language-model-v3-source.ts>
+    /// <https://github.com/vercel/ai/blob/8e650ab809ac47de5d16f26bf544a9a73b0d39a3/packages/provider/src/language-model/v3/language-model-v3-source.ts>
     Source {
         /// The citation source (URL or document).
         source: Source,
@@ -322,16 +322,20 @@ pub enum Content {
     /// user approval before it runs; the matching [`Self::ToolApprovalResponse`]
     /// (keyed by [`approval_id`](Self::ToolApprovalRequest::approval_id)) carries
     /// the grant or denial back on the next turn.
-    /// <https://github.com/vercel/ai/blob/main/packages/provider/src/language-model/v3/language-model-v3-tool-approval-request.ts>
+    /// <https://github.com/vercel/ai/blob/8e650ab809ac47de5d16f26bf544a9a73b0d39a3/packages/provider/src/language-model/v3/language-model-v3-tool-approval-request.ts>
     ///
     /// The only wire that carries this handshake is OpenAI Responses, where it is
     /// the `mcp_approval_request` output item (`{id, type, server_label, name,
-    /// arguments}`). On parse, `approval_id` is the item's `approval_request_id`
-    /// (falling back to its `id`), and the MCP `server_label` / `name` /
-    /// `arguments` ride in `provider_metadata["openai"]` so the render reproduces
-    /// the exact `mcp_approval_request` item byte-for-byte. The other three wires
-    /// (Anthropic / Generate Content / Chat Completions) have no approval-request
-    /// item and skip this variant on render (documented at each site).
+    /// arguments, approval_request_id?}`). On parse, `approval_id` is the item's
+    /// `approval_request_id` (the correlation key, falling back to its `id`), and
+    /// the MCP `server_label` / `name` / `arguments` ride in
+    /// `provider_metadata["openai"]` so the render reproduces the exact
+    /// `mcp_approval_request` item byte-for-byte. When the item carried a raw `id`
+    /// *distinct* from that correlation key, the `id` is also preserved under
+    /// `provider_metadata["openai"]["itemId"]` and restored on render, so the
+    /// two-id form round-trips losslessly. The other three wires (Anthropic /
+    /// Generate Content / Chat Completions) have no approval-request item and skip
+    /// this variant on render (documented at each site).
     /// <https://platform.openai.com/docs/api-reference/responses/object>
     ToolApprovalRequest {
         /// Approval id, referenced by the subsequent
@@ -346,9 +350,10 @@ pub enum Content {
         tool_call_id: String,
         /// Per-part namespaced provider metadata. On a Responses
         /// `mcp_approval_request` this carries the MCP server identity under
-        /// `provider_metadata["openai"]` (`serverLabel` / `name` / `arguments`) so
-        /// the render restores the exact item; the canonical flat shape itself has
-        /// no MCP-server slot.
+        /// `provider_metadata["openai"]` (`serverLabel` / `name` / `arguments`),
+        /// plus the raw item `id` as `itemId` when it differed from `approval_id`,
+        /// so the render restores the exact item; the canonical flat shape itself
+        /// has no MCP-server slot.
         #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
         provider_metadata: ProviderMetadata,
     },
@@ -357,7 +362,7 @@ pub enum Content {
     /// client/tool layer (a `tool`-role input part) to grant or deny a
     /// provider-executed tool call that emitted a [`Self::ToolApprovalRequest`],
     /// keyed by the shared [`approval_id`](Self::ToolApprovalResponse::approval_id).
-    /// <https://github.com/vercel/ai/blob/main/packages/provider/src/language-model/v3/language-model-v3-prompt.ts>
+    /// <https://github.com/vercel/ai/blob/8e650ab809ac47de5d16f26bf544a9a73b0d39a3/packages/provider/src/language-model/v3/language-model-v3-prompt.ts>
     ///
     /// The only wire that carries it is OpenAI Responses, as the
     /// `mcp_approval_response` input item (`{type, approval_request_id,
@@ -396,7 +401,7 @@ pub enum Content {
 /// plain text, a JSON value, an error (text or JSON), or a multimodal content
 /// array. Adapters translate each variant to/from the upstream's native wire
 /// shape and degrade losslessly when a provider can't express a variant.
-/// <https://github.com/vercel/ai/blob/main/packages/provider/src/language-model/v3/language-model-v3-prompt.ts>
+/// <https://github.com/vercel/ai/blob/8e650ab809ac47de5d16f26bf544a9a73b0d39a3/packages/provider/src/language-model/v3/language-model-v3-prompt.ts>
 ///
 /// The V3 union's sixth member, `execution-denied`
 /// (`{ type: 'execution-denied', reason? }`), is modeled by
@@ -412,7 +417,7 @@ pub enum Content {
 /// (`reason ?? 'Tool call execution denied.'`) that re-parses as a [`Self::Text`].
 /// On the other three wires it likewise degrades to that string via
 /// [`Self::to_provider_string`].
-/// <https://github.com/vercel/ai/blob/main/packages/openai/src/responses/convert-to-openai-responses-input.ts>
+/// <https://github.com/vercel/ai/blob/8e650ab809ac47de5d16f26bf544a9a73b0d39a3/packages/openai/src/responses/convert-to-openai-responses-input.ts>
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ToolResultOutput {
@@ -449,7 +454,7 @@ pub enum ToolResultOutput {
     /// a denial paired with its approval is skipped on render (the
     /// `mcp_approval_response` conveys it); elsewhere it degrades to the reason
     /// string via [`Self::to_provider_string`].
-    /// <https://github.com/vercel/ai/blob/main/packages/openai/src/responses/convert-to-openai-responses-input.ts>
+    /// <https://github.com/vercel/ai/blob/8e650ab809ac47de5d16f26bf544a9a73b0d39a3/packages/openai/src/responses/convert-to-openai-responses-input.ts>
     ExecutionDenied {
         /// Optional human-readable denial reason. `None` falls back to the
         /// default denial string on render.
@@ -502,7 +507,7 @@ impl ToolResultOutput {
                 .collect(),
             // A denied execution collapses to its reason, or the AI SDK's default
             // denial sentinel when none was given.
-            // <https://github.com/vercel/ai/blob/main/packages/openai/src/responses/convert-to-openai-responses-input.ts>
+            // <https://github.com/vercel/ai/blob/8e650ab809ac47de5d16f26bf544a9a73b0d39a3/packages/openai/src/responses/convert-to-openai-responses-input.ts>
             Self::ExecutionDenied { reason } => reason
                 .clone()
                 .unwrap_or_else(|| "Tool call execution denied.".to_string()),
@@ -528,7 +533,7 @@ impl ToolResultOutput {
 ///   conversions likewise drop any unrecognised content part, so omitting it is
 ///   lossless for a faithful-passthrough router.
 ///
-/// <https://github.com/vercel/ai/blob/main/packages/provider/src/language-model/v3/language-model-v3-prompt.ts>
+/// <https://github.com/vercel/ai/blob/8e650ab809ac47de5d16f26bf544a9a73b0d39a3/packages/provider/src/language-model/v3/language-model-v3-prompt.ts>
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ToolResultContentPart {
@@ -629,7 +634,7 @@ impl DataContent {
 /// `groundingChunks`); an adapter's `parse_response` lifts those out into
 /// [`Content::Source`] parts, and `render_response` re-attaches them at the
 /// provider's native citation location (never per-part on a request).
-/// <https://github.com/vercel/ai/blob/main/packages/provider/src/language-model/v3/language-model-v3-source.ts>
+/// <https://github.com/vercel/ai/blob/8e650ab809ac47de5d16f26bf544a9a73b0d39a3/packages/provider/src/language-model/v3/language-model-v3-source.ts>
 ///
 /// V3 requires `id` on both variants, but providers rarely transmit a citation
 /// id (OpenAI / Gemini / Anthropic web-search results carry none). Adapters
@@ -703,7 +708,7 @@ impl Source {
 /// a sibling of `role`/`content` (which the Anthropic API rejects). Block-level
 /// [`Content`] metadata therefore covers every caching breakpoint, so a
 /// per-message slot would be unconstructed dead weight.
-/// <https://github.com/vercel/ai/blob/main/packages/anthropic/src/convert-to-anthropic-prompt.ts>
+/// <https://github.com/vercel/ai/blob/8e650ab809ac47de5d16f26bf544a9a73b0d39a3/packages/anthropic/src/convert-to-anthropic-messages-prompt.ts>
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Message {
     /// The speaker role.
@@ -727,8 +732,8 @@ impl Message {
 
 /// A tool the model may call — a faithful port of the Vercel AI SDK
 /// `LanguageModelV3FunctionTool | LanguageModelV3ProviderTool` union.
-/// <https://github.com/vercel/ai/blob/main/packages/provider/src/language-model/v3/language-model-v3-function-tool.ts>
-/// <https://github.com/vercel/ai/blob/main/packages/provider/src/language-model/v3/language-model-v3-provider-tool.ts>
+/// <https://github.com/vercel/ai/blob/8e650ab809ac47de5d16f26bf544a9a73b0d39a3/packages/provider/src/language-model/v3/language-model-v3-function-tool.ts>
+/// <https://github.com/vercel/ai/blob/8e650ab809ac47de5d16f26bf544a9a73b0d39a3/packages/provider/src/language-model/v3/language-model-v3-provider-tool.ts>
 ///
 /// Like [`ToolChoice`] and [`ResponseFormat`], each inbound adapter promotes a
 /// provider-native tool entry into this typed slot at parse time, and each
@@ -759,6 +764,15 @@ pub enum Tool {
     /// `parameters` is V3's `inputSchema` (a JSON Schema). `strict` is V3's
     /// top-level strict-mode flag — captured from the wire where present so it
     /// is not lost across the canonical boundary.
+    ///
+    /// The V3 `LanguageModelV3FunctionTool.inputExamples`
+    /// (`Array<{ input: JSONObject }>`) field has **no slot here, by design.**
+    /// None of the four provider *request* wires (Chat Completions / Messages /
+    /// Responses / Generate Content) carries per-tool input examples in its tool
+    /// definition, so no `parse_request` could construct it and no
+    /// `render_request` could emit it — an `input_examples` field would be both
+    /// unconstructed and unconsumed dead code. (Same documented-N/A reasoning as
+    /// the [`Content::ToolCall`] `dynamic` flag.)
     Function {
         /// Tool name. Unique within the request.
         name: String,
@@ -815,7 +829,7 @@ impl Tool {
 
 /// How the model must treat the available [`Tool`]s on this request — a faithful
 /// port of the Vercel AI SDK `LanguageModelV3ToolChoice` tagged union.
-/// <https://github.com/vercel/ai/blob/main/packages/provider/src/language-model/v3/language-model-v3-tool-choice.ts>
+/// <https://github.com/vercel/ai/blob/8e650ab809ac47de5d16f26bf544a9a73b0d39a3/packages/provider/src/language-model/v3/language-model-v3-tool-choice.ts>
 ///
 /// Each protocol expresses tool choice with a different wire shape (Chat
 /// Completions `"auto"|"none"|"required"` or `{type:"function",…}`; Anthropic
@@ -857,8 +871,15 @@ pub enum ToolChoice {
 
 /// Constraint on the shape of the model's response.
 ///
-/// Today the only variant is [`Self::JsonSchema`]; future variants (`json_object`,
-/// `text`, `regex`) can be added without breaking existing call sites.
+/// Mirrors the Vercel AI SDK V3 `responseFormat` call option. V3 has **no**
+/// standalone response-format type file — the shape is inlined on
+/// `LanguageModelV3CallOptions` as
+/// `responseFormat?: { type: 'text' } | { type: 'json', schema?, name?, description? }`.
+/// [`Self::JsonSchema`] is the `{ type: 'json' }` arm (carrying the optional
+/// `schema` / `name` / `description`); the `{ type: 'text' }` arm is the absence
+/// of a constraint here (a `None` [`Prompt::response_format`]), so it needs no
+/// variant. Future variants (`json_object`, `regex`) can be added without
+/// breaking existing call sites.
 ///
 /// Each inbound adapter promotes the provider-native field into this typed
 /// slot at `parse_request` time (e.g. Chat Completions' `response_format`,
@@ -867,6 +888,7 @@ pub enum ToolChoice {
 /// `render_request`. Cross-protocol routing therefore works automatically:
 /// a Chat Completions client asking for `json_schema` against a Messages upstream
 /// emits `output_config.format`.
+/// <https://github.com/vercel/ai/blob/8e650ab809ac47de5d16f26bf544a9a73b0d39a3/packages/provider/src/language-model/v3/language-model-v3-call-options.ts>
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ResponseFormat {
@@ -1140,22 +1162,42 @@ impl Prompt {
 /// Token usage counts. Counts use `0` (not `null`) for "known to be zero";
 /// missing usage is represented by `Option<Usage>` being `None` upstream.
 ///
-/// Field-level parity with the Vercel AI SDK V3 `LanguageModelV3Usage`
-/// (`inputTokens` / `outputTokens` / `totalTokens` / `reasoningTokens` /
-/// `cachedInputTokens`): [`prompt_tokens`](Self::prompt_tokens) is V3
-/// `inputTokens`, [`completion_tokens`](Self::completion_tokens) is
-/// `outputTokens`, [`reasoning_tokens`](Self::reasoning_tokens) is
-/// `reasoningTokens`, and [`cache_read_tokens`](Self::cache_read_tokens) is
-/// `cachedInputTokens`. V3's `totalTokens` is **not** a stored field here: it is
-/// purely `prompt_tokens + completion_tokens` ([`total`](Self::total)) in this
-/// model — the cache buckets are folded into `prompt_tokens` at parse time (see
-/// the Messages `parse_usage`), so the derived total already equals every
-/// provider's reported total. Storing a separate `total_tokens` would be a
-/// redundant field that could disagree with its own components, so it is
-/// intentionally omitted. [`cache_write_tokens`](Self::cache_write_tokens) has
-/// no V3 counterpart (V3 folds cache-write into `inputTokens`); bitrouter keeps
-/// it distinct so a billing layer can meter cache creation separately.
-/// <https://github.com/vercel/ai/blob/main/packages/provider/src/language-model/v3/language-model-v3-usage.ts>
+/// Token usage, carrying the same information as the Vercel AI SDK V3
+/// `LanguageModelV3Usage` in a **flat** shape suited to a router.
+///
+/// V3 itself models usage as a **nested** record —
+/// `inputTokens: { total, noCache, cacheRead, cacheWrite }`,
+/// `outputTokens: { total, text, reasoning }`, plus an optional `raw` blob.
+/// bitrouter is a faithful-passthrough router: it carries the upstream's wire
+/// counts and never has to hand a client back a `LanguageModelV3Usage` *object*,
+/// so a flat field set is the more convenient internal form. Every V3 number is
+/// either stored directly or derivable from the flat fields:
+///
+/// - V3 `inputTokens.total` → [`prompt_tokens`](Self::prompt_tokens). The cache
+///   buckets are *included* in this total (folded in at parse time — see the
+///   Messages `parse_usage`), matching V3's "total input" semantics.
+/// - V3 `inputTokens.cacheRead` → [`cache_read_tokens`](Self::cache_read_tokens),
+///   a subset of `prompt_tokens`.
+/// - V3 `inputTokens.cacheWrite` → [`cache_write_tokens`](Self::cache_write_tokens),
+///   a subset of `prompt_tokens`. (The earlier flat `Usage` had no cache-write
+///   slot; this field restores the V3 `cacheWrite` bucket so a billing layer can
+///   meter cache creation distinctly from cache reads.)
+/// - V3 `inputTokens.noCache` is **derivable**, not stored:
+///   `prompt_tokens - cache_read_tokens - cache_write_tokens`. Storing it too
+///   would be a redundant field that could disagree with its own components.
+/// - V3 `outputTokens.total` → [`completion_tokens`](Self::completion_tokens).
+/// - V3 `outputTokens.reasoning` → [`reasoning_tokens`](Self::reasoning_tokens),
+///   a subset of `completion_tokens`.
+/// - V3 `outputTokens.text` is **derivable**, not stored:
+///   `completion_tokens - reasoning_tokens`.
+///
+/// V3 carries no top-level `totalTokens`; the grand total is purely
+/// `prompt_tokens + completion_tokens` ([`total`](Self::total)) here, computed on
+/// demand rather than stored so it can never drift from its components. The V3
+/// `raw` provider blob is not retained on this struct — a raw provider field that
+/// lacks a canonical slot rides instead in
+/// [`GenerateResult::provider_metadata`](crate::language_model::GenerateResult).
+/// <https://github.com/vercel/ai/blob/8e650ab809ac47de5d16f26bf544a9a73b0d39a3/packages/provider/src/language-model/v3/language-model-v3-usage.ts>
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Usage {
     /// Prompt / input tokens.
@@ -1192,10 +1234,26 @@ impl Usage {
 
 /// Why generation stopped.
 ///
+/// The Vercel AI SDK V3 `LanguageModelV3FinishReason` is a record carrying
+/// **both** a `unified` enum (`stop` / `length` / `content-filter` /
+/// `tool-calls` / `error` / `other`) and the provider's `raw` finish-reason
+/// string. bitrouter splits the two: this enum *is* the V3 `unified` reason, and
+/// the `raw` string rides **out-of-band** in
+/// [`GenerateResult::provider_metadata`](GenerateResult)`["<provider>"]["rawFinishReason"]`.
+/// Carrying `raw` separately — and only when the unified mapping is lossy (when
+/// several native reasons collapse onto one variant, e.g. Anthropic
+/// `stop_sequence` and `end_turn` both → [`Self::Stop`]) — lets a same-protocol
+/// round-trip reproduce the exact native string while a cross-protocol route
+/// still has a portable unified reason; reasons that already map losslessly
+/// (e.g. Gemini `STOP`) store nothing. See
+/// [`GenerateResult::provider_metadata`](GenerateResult) for the full
+/// stash/restore contract.
+///
 /// `Other` and `Error` are escape valves: a finish reason the canonical set
-/// doesn't model (kept verbatim for observability), or a mid-stream upstream
-/// failure surfaced through the canonical IR rather than abruptly aborting
-/// the stream.
+/// doesn't model (kept verbatim for observability — the V3 `other` case), or a
+/// mid-stream upstream failure surfaced through the canonical IR rather than
+/// abruptly aborting the stream (the V3 `error` case).
+/// <https://github.com/vercel/ai/blob/8e650ab809ac47de5d16f26bf544a9a73b0d39a3/packages/provider/src/language-model/v3/language-model-v3-finish-reason.ts>
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum FinishReason {
@@ -1372,7 +1430,7 @@ pub enum StreamPart {
     /// boundaries survive a same-protocol round trip. The two coarse wires
     /// (Chat Completions / Generate Content) carry no block frame, so their
     /// decoders never emit it and their encoders treat it as a no-op.
-    /// <https://github.com/vercel/ai/blob/main/packages/provider/src/language-model/v3/language-model-v3-stream-part.ts>
+    /// <https://github.com/vercel/ai/blob/8e650ab809ac47de5d16f26bf544a9a73b0d39a3/packages/provider/src/language-model/v3/language-model-v3-stream-part.ts>
     TextStart {
         /// Upstream block id (Anthropic block index rendered as a string, or a
         /// Responses item id). Stable within one stream; used by a framing
@@ -1425,7 +1483,7 @@ pub enum StreamPart {
     /// A complete generated file (e.g. an image), emitted whole — matching the
     /// Vercel AI SDK `LanguageModelV3` stream `file` part, where files arrive as
     /// one part rather than chunked deltas.
-    /// <https://github.com/vercel/ai/blob/main/packages/provider/src/language-model/v3/language-model-v3-file.ts>
+    /// <https://github.com/vercel/ai/blob/8e650ab809ac47de5d16f26bf544a9a73b0d39a3/packages/provider/src/language-model/v3/language-model-v3-file.ts>
     File {
         /// IANA media type, e.g. `image/png`.
         media_type: String,
@@ -1437,7 +1495,7 @@ pub enum StreamPart {
     /// Gemini emits the candidate's `groundingChunks` per chunk and OpenAI Chat
     /// streams `delta.annotations`, both decoded here; the client-side encoders
     /// re-attach it to the protocol's native citation location.
-    /// <https://github.com/vercel/ai/blob/main/packages/provider/src/language-model/v3/language-model-v3-source.ts>
+    /// <https://github.com/vercel/ai/blob/8e650ab809ac47de5d16f26bf544a9a73b0d39a3/packages/provider/src/language-model/v3/language-model-v3-source.ts>
     Source {
         /// The citation source (URL or document).
         source: Source,
