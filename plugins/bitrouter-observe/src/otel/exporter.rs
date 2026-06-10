@@ -1117,6 +1117,7 @@ mod hop_tests {
         let prompt = Prompt {
             model: "test-model".to_string(),
             system: None,
+            system_provider_metadata: Default::default(),
             messages: vec![Message::text(Role::User, "hi")],
             tools: Vec::new(),
             params,

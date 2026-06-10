@@ -75,6 +75,7 @@ fn chat_prompt() -> Prompt {
     Prompt {
         model: "test-model".to_string(),
         system: None,
+        system_provider_metadata: Default::default(),
         messages: vec![Message::text(Role::User, "hello")],
         tools: Vec::new(),
         params: GenerationParams::default(),

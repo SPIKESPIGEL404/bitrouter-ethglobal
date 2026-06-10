@@ -490,11 +490,7 @@ impl InboundAdapter for ChatCompletionsAdapter {
                     });
                 }
             }
-            messages.push(Message {
-                role,
-                content,
-                provider_metadata: ProviderMetadata::new(),
-            });
+            messages.push(Message { role, content });
         }
 
         // Chat Completions is function-only on the wire — there is no
@@ -555,6 +551,8 @@ impl InboundAdapter for ChatCompletionsAdapter {
         Ok(Prompt {
             model: req.model,
             system,
+            // Chat Completions has no system-level `cache_control` on its wire.
+            system_provider_metadata: ProviderMetadata::new(),
             messages,
             tools,
             params: GenerationParams {

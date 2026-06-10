@@ -39,6 +39,7 @@ fn sample_prompt() -> Prompt {
     Prompt {
         model: "test-model".to_string(),
         system: Some("be brief".to_string()),
+        system_provider_metadata: Default::default(),
         messages: vec![Message::text(Role::User, "what is 2+2?")],
         tools: vec![Tool::Function {
             name: "calculator".to_string(),
@@ -726,6 +727,7 @@ fn messages_outbound_renders_output_config_effort() {
     let prompt = Prompt {
         model: "claude-opus-4-8".to_string(),
         system: None,
+        system_provider_metadata: Default::default(),
         messages: vec![Message::text(Role::User, "hi")],
         tools: vec![],
         params: GenerationParams {
@@ -747,6 +749,7 @@ fn messages_outbound_merges_format_and_effort_into_output_config() {
     let prompt = Prompt {
         model: "claude-opus-4-8".to_string(),
         system: None,
+        system_provider_metadata: Default::default(),
         messages: vec![Message::text(Role::User, "hi")],
         tools: vec![],
         params: GenerationParams {
@@ -865,6 +868,7 @@ fn messages_outbound_renders_mid_conversation_system() {
     let prompt = Prompt {
         model: "claude-opus-4-8".to_string(),
         system: Some("top-level system".to_string()),
+        system_provider_metadata: Default::default(),
         messages: vec![
             Message::text(Role::User, "hi"),
             Message::text(Role::System, "switch to terse mode"),
@@ -2760,6 +2764,7 @@ fn image_file_prompt() -> Prompt {
     Prompt {
         model: "test-model".to_string(),
         system: None,
+        system_provider_metadata: Default::default(),
         messages: vec![Message {
             role: Role::User,
             content: vec![Content::File {
@@ -2770,7 +2775,6 @@ fn image_file_prompt() -> Prompt {
                 filename: None,
                 provider_metadata: Default::default(),
             }],
-            provider_metadata: Default::default(),
         }],
         tools: vec![],
         params: GenerationParams {
@@ -2946,7 +2950,6 @@ fn pdf_file_renders_to_messages_document_block() {
             filename: Some("doc.pdf".to_string()),
             provider_metadata: Default::default(),
         }],
-        provider_metadata: Default::default(),
     }];
     assert!(
         prompt
@@ -3173,6 +3176,7 @@ fn tool_result_prompt(call_id: &str, tool_name: Option<&str>, output: ToolResult
     Prompt {
         model: "test-model".to_string(),
         system: None,
+        system_provider_metadata: Default::default(),
         messages: vec![Message {
             role: Role::Tool,
             content: vec![Content::ToolResult {
@@ -3181,7 +3185,6 @@ fn tool_result_prompt(call_id: &str, tool_name: Option<&str>, output: ToolResult
                 output,
                 provider_metadata: Default::default(),
             }],
-            provider_metadata: Default::default(),
         }],
         tools: vec![],
         params: GenerationParams {
@@ -3998,6 +4001,7 @@ fn responses_render_request_drops_provider_executed_calls() {
     let prompt = Prompt {
         model: "gpt-5".to_string(),
         system: None,
+        system_provider_metadata: Default::default(),
         messages: vec![Message {
             role: Role::Assistant,
             content: vec![
@@ -4016,7 +4020,6 @@ fn responses_render_request_drops_provider_executed_calls() {
                     provider_metadata: Default::default(),
                 },
             ],
-            provider_metadata: Default::default(),
         }],
         tools: Vec::new(),
         params: GenerationParams::default(),
@@ -4178,6 +4181,7 @@ fn prompt_with_tool_choice(choice: ToolChoice) -> Prompt {
     Prompt {
         model: "m".to_string(),
         system: None,
+        system_provider_metadata: Default::default(),
         messages: vec![Message::text(Role::User, "hi")],
         tools: vec![Tool::Function {
             name: "search".to_string(),
@@ -4578,6 +4582,7 @@ fn prompt_with_tools(tools: Vec<Tool>) -> Prompt {
     Prompt {
         model: "m".to_string(),
         system: None,
+        system_provider_metadata: Default::default(),
         messages: vec![Message::text(Role::User, "hi")],
         tools,
         params: GenerationParams::default(),
@@ -6145,10 +6150,10 @@ fn render_content_block_via_request(
     let prompt = Prompt {
         model: "claude-3-5-sonnet".to_string(),
         system: None,
+        system_provider_metadata: Default::default(),
         messages: vec![Message {
             role: Role::Assistant,
             content: vec![content.clone()],
-            provider_metadata: Default::default(),
         }],
         tools: vec![],
         params: GenerationParams {
@@ -6190,6 +6195,7 @@ fn chat_system_fingerprint_round_trips_on_result() {
     let prompt = Prompt {
         model: "gpt-4o".to_string(),
         system: None,
+        system_provider_metadata: Default::default(),
         messages: vec![],
         tools: vec![],
         params: GenerationParams::default(),
@@ -6227,6 +6233,7 @@ fn generate_content_model_version_round_trips_on_result() {
     let prompt = Prompt {
         model: "gemini-2.0-flash".to_string(),
         system: None,
+        system_provider_metadata: Default::default(),
         messages: vec![],
         tools: vec![],
         params: GenerationParams::default(),
@@ -6268,10 +6275,10 @@ fn generate_content_thought_signature_round_trips() {
     let prompt = Prompt {
         model: "gemini-2.0-flash".to_string(),
         system: None,
+        system_provider_metadata: Default::default(),
         messages: vec![Message {
             role: Role::Assistant,
             content: vec![result.content[0].clone()],
-            provider_metadata: Default::default(),
         }],
         tools: vec![],
         params: GenerationParams::default(),
@@ -6407,6 +6414,7 @@ fn messages_source_tool_use_id_correlation_is_exact() {
     let prompt = Prompt {
         model: "claude-3-5-sonnet".to_string(),
         system: None,
+        system_provider_metadata: Default::default(),
         messages: vec![],
         tools: vec![],
         params: GenerationParams::default(),
@@ -6460,6 +6468,7 @@ fn messages_source_with_surviving_call_reuses_call_id() {
     let prompt = Prompt {
         model: "claude-3-5-sonnet".to_string(),
         system: None,
+        system_provider_metadata: Default::default(),
         messages: vec![],
         tools: vec![],
         params: GenerationParams::default(),
@@ -6480,4 +6489,332 @@ fn messages_source_with_surviving_call_reuses_call_id() {
         .find(|b| b["type"] == "web_search_tool_result")
         .unwrap();
     assert_eq!(result_block["tool_use_id"], "srvtoolu_REAL");
+}
+
+/// Anthropic `cache_control` on a request **image** block round-trips: lifted
+/// into the canonical slot on parse, rendered back onto the image block. Caching
+/// is not text-only — image/document/tool_use blocks are cacheable too.
+#[test]
+fn messages_cache_control_on_image_block_round_trips() {
+    let adapter = messages::MessagesAdapter;
+    let body = serde_json::json!({
+        "model": "claude-3-5-sonnet",
+        "max_tokens": 64,
+        "messages": [{
+            "role": "user",
+            "content": [{
+                "type": "image",
+                "source": { "type": "base64", "media_type": "image/png", "data": IMG_B64 },
+                "cache_control": { "type": "ephemeral" },
+            }],
+        }],
+    });
+    let prompt = adapter.parse_request(body).unwrap();
+    match &prompt.messages[0].content[0] {
+        Content::File {
+            provider_metadata, ..
+        } => assert_eq!(
+            anthropic_cache_control(provider_metadata),
+            Some(&ephemeral())
+        ),
+        other => panic!("expected file content, got {other:?}"),
+    }
+    let rendered = adapter.render_request(&prompt).unwrap();
+    let block = &rendered["messages"][0]["content"][0];
+    assert_eq!(block["type"], "image");
+    assert_eq!(block["cache_control"], ephemeral());
+}
+
+/// Anthropic `cache_control` on a request **document** block round-trips — a
+/// long PDF prefix is a common cache breakpoint.
+#[test]
+fn messages_cache_control_on_document_block_round_trips() {
+    let adapter = messages::MessagesAdapter;
+    let body = serde_json::json!({
+        "model": "claude-3-5-sonnet",
+        "max_tokens": 64,
+        "messages": [{
+            "role": "user",
+            "content": [{
+                "type": "document",
+                "source": { "type": "base64", "media_type": "application/pdf", "data": IMG_B64 },
+                "cache_control": { "type": "ephemeral" },
+            }],
+        }],
+    });
+    let prompt = adapter.parse_request(body).unwrap();
+    match &prompt.messages[0].content[0] {
+        Content::File {
+            media_type,
+            provider_metadata,
+            ..
+        } => {
+            assert_eq!(media_type, "application/pdf");
+            assert_eq!(
+                anthropic_cache_control(provider_metadata),
+                Some(&ephemeral())
+            );
+        }
+        other => panic!("expected file content, got {other:?}"),
+    }
+    let rendered = adapter.render_request(&prompt).unwrap();
+    let block = &rendered["messages"][0]["content"][0];
+    assert_eq!(block["type"], "document");
+    assert_eq!(block["cache_control"], ephemeral());
+}
+
+/// Anthropic `cache_control` on an assistant **tool_use** block round-trips:
+/// caching applies to `tool_use` blocks just like text/image/document.
+#[test]
+fn messages_cache_control_on_tool_use_block_round_trips() {
+    let adapter = messages::MessagesAdapter;
+    // A tool_use block arrives on an assistant turn; parse it through a request.
+    let body = serde_json::json!({
+        "model": "claude-3-5-sonnet",
+        "max_tokens": 64,
+        "messages": [{
+            "role": "assistant",
+            "content": [{
+                "type": "tool_use",
+                "id": "toolu_1",
+                "name": "get_weather",
+                "input": { "city": "SF" },
+                "cache_control": { "type": "ephemeral" },
+            }],
+        }],
+    });
+    let prompt = adapter.parse_request(body).unwrap();
+    let assistant = prompt
+        .messages
+        .iter()
+        .find(|m| m.role == Role::Assistant)
+        .unwrap();
+    match &assistant.content[0] {
+        Content::ToolCall {
+            provider_metadata, ..
+        } => assert_eq!(
+            anthropic_cache_control(provider_metadata),
+            Some(&ephemeral())
+        ),
+        other => panic!("expected tool call, got {other:?}"),
+    }
+    let rendered = adapter.render_request(&prompt).unwrap();
+    let block = &rendered["messages"][0]["content"][0];
+    assert_eq!(block["type"], "tool_use");
+    assert_eq!(block["cache_control"], ephemeral());
+}
+
+/// `cache_control` is **not** emitted on a `thinking` block: Anthropic rejects
+/// it there (thinking blocks are cached implicitly in a prior assistant turn).
+/// Even when the canonical reasoning part carries an `anthropic.cacheControl`
+/// hint, the render must omit it from the `thinking` block.
+#[test]
+fn messages_cache_control_not_emitted_on_thinking_block() {
+    let adapter = messages::MessagesAdapter;
+    let mut meta = ProviderMetadata::new();
+    set_provider_metadata(&mut meta, "anthropic", "signature", "SIG-1".into());
+    set_provider_metadata(&mut meta, "anthropic", "cacheControl", ephemeral());
+    let reasoning = Content::Reasoning {
+        text: "thinking...".to_string(),
+        provider_metadata: meta,
+    };
+    let block = render_content_block_via_request(&adapter, &reasoning);
+    assert_eq!(block["type"], "thinking");
+    // The signature still rides (continuity), but cache_control must be absent.
+    assert_eq!(block["signature"], "SIG-1");
+    assert!(
+        block.get("cache_control").is_none(),
+        "Anthropic rejects cache_control on a thinking block; it must not be emitted"
+    );
+}
+
+/// System-prompt `cache_control` (the highest-value, most common Anthropic cache
+/// point) round-trips: a `cache_control` on the `system` block array is lifted
+/// into `system_provider_metadata` on parse and re-rendered as a cached
+/// `[{type:"text", text, cache_control}]` system block.
+#[test]
+fn messages_system_cache_control_round_trips() {
+    let adapter = messages::MessagesAdapter;
+    let body = serde_json::json!({
+        "model": "claude-3-5-sonnet",
+        "max_tokens": 64,
+        "system": [{
+            "type": "text",
+            "text": "You are a long, cacheable system prompt.",
+            "cache_control": { "type": "ephemeral" },
+        }],
+        "messages": [{ "role": "user", "content": "hi" }],
+    });
+    let prompt = adapter.parse_request(body).unwrap();
+    // The system text is collapsed, and the cache breakpoint is captured.
+    assert_eq!(
+        prompt.system.as_deref(),
+        Some("You are a long, cacheable system prompt.")
+    );
+    assert_eq!(
+        anthropic_cache_control(&prompt.system_provider_metadata),
+        Some(&ephemeral())
+    );
+    // It re-renders as a cached array-form system block (not a bare string).
+    let rendered = adapter.render_request(&prompt).unwrap();
+    let system = &rendered["system"];
+    assert!(
+        system.is_array(),
+        "system with a cache breakpoint renders as an array"
+    );
+    assert_eq!(system[0]["type"], "text");
+    assert_eq!(
+        system[0]["text"],
+        "You are a long, cacheable system prompt."
+    );
+    assert_eq!(system[0]["cache_control"], ephemeral());
+}
+
+/// A plain-string system prompt (no breakpoint) still renders as a bare string —
+/// the array form is reserved for the cached case.
+#[test]
+fn messages_system_without_cache_control_renders_as_string() {
+    let adapter = messages::MessagesAdapter;
+    let body = serde_json::json!({
+        "model": "claude-3-5-sonnet",
+        "max_tokens": 64,
+        "system": "plain system",
+        "messages": [{ "role": "user", "content": "hi" }],
+    });
+    let prompt = adapter.parse_request(body).unwrap();
+    assert!(prompt.system_provider_metadata.is_empty());
+    let rendered = adapter.render_request(&prompt).unwrap();
+    assert_eq!(rendered["system"], "plain system");
+}
+
+/// The OpenAI image `detail` hint round-trips through **Responses** symmetrically
+/// with Chat Completions: parsed off an `input_image` part under
+/// `provider_metadata["openai"]["detail"]` and rendered back onto `input_image`.
+#[test]
+fn responses_image_detail_round_trips_via_provider_metadata() {
+    let adapter = responses::ResponsesAdapter;
+    let body = serde_json::json!({
+        "model": "gpt-5",
+        "input": [{
+            "type": "message",
+            "role": "user",
+            "content": [{
+                "type": "input_image",
+                "image_url": format!("data:image/png;base64,{IMG_B64}"),
+                "detail": "high",
+            }],
+        }],
+    });
+    let prompt = adapter.parse_request(body).unwrap();
+    match &prompt.messages[0].content[0] {
+        Content::File {
+            provider_metadata, ..
+        } => assert_eq!(
+            provider_metadata
+                .get("openai")
+                .and_then(|o| o.get("detail")),
+            Some(&serde_json::Value::String("high".into()))
+        ),
+        other => panic!("expected file content, got {other:?}"),
+    }
+    let rendered = adapter.render_request(&prompt).unwrap();
+    // The rendered input carries the image part with its `detail` restored.
+    let image = rendered["input"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .flat_map(|item| item["content"].as_array().cloned().unwrap_or_default())
+        .find(|p| p["type"] == "input_image")
+        .expect("an input_image part was rendered");
+    assert_eq!(image["detail"], "high");
+}
+
+/// The OpenAI `detail` hint survives a Chat Completions → Responses hop: both
+/// speak the `openai` namespace, so the hint is expressed natively on the
+/// Responses `input_image` (unlike the cross-provider Anthropic case where it is
+/// preserved-but-not-expressed).
+#[test]
+fn openai_image_detail_crosses_chat_to_responses() {
+    let inbound = chat_completions::ChatCompletionsAdapter;
+    let outbound = responses::ResponsesAdapter;
+    let body = serde_json::json!({
+        "model": "gpt-4o",
+        "messages": [{
+            "role": "user",
+            "content": [{
+                "type": "image_url",
+                "image_url": { "url": "https://example.invalid/a.png", "detail": "low" },
+            }],
+        }],
+    });
+    let prompt = inbound.parse_request(body).unwrap();
+    let rendered = outbound.render_request(&prompt).unwrap();
+    let image = rendered["input"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .flat_map(|item| item["content"].as_array().cloned().unwrap_or_default())
+        .find(|p| p["type"] == "input_image")
+        .expect("an input_image part was rendered");
+    assert_eq!(
+        image["detail"], "low",
+        "the OpenAI detail hint is expressed natively on a same-namespace Responses hop"
+    );
+}
+
+/// Gemini `thoughtSignature` round-trips on a **functionCall** part (not just the
+/// thinking-part path): a tool call that continues a reasoning chain carries the
+/// signature, and it must reappear on the rendered `functionCall` part so a
+/// follow-up turn can replay the chain.
+#[test]
+fn generate_content_thought_signature_round_trips_on_function_call() {
+    let adapter = generate_content::GenerateContentAdapter;
+    let response = serde_json::json!({
+        "candidates": [{
+            "content": { "role": "model", "parts": [
+                {
+                    "functionCall": { "name": "get_weather", "args": { "city": "SF" } },
+                    "thoughtSignature": "TS-fc-1",
+                },
+            ] },
+            "finishReason": "STOP",
+            "index": 0,
+        }],
+        "usageMetadata": { "promptTokenCount": 1, "candidatesTokenCount": 1, "totalTokenCount": 2 },
+    });
+    let result = adapter.parse_response(response).unwrap();
+    match &result.content[0] {
+        Content::ToolCall {
+            name,
+            provider_metadata,
+            ..
+        } => {
+            assert_eq!(name, "get_weather");
+            assert_eq!(
+                provider_metadata
+                    .get("google")
+                    .and_then(|g| g.get("thoughtSignature")),
+                Some(&serde_json::Value::String("TS-fc-1".into()))
+            );
+        }
+        other => panic!("expected tool call, got {other:?}"),
+    }
+    // Re-render to a request: the signature reappears on the functionCall part.
+    let prompt = Prompt {
+        model: "gemini-2.0-flash".to_string(),
+        system: None,
+        system_provider_metadata: Default::default(),
+        messages: vec![Message {
+            role: Role::Assistant,
+            content: vec![result.content[0].clone()],
+        }],
+        tools: vec![],
+        params: GenerationParams::default(),
+        response_format: None,
+        stream: false,
+    };
+    let rendered = adapter.render_request(&prompt).unwrap();
+    let part = &rendered["contents"][0]["parts"][0];
+    assert!(part.get("functionCall").is_some());
+    assert_eq!(part["thoughtSignature"], "TS-fc-1");
 }

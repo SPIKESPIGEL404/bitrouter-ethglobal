@@ -132,16 +132,23 @@ fn parse_reasoning_metadata(block: &serde_json::Value, block_type: &str) -> Prov
 /// [`parse_reasoning_metadata`]. A `redactedThinking` flag re-emits a
 /// `redacted_thinking` block whose `data` is the preserved encrypted payload
 /// (falling back to `text` when absent); otherwise a `thinking` block, carrying
-/// its `signature` when one round-tripped. Any block-level `cache_control` is
-/// re-applied last.
+/// its `signature` when one round-tripped.
+///
+/// A `cache_control` breakpoint is intentionally **not** re-applied here:
+/// Anthropic rejects `cache_control` on `thinking` / `redacted_thinking` blocks
+/// (they are cached implicitly when they appear in a prior assistant turn), so
+/// the Vercel reference validates them with `canCache: false` and never emits
+/// the field. Any `cacheControl` that rode in `provider_metadata` is therefore
+/// dropped on render rather than producing a request the API would reject.
 /// <https://docs.anthropic.com/en/docs/build-with-claude/extended-thinking>
+/// <https://github.com/vercel/ai/blob/main/packages/anthropic/src/convert-to-anthropic-prompt.ts>
 fn render_reasoning_block(text: &str, meta: &ProviderMetadata) -> serde_json::Value {
     let ns = provider_namespace(meta, PROVIDER_ID_ANTHROPIC);
     let is_redacted = ns
         .and_then(|o| o.get(ANTHROPIC_REDACTED))
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
-    let mut block = if is_redacted {
+    if is_redacted {
         // Prefer the preserved encrypted payload; the canonical `text` mirrors
         // it on parse, so it is the correct fallback if metadata was stripped.
         let data = ns
@@ -155,9 +162,7 @@ fn render_reasoning_block(text: &str, meta: &ProviderMetadata) -> serde_json::Va
             obj["signature"] = sig.clone();
         }
         obj
-    };
-    apply_cache_control(&mut block, meta);
-    block
+    }
 }
 
 /// The Messages inbound + outbound protocol adapter.
@@ -363,6 +368,26 @@ fn parse_system(value: &serde_json::Value) -> String {
             .collect::<Vec<_>>()
             .join("\n"),
         _ => String::new(),
+    }
+}
+
+/// Lift a `cache_control` breakpoint off Anthropic's `system` field into a
+/// [`ProviderMetadata`] under `anthropic.cacheControl`. The system prefix is the
+/// highest-value, most common prompt-cache breakpoint; a string system carries
+/// none, while an array system carries it on a `{type:"text", text,
+/// cache_control}` block. The last block that carries `cache_control` wins — the
+/// cache boundary is the cumulative prefix up to the final breakpoint.
+/// <https://docs.anthropic.com/en/docs/build-with-claude/prompt-caching>
+fn parse_system_metadata(value: &serde_json::Value) -> ProviderMetadata {
+    match value {
+        serde_json::Value::Array(blocks) => blocks
+            .iter()
+            .rev()
+            .map(parse_cache_control)
+            .find(|m| !m.is_empty())
+            .unwrap_or_default(),
+        // A plain-string system has no place to carry `cache_control`.
+        _ => ProviderMetadata::new(),
     }
 }
 
@@ -732,6 +757,14 @@ impl InboundAdapter for MessagesAdapter {
             .as_ref()
             .map(parse_system)
             .filter(|s| !s.is_empty());
+        // Lift any system-block `cache_control` breakpoint into the parallel
+        // metadata slot so the highest-value prompt-cache point (the system
+        // prefix) survives — a bare `system: Option<String>` would flatten it.
+        let system_provider_metadata = req
+            .system
+            .as_ref()
+            .map(parse_system_metadata)
+            .unwrap_or_default();
 
         let mut messages = Vec::with_capacity(req.messages.len());
         for m in &req.messages {
@@ -746,14 +779,12 @@ impl InboundAdapter for MessagesAdapter {
                 messages.push(Message {
                     role: Role::Tool,
                     content: tool_results,
-                    provider_metadata: ProviderMetadata::new(),
                 });
             }
             if !rest.is_empty() {
                 messages.push(Message {
                     role,
                     content: rest,
-                    provider_metadata: ProviderMetadata::new(),
                 });
             }
         }
@@ -820,6 +851,7 @@ impl InboundAdapter for MessagesAdapter {
         Ok(Prompt {
             model: req.model,
             system,
+            system_provider_metadata,
             messages,
             tools,
             params: GenerationParams {
@@ -905,7 +937,27 @@ impl OutboundAdapter for MessagesAdapter {
         let mut req = serde_json::Map::new();
         req.insert("model".into(), prompt.model.clone().into());
         if let Some(system) = &prompt.system {
-            req.insert("system".into(), system.clone().into());
+            // When a system-prompt `cache_control` breakpoint round-tripped,
+            // re-render `system` as a cached `[{type:"text", text,
+            // cache_control}]` block (the Anthropic array form) rather than a
+            // bare string, so the highest-value cache point is preserved. With no
+            // breakpoint, the plain-string form is kept.
+            // <https://docs.anthropic.com/en/docs/build-with-claude/prompt-caching>
+            match cache_control_value(&prompt.system_provider_metadata) {
+                Some(cc) => {
+                    req.insert(
+                        "system".into(),
+                        serde_json::json!([{
+                            "type": "text",
+                            "text": system,
+                            "cache_control": cc,
+                        }]),
+                    );
+                }
+                None => {
+                    req.insert("system".into(), system.clone().into());
+                }
+            }
         }
         req.insert("messages".into(), messages.into());
         if !prompt.tools.is_empty() {
@@ -1581,12 +1633,13 @@ fn render_message(m: &Message) -> serde_json::Value {
     };
     let blocks: Vec<serde_json::Value> =
         m.content.iter().filter_map(render_content_block).collect();
-    let mut out = serde_json::json!({ "role": role, "content": blocks });
-    // A message may also carry a turn-level `cache_control` breakpoint (Anthropic
-    // accepts `cache_control` on a message, not only its blocks).
-    // <https://docs.anthropic.com/en/docs/build-with-claude/prompt-caching>
-    apply_cache_control(&mut out, &m.provider_metadata);
-    out
+    // No message-level `cache_control` is emitted: Anthropic rejects
+    // `cache_control` as a sibling of `role`/`content`. A turn-level cache
+    // breakpoint belongs on a content block, and the Vercel reference folds a
+    // message's `cacheControl` onto its last content block rather than the
+    // message object — so the per-block render above already covers caching.
+    // <https://github.com/vercel/ai/blob/main/packages/anthropic/src/convert-to-anthropic-prompt.ts>
+    serde_json::json!({ "role": role, "content": blocks })
 }
 
 fn parse_usage(value: &serde_json::Value) -> Option<Usage> {

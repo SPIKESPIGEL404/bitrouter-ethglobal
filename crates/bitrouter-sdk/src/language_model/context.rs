@@ -396,10 +396,10 @@ mod tests {
         Prompt {
             model: "gpt-5".into(),
             system: None,
+            system_provider_metadata: Default::default(),
             messages: vec![Message {
                 role: Role::User,
                 content: vec![],
-                provider_metadata: Default::default(),
             }],
             tools: vec![],
             params: Default::default(),

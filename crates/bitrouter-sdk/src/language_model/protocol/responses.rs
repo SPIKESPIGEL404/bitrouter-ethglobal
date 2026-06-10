@@ -30,7 +30,8 @@ use crate::language_model::stream::SseFrame;
 use crate::language_model::types::{
     ApiProtocol, Content, DataContent, FinishReason, GenerateResult, GenerationParams, Message,
     Prompt, ProviderMetadata, ResponseFormat, Role, RoutingTarget, Source, StreamPart, Tool,
-    ToolChoice, ToolResultContentPart, ToolResultOutput, Usage,
+    ToolChoice, ToolResultContentPart, ToolResultOutput, Usage, provider_namespace,
+    set_provider_metadata,
 };
 
 /// The Responses protocol adapter.
@@ -209,11 +210,26 @@ fn parse_responses_part(part: &serde_json::Value) -> Option<Content> {
         "input_image" => {
             let url = part.get("image_url").and_then(|u| u.as_str())?;
             let (media_type, data) = DataContent::from_url(url);
+            // The Responses `input_image` carries the same `detail` hint
+            // (`auto` | `low` | `high`) as Chat Completions' `image_url`; it is
+            // provider metadata, not a payload field. Preserve it under the
+            // `openai` namespace so it round-trips on a Responses request and
+            // survives a hop from a Chat Completions client (same namespace).
+            // <https://platform.openai.com/docs/api-reference/responses/create>
+            let mut provider_metadata = ProviderMetadata::new();
+            if let Some(detail) = part.get("detail").filter(|v| !v.is_null()) {
+                set_provider_metadata(
+                    &mut provider_metadata,
+                    PROVIDER_ID_OPENAI,
+                    "detail",
+                    detail.clone(),
+                );
+            }
             Some(Content::File {
                 media_type: media_type.unwrap_or_else(|| "image/*".to_string()),
                 data,
                 filename: None,
-                provider_metadata: ProviderMetadata::new(),
+                provider_metadata,
             })
         }
         "input_file" => {
@@ -375,11 +391,7 @@ fn parse_input(value: &serde_json::Value) -> Result<Vec<Message>> {
                         if let Some(role) = item.get("role").and_then(|r| r.as_str()) {
                             let role = parse_role(role)?;
                             let content = parse_responses_content(item.get("content"));
-                            messages.push(Message {
-                                role,
-                                content,
-                                provider_metadata: ProviderMetadata::new(),
-                            });
+                            messages.push(Message { role, content });
                         }
                     }
                     Some("function_call") => {
@@ -410,7 +422,6 @@ fn parse_input(value: &serde_json::Value) -> Result<Vec<Message>> {
                                 provider_executed: false,
                                 provider_metadata: ProviderMetadata::new(),
                             }],
-                            provider_metadata: ProviderMetadata::new(),
                         });
                     }
                     // OpenAI Responses `function_call_output {call_id, output}`:
@@ -438,7 +449,6 @@ fn parse_input(value: &serde_json::Value) -> Result<Vec<Message>> {
                                 output,
                                 provider_metadata: ProviderMetadata::new(),
                             }],
-                            provider_metadata: ProviderMetadata::new(),
                         });
                     }
                     Some("reasoning") => {
@@ -459,7 +469,6 @@ fn parse_input(value: &serde_json::Value) -> Result<Vec<Message>> {
                                     text,
                                     provider_metadata: ProviderMetadata::new(),
                                 }],
-                                provider_metadata: ProviderMetadata::new(),
                             });
                         }
                     }
@@ -581,6 +590,8 @@ impl InboundAdapter for ResponsesAdapter {
         Ok(Prompt {
             model: req.model,
             system,
+            // Responses carries no system-level `cache_control` on its wire.
+            system_provider_metadata: ProviderMetadata::new(),
             messages,
             tools,
             params: GenerationParams {
@@ -1107,12 +1118,24 @@ fn render_message_items(m: &Message) -> Vec<serde_json::Value> {
                 media_type,
                 data,
                 filename,
-                ..
+                provider_metadata,
             } => {
                 let part = if media_type.starts_with("image/") {
-                    serde_json::json!({
+                    let mut image = serde_json::json!({
                         "type": "input_image", "image_url": data.to_url(media_type)
-                    })
+                    });
+                    // Restore the OpenAI `detail` hint from the `openai`
+                    // namespace when it round-tripped through `provider_metadata`
+                    // (set by this protocol's parse path, or by Chat Completions'
+                    // image_url parse — same namespace).
+                    // <https://platform.openai.com/docs/api-reference/responses/create>
+                    if let Some(detail) = provider_namespace(provider_metadata, PROVIDER_ID_OPENAI)
+                        .and_then(|o| o.get("detail"))
+                        && let Some(obj) = image.as_object_mut()
+                    {
+                        obj.insert("detail".into(), detail.clone());
+                    }
+                    image
                 } else {
                     let mut file = serde_json::json!({
                         "type": "input_file", "file_data": data.to_url(media_type)

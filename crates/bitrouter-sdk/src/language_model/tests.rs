@@ -39,6 +39,7 @@ fn request() -> PipelineRequest {
     let prompt = Prompt {
         model: "test-model".to_string(),
         system: None,
+        system_provider_metadata: Default::default(),
         messages: vec![Message::text(Role::User, "hi")],
         tools: Vec::new(),
         params: GenerationParams::default(),
@@ -925,6 +926,7 @@ async fn executor_rejects_response_format_on_unsupported_outbound() {
     let prompt = Prompt {
         model: "m".into(),
         system: None,
+        system_provider_metadata: Default::default(),
         messages: vec![Message::text(Role::User, "hi")],
         tools: vec![],
         params: GenerationParams::default(),

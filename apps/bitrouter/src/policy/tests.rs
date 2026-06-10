@@ -17,6 +17,7 @@ fn ctx(model: &str, policy_id: Option<&str>) -> PipelineContext {
     let prompt = Prompt {
         model: model.to_string(),
         system: None,
+        system_provider_metadata: Default::default(),
         messages: vec![Message::text(Role::User, "hi")],
         tools: Vec::new(),
         params: GenerationParams::default(),
@@ -40,6 +41,7 @@ fn ctx_with_tools(tools: &[&str], policy_id: Option<&str>) -> PipelineContext {
     let prompt = Prompt {
         model: "m".to_string(),
         system: None,
+        system_provider_metadata: Default::default(),
         messages: vec![Message::text(Role::User, "hi")],
         tools: tools
             .iter()

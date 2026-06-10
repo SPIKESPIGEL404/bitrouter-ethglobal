@@ -185,11 +185,15 @@ pub enum Content {
         /// The reasoning text.
         text: String,
         /// Per-part namespaced provider metadata. Carries the reasoning trace's
-        /// cryptographic continuity tokens so multi-turn thinking round-trips:
-        /// Anthropic's thinking-block `signature` and the `redacted_thinking`
-        /// marker under `provider_metadata["anthropic"]`, and OpenAI/Gemini
-        /// reasoning continuity (`thoughtSignature` / encrypted reasoning) under
-        /// their own namespaces.
+        /// cryptographic continuity tokens so a multi-turn thinking conversation
+        /// round-trips: Anthropic's thinking-block `signature` and the
+        /// `redacted_thinking` marker under `provider_metadata["anthropic"]`, and
+        /// Gemini's `thoughtSignature` under `provider_metadata["google"]`.
+        ///
+        /// The OpenAI Responses reasoning parse does **not** populate this slot:
+        /// it lifts only the visible summary text and writes empty metadata, so
+        /// OpenAI's `encrypted_content` reasoning continuity is not yet captured
+        /// here (capturing it is future work, not an implied guarantee).
         /// <https://docs.anthropic.com/en/docs/build-with-claude/extended-thinking>
         #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
         provider_metadata: ProviderMetadata,
@@ -592,20 +596,23 @@ impl Source {
 }
 
 /// A single message in the conversation.
+///
+/// There is intentionally **no** message-level `provider_metadata` slot: no
+/// request wire carries metadata on a message *separate from its content
+/// blocks*. Anthropic prompt caching is expressed per content block (text /
+/// image / document / `tool_use` / `tool_result`), and message-level
+/// `cache_control` is not a distinct wire field — the Vercel AI SDK folds a
+/// message's `cacheControl` onto its **last** content block rather than emitting
+/// a sibling of `role`/`content` (which the Anthropic API rejects). Block-level
+/// [`Content`] metadata therefore covers every caching breakpoint, so a
+/// per-message slot would be unconstructed dead weight.
+/// <https://github.com/vercel/ai/blob/main/packages/anthropic/src/convert-to-anthropic-prompt.ts>
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Message {
     /// The speaker role.
     pub role: Role,
     /// Ordered content blocks.
     pub content: Vec<Content>,
-    /// Message-level namespaced provider metadata (V3 `providerMetadata` /
-    /// `providerOptions` on a prompt message). Anthropic also accepts
-    /// `cache_control` at the message level (not only per content block), so a
-    /// whole turn can mark a prompt-cache breakpoint; it rides here under
-    /// `provider_metadata["anthropic"]["cacheControl"]`.
-    /// <https://docs.anthropic.com/en/docs/build-with-claude/prompt-caching>
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub provider_metadata: ProviderMetadata,
 }
 
 impl Message {
@@ -617,7 +624,6 @@ impl Message {
                 text: text.into(),
                 provider_metadata: ProviderMetadata::new(),
             }],
-            provider_metadata: ProviderMetadata::new(),
         }
     }
 }
@@ -917,6 +923,21 @@ pub struct Prompt {
     /// providers (Anthropic) carry it out-of-band.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub system: Option<String>,
+    /// Namespaced provider metadata for the system instruction (V3
+    /// `providerOptions` on the system message). Kept parallel to [`Self::system`]
+    /// — rather than folded into a `SystemPrompt` shape — so the common
+    /// `system: Option<String>` reads stay untouched across every adapter.
+    ///
+    /// Its load-bearing use is Anthropic system-prompt **prompt caching**: a
+    /// system block may carry `cache_control` (`{"type":"ephemeral"}`), and the
+    /// system prefix is the highest-value, most common cache breakpoint. It rides
+    /// here under `system_provider_metadata["anthropic"]["cacheControl"]` so the
+    /// Messages adapter can re-render the system as a cached
+    /// `[{type:"text", text, cache_control}]` block instead of a bare string,
+    /// which a plain `Option<String>` would otherwise flatten away.
+    /// <https://docs.anthropic.com/en/docs/build-with-claude/prompt-caching>
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub system_provider_metadata: ProviderMetadata,
     /// Conversation messages, in order.
     pub messages: Vec<Message>,
     /// Tools available to the model.
@@ -1355,6 +1376,7 @@ mod tests {
         Prompt {
             model: "m".into(),
             system: None,
+            system_provider_metadata: Default::default(),
             messages: vec![],
             tools: vec![],
             params: GenerationParams::default(),
@@ -1437,7 +1459,6 @@ mod tests {
                 filename: None,
                 provider_metadata: Default::default(),
             }],
-            provider_metadata: Default::default(),
         }];
         p
     }
@@ -1488,7 +1509,6 @@ mod tests {
         p.messages = vec![Message {
             role: Role::User,
             content: vec![img(), img()],
-            provider_metadata: Default::default(),
         }];
         assert_eq!(p.required_capabilities(), vec![Capability::ImageInput]);
     }

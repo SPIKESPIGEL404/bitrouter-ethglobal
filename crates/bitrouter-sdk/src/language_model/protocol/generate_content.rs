@@ -731,14 +731,12 @@ impl InboundAdapter for GenerateContentAdapter {
                 messages.push(Message {
                     role: Role::Tool,
                     content: tool_results,
-                    provider_metadata: ProviderMetadata::new(),
                 });
             }
             if !rest.is_empty() {
                 messages.push(Message {
                     role,
                     content: rest,
-                    provider_metadata: ProviderMetadata::new(),
                 });
             }
         }
@@ -833,6 +831,8 @@ impl InboundAdapter for GenerateContentAdapter {
         Ok(Prompt {
             model: req.model,
             system: system.filter(|s| !s.is_empty()),
+            // Generate Content has no system-level `cache_control` on its wire.
+            system_provider_metadata: ProviderMetadata::new(),
             messages,
             tools,
             params,
