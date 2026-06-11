@@ -2069,6 +2069,18 @@ impl StreamDecoder for MessagesStreamDecoder {
                     }
                     return Ok(parts);
                 }
+                // Streaming MCP gap: a streamed `mcp_tool_use` block (a
+                // provider-executed remote MCP call) and its companion
+                // `mcp_tool_result` are not recognised here and fall to
+                // `BlockKind::Text`, so they are mishandled on this delta path —
+                // the streaming counterpart of the `web_search` `citations_delta`
+                // gap documented above. Surfacing them faithfully would require
+                // new cross-protocol `StreamPart` plumbing (the other encoders
+                // have no streaming MCP frame to target). The non-streaming
+                // handshake (`parse_response` / `render_response`) is the
+                // complete, faithful round trip; the streamed blocks are a
+                // deferred gap, not yet wired.
+                // <https://platform.claude.com/docs/en/agents-and-tools/mcp-connector>
                 let kind = match block.and_then(|b| b.get("type")).and_then(|t| t.as_str()) {
                     Some("thinking") | Some("redacted_thinking") => BlockKind::Thinking,
                     Some("tool_use") => BlockKind::ToolUse,

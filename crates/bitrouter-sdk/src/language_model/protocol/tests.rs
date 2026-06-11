@@ -4794,6 +4794,241 @@ fn responses_mcp_call_round_trips_inline_error() {
     );
 }
 
+/// A `dynamic` provider-executed MCP `ToolCall` that reaches the Responses render
+/// WITHOUT its paired inline `ToolResult` (e.g. an upstream truncated the response
+/// after the call but before its inline result, then routed to a Responses client)
+/// must degrade to a VALID `function_call` item — never to an `mcp.<name>_call` /
+/// `<name>_call` item, which is not a Responses output item type.
+#[test]
+fn responses_unpaired_dynamic_mcp_call_degrades_to_function_call() {
+    let adapter = adapter_for(ApiProtocol::Responses);
+    let result = GenerateResult {
+        content: vec![Content::ToolCall {
+            // The `mcp.` prefix is what `parse_mcp_call` stamps on an MCP tool
+            // name; if this leaked into the `<name>_call` branch it would emit
+            // the invalid `mcp.search_docs_call`.
+            id: "mcp_1".to_string(),
+            name: "mcp.search_docs".to_string(),
+            arguments: "{\"q\":\"x\"}".to_string(),
+            provider_executed: true,
+            dynamic: true,
+            provider_metadata: Default::default(),
+        }],
+        usage: None,
+        finish_reason: Some(FinishReason::Length),
+        response_id: None,
+        stop_details: None,
+        provider_metadata: Default::default(),
+    };
+    let rendered = adapter
+        .render_response(&result, &sample_prompt(), "resp_1")
+        .unwrap();
+    let output = rendered["output"].as_array().unwrap();
+    // Exactly one item, and it is a valid `function_call` — not `<name>_call`.
+    assert_eq!(output.len(), 1, "the lone unpaired call yields one item");
+    let item = &output[0];
+    assert_eq!(
+        item["type"], "function_call",
+        "an unpaired dynamic MCP call must degrade to a valid function_call"
+    );
+    assert_eq!(item["call_id"], "mcp_1");
+    assert_eq!(item["name"], "mcp.search_docs");
+    assert_eq!(item["arguments"], "{\"q\":\"x\"}");
+    // The bug being closed: no invalid `<name>_call` / `mcp_call` item is emitted.
+    assert!(
+        output.iter().all(|i| i["type"] != "search_docs_call"
+            && i["type"] != "mcp.search_docs_call"
+            && i["type"] != "mcp_call"),
+        "no invalid `<name>_call` (or `mcp_call`) item for an unpaired dynamic MCP call"
+    );
+}
+
+/// Multiple `mcp_call`s interleaved with a regular `function_call` in one Responses
+/// response: each MCP call recombines with ITS OWN inline result by `call_id` (no
+/// cross-contamination, none dropped or duplicated), and the regular `function_call`
+/// renders independently alongside (the response wire carries no
+/// `function_call_output` — that is an input item, exercised by the request-side
+/// test below).
+#[test]
+fn responses_interleaved_mcp_calls_recombine_per_call_id() {
+    let adapter = adapter_for(ApiProtocol::Responses);
+    let body = serde_json::json!({
+        "id": "resp_1",
+        "status": "completed",
+        "output": [
+            {
+                "type": "mcp_call",
+                "id": "mcp_a",
+                "server_label": "srv-a",
+                "name": "lookup",
+                "arguments": "{\"q\":\"a\"}",
+                "output": "answer-a"
+            },
+            // A regular function call interleaved between the two MCP calls.
+            {
+                "type": "function_call",
+                "id": "fc_item_1",
+                "call_id": "fc_1",
+                "name": "calculator",
+                "arguments": "{\"op\":\"add\"}"
+            },
+            {
+                "type": "mcp_call",
+                "id": "mcp_b",
+                "server_label": "srv-b",
+                "name": "search",
+                "arguments": "{\"q\":\"b\"}",
+                "output": "answer-b"
+            }
+        ]
+    });
+    let parsed = adapter.parse_response(body).unwrap();
+    let rendered = adapter
+        .render_response(&parsed, &sample_prompt(), "resp_1")
+        .unwrap();
+    let output = rendered["output"].as_array().unwrap();
+
+    // Exactly two mcp_call items, each carrying its OWN result — no cross-talk.
+    let mcp_items: Vec<_> = output.iter().filter(|i| i["type"] == "mcp_call").collect();
+    assert_eq!(mcp_items.len(), 2, "two mcp_calls recombine into two items");
+    let item_a = mcp_items
+        .iter()
+        .find(|i| i["id"] == "mcp_a")
+        .expect("the first mcp_call");
+    assert_eq!(item_a["server_label"], "srv-a");
+    assert_eq!(item_a["name"], "lookup");
+    assert_eq!(item_a["arguments"], "{\"q\":\"a\"}");
+    assert_eq!(item_a["output"], "answer-a", "call a keeps its own result");
+    let item_b = mcp_items
+        .iter()
+        .find(|i| i["id"] == "mcp_b")
+        .expect("the second mcp_call");
+    assert_eq!(item_b["server_label"], "srv-b");
+    assert_eq!(item_b["name"], "search");
+    assert_eq!(item_b["arguments"], "{\"q\":\"b\"}");
+    assert_eq!(item_b["output"], "answer-b", "call b keeps its own result");
+
+    // The interleaved regular function call renders independently as its own
+    // `function_call` item (not recombined into, or contaminated by, either MCP
+    // call).
+    let fc = output
+        .iter()
+        .find(|i| i["type"] == "function_call")
+        .expect("the regular function_call");
+    assert_eq!(fc["call_id"], "fc_1");
+    assert_eq!(fc["name"], "calculator");
+
+    // Nothing dropped or duplicated: exactly 2 mcp_call + 1 function_call, and no
+    // dynamic MCP pair leaked as a plain function item.
+    assert_eq!(
+        output.len(),
+        3,
+        "two mcp_calls + one independent function_call, none dropped/duplicated"
+    );
+}
+
+/// On the REQUEST (input) wire, a regular `function_call` + its
+/// `function_call_output` interleaved with a dynamic MCP call/result pair render
+/// independently: the regular pair survives as `function_call` + `function_call_output`,
+/// while the provider-executed MCP pair is dropped (not replayed on the input wire,
+/// matching the AI SDK) — no cross-contamination either way.
+#[test]
+fn responses_request_function_call_pair_independent_of_dynamic_mcp() {
+    let adapter = adapter_for(ApiProtocol::Responses);
+    let prompt = Prompt {
+        model: "test-model".to_string(),
+        system: None,
+        system_provider_metadata: Default::default(),
+        messages: vec![Message {
+            role: Role::Assistant,
+            content: vec![
+                // A regular client function call + its output.
+                Content::ToolCall {
+                    id: "fc_1".to_string(),
+                    name: "calculator".to_string(),
+                    arguments: "{\"op\":\"add\"}".to_string(),
+                    provider_executed: false,
+                    dynamic: false,
+                    provider_metadata: Default::default(),
+                },
+                Content::ToolResult {
+                    call_id: "fc_1".to_string(),
+                    tool_name: Some("calculator".to_string()),
+                    output: ToolResultOutput::Json {
+                        value: serde_json::json!({ "sum": 42 }),
+                    },
+                    dynamic: false,
+                    provider_metadata: Default::default(),
+                },
+                // A dynamic provider-executed MCP call + its inline result,
+                // interleaved. Both must drop on the input wire.
+                Content::ToolCall {
+                    id: "mcp_1".to_string(),
+                    name: "mcp.lookup".to_string(),
+                    arguments: "{\"q\":\"x\"}".to_string(),
+                    provider_executed: true,
+                    dynamic: true,
+                    provider_metadata: Default::default(),
+                },
+                Content::ToolResult {
+                    call_id: "mcp_1".to_string(),
+                    tool_name: Some("mcp.lookup".to_string()),
+                    output: ToolResultOutput::Json {
+                        value: serde_json::json!({
+                            "type": "call", "name": "lookup", "output": "answer"
+                        }),
+                    },
+                    dynamic: true,
+                    provider_metadata: Default::default(),
+                },
+            ],
+        }],
+        tools: vec![],
+        params: GenerationParams::default(),
+        response_format: None,
+        stream: false,
+    };
+    let rendered = adapter.render_request(&prompt).unwrap();
+    let input = rendered["input"].as_array().unwrap();
+
+    // The regular function_call + function_call_output both render, keyed to fc_1.
+    let fc = input
+        .iter()
+        .find(|i| i["type"] == "function_call")
+        .expect("the regular function_call");
+    assert_eq!(fc["call_id"], "fc_1");
+    assert_eq!(fc["name"], "calculator");
+    let fc_out = input
+        .iter()
+        .find(|i| i["type"] == "function_call_output")
+        .expect("the regular function_call_output");
+    assert_eq!(fc_out["call_id"], "fc_1");
+
+    // The dynamic MCP pair is dropped on the input wire (not replayed), and it did
+    // not contaminate the regular pair: exactly one function_call + one
+    // function_call_output, no mcp_call, no second function_call for `mcp_1`.
+    assert!(
+        input.iter().all(|i| i["type"] != "mcp_call"),
+        "a provider-executed MCP call is not replayed as an input item"
+    );
+    assert_eq!(
+        input
+            .iter()
+            .filter(|i| i["type"] == "function_call")
+            .count(),
+        1,
+        "only the regular client call renders; the MCP call does not leak as one"
+    );
+    assert_eq!(
+        input
+            .iter()
+            .filter(|i| i["type"] == "function_call_output")
+            .count(),
+        1,
+        "only the regular client result renders; the MCP result does not leak as one"
+    );
+}
+
 /// A Responses `local_shell_call` parses to a client `ToolCall` named
 /// `local_shell` whose `action` is preserved, and renders back to a
 /// `local_shell_call` item (same-protocol round-trip of the call).

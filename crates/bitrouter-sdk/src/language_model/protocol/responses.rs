@@ -722,8 +722,12 @@ fn parse_input(value: &serde_json::Value) -> Result<Vec<Message>> {
                     // An `mcp_call` echoed back into the request `input[]` (a
                     // stateless client replaying the assistant turn) is lowered to
                     // the same `dynamic` `ToolCall` + inline `ToolResult` pair as
-                    // on the response side, carried as one assistant message so a
-                    // same-protocol round-trip is symmetric.
+                    // on the response side, carried as one assistant message. This
+                    // is symmetric in IR-lowering only: `render_request` then drops
+                    // the dynamic pair (a provider-executed call is not replayed on
+                    // the input wire, mirroring the AI SDK), so the pair survives a
+                    // request→response re-render, not a request→request one.
+                    // <https://github.com/vercel/ai/blob/8e650ab809ac47de5d16f26bf544a9a73b0d39a3/packages/openai/src/responses/convert-to-openai-responses-input.ts>
                     Some("mcp_call") => {
                         messages.push(Message {
                             role: Role::Assistant,
@@ -1855,9 +1859,12 @@ fn render_output_items(result: &GenerateResult) -> Vec<serde_json::Value> {
             // A `dynamic` provider-executed MCP call recombines with its inline
             // result — the same-id `ToolResult` carrying the `{type:'call', …}`
             // body — back into ONE `mcp_call` item, so the inline output/error
-            // round-trips. If no such paired result is present (e.g. the call was
-            // routed in from a non-Responses wire), fall through and degrade the
-            // call to a plain `function_call`.
+            // round-trips. If no such paired result is present (e.g. an upstream
+            // truncated the response after the call but before its inline result,
+            // or the call was routed in from a non-Responses wire), the call is
+            // degraded to a plain `function_call` below — it must NOT fall into
+            // the `{name}_call` server-tool branch, which would emit an invalid
+            // `mcp.<name>_call` item the Responses API does not define.
             if *dynamic
                 && *provider_executed
                 && let Some(item) = result
@@ -1891,12 +1898,16 @@ fn render_output_items(result: &GenerateResult) -> Vec<serde_json::Value> {
                 items.push(item);
                 continue;
             }
-            if *provider_executed {
+            if *provider_executed && !*dynamic {
                 // Reproduce the provider-executed server-tool output item on the
                 // same wire. The Responses API names these items `<tool>_call`
                 // (e.g. `web_search_call`) and keys them by item `id` rather than
                 // `call_id`. `code_interpreter_call` carries its `code` /
                 // `container_id` back out; the others have no echoed input.
+                // A `dynamic` MCP call is deliberately excluded here: its native
+                // shape is `mcp_call` (emitted only when its inline result is
+                // paired, above), and `mcp.<name>_call` is not a valid Responses
+                // item type — an unpaired one degrades to `function_call` instead.
                 // <https://github.com/vercel/ai/blob/8e650ab809ac47de5d16f26bf544a9a73b0d39a3/packages/openai/src/responses/openai-responses-language-model.ts>
                 let mut item = serde_json::Map::new();
                 item.insert("type".into(), format!("{name}_call").into());
@@ -1914,6 +1925,10 @@ fn render_output_items(result: &GenerateResult) -> Vec<serde_json::Value> {
                 }
                 items.push(serde_json::Value::Object(item));
             } else {
+                // A client `function_call`, or a `dynamic` MCP call whose inline
+                // result was not paired (handled above): both render as a valid
+                // `function_call` item. The MCP tool name keeps its `mcp.` prefix
+                // so a downstream consumer can still recover the bare tool name.
                 items.push(serde_json::json!({
                     "type": "function_call",
                     "call_id": id,
@@ -2152,6 +2167,19 @@ impl StreamDecoder for ResponsesStreamDecoder {
                                 arguments: String::new(),
                             });
                         }
+                        // Streaming MCP gap: a streamed `mcp_call` item (a
+                        // provider-executed remote MCP call with its inline
+                        // result) is currently dropped on this delta path — like
+                        // the `mcp_approval_request` gap documented above, it has
+                        // no `StreamPart` variant to carry the call+inline-result
+                        // pair, and surfacing it would require new cross-protocol
+                        // `StreamPart` plumbing the other encoders cannot yet
+                        // target. The non-streaming handshake (`parse_response` /
+                        // `render_output_items`) is the complete, faithful round
+                        // trip; a streamed `mcp_call` is simply not emitted as a
+                        // delta here. Deferred, not lost.
+                        // <https://platform.openai.com/docs/api-reference/responses-streaming>
+                        "mcp_call" => {}
                         _ => {}
                     }
                 }
