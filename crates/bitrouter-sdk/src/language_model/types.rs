@@ -642,13 +642,14 @@ impl DataContent {
 /// the response (see `synthesize_source_id` in each adapter) so the required
 /// field is always populated without inventing identity the wire never carried.
 ///
-/// The V3 per-source `providerMetadata` (e.g. Anthropic `cited_text` /
-/// `encrypted_index`, a document citation's page/char ranges) is intentionally
-/// **not** modeled here yet — it is deferred to the separate provider-metadata
-/// task that adds a metadata slot uniformly across the content parts. Its
-/// absence is why the text-to-source linkage (`cited_text` and char/page
-/// offsets) cannot cross faithfully today; that loss is inherent to the current
-/// parity target, not to any one adapter.
+/// The enclosing [`Content::Source`] part carries the uniform
+/// `provider_metadata` slot (the V3 `providerMetadata` mechanism), but the
+/// specific Anthropic citation sub-fields — `cited_text` / `encrypted_index`
+/// and a document citation's page/char ranges — are **not** lifted into it:
+/// they are never parsed or rendered. That is why the text-to-source linkage
+/// (`cited_text` and char/page offsets) cannot cross faithfully today; the loss
+/// is inherent to the current parity target (V3 `Source` carries only
+/// id/url/title/mediaType/filename), not to any one adapter.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "source_type", rename_all = "snake_case")]
 pub enum Source {
