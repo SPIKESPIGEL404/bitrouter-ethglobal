@@ -629,8 +629,10 @@ async fn disconnect_before_usage_bills_estimated_output() {
     let entries = captured.lock().unwrap().clone();
     assert_eq!(entries.len(), 1, "exactly one settlement recorded");
     let (prompt, completion) = entries[0];
-    // Prompt-tokens not plumbed through StreamContext yet — known gap.
-    assert_eq!(prompt, 0, "prompt-token estimate is the documented gap");
+    // Prompt tokens are now seeded into the `StreamContext` and billed on
+    // disconnect even though the upstream usage frame never arrived: the
+    // request prompt is `"hi"` (2 chars), so ceil(2/4) = 1 token.
+    assert_eq!(prompt, 1, "prompt-token estimate billed on disconnect");
     assert!(
         completion >= 1,
         "completion-token estimate must be non-zero ({completion}); ~31 chars / 4 ≈ 8 tokens"
@@ -950,4 +952,117 @@ async fn executor_rejects_response_format_on_unsupported_outbound() {
         }
         other => panic!("expected BadRequest, got {other:?}"),
     }
+}
+
+// ===== non-streaming client-disconnect billing (OpenRouter parity) =====
+
+/// An executor whose `execute` blocks on a gate until the test releases it, so
+/// the test can deterministically drop the request future *while the upstream
+/// call is still in flight* — the exact shape of a mid-request client
+/// disconnect.
+struct GatedExecutor {
+    gate: Arc<tokio::sync::Notify>,
+    usage: (u64, u64),
+}
+#[async_trait]
+impl Executor for GatedExecutor {
+    async fn execute(
+        &self,
+        target: &RoutingTarget,
+        _prompt: &Prompt,
+        _ctx: &PipelineContext,
+    ) -> Result<ExecutionResult> {
+        self.gate.notified().await;
+        let (prompt_tokens, completion_tokens) = self.usage;
+        Ok(ExecutionResult {
+            provider_id: target.provider_name.clone(),
+            model_id: target.service_id.clone(),
+            account_label: target.account_label.clone(),
+            result: GenerateResult {
+                content: vec![Content::Text {
+                    text: "done".into(),
+                    provider_metadata: Default::default(),
+                }],
+                usage: Some(Usage {
+                    prompt_tokens,
+                    completion_tokens,
+                    ..Default::default()
+                }),
+                finish_reason: Some(FinishReason::Stop),
+                response_id: None,
+                stop_details: None,
+                provider_metadata: Default::default(),
+            },
+            latency_ms: 1,
+            generation_time_ms: 1,
+        })
+    }
+    async fn execute_stream(
+        &self,
+        _target: &RoutingTarget,
+        _prompt: &Prompt,
+        _ctx: &PipelineContext,
+    ) -> Result<StreamPartStream> {
+        Err(BitrouterError::internal(
+            "GatedExecutor: streaming not used",
+        ))
+    }
+}
+
+#[tokio::test]
+async fn nonstream_execute_detached_returns_full_usage_when_connected() {
+    let captured = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let pipeline = pipeline_with(
+        routing_table(&["openai"]),
+        Arc::new(MockExecutor::always_text("hello")),
+        |b| {
+            b.settlement_recorder(UsageCapturingRecorder(captured.clone()));
+        },
+    );
+
+    let resp = pipeline
+        .clone()
+        .execute_detached(request())
+        .await
+        .expect("connected request succeeds");
+    assert_eq!(resp.result.content.len(), 1);
+    // `always_text` reports usage (prompt=10, completion=5).
+    assert_eq!(captured.lock().unwrap().clone(), vec![(10, 5)]);
+}
+
+#[tokio::test]
+async fn nonstream_disconnect_still_runs_to_completion_and_bills_full() {
+    let captured = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let gate = Arc::new(tokio::sync::Notify::new());
+    let pipeline = pipeline_with(
+        routing_table(&["openai"]),
+        Arc::new(GatedExecutor {
+            gate: gate.clone(),
+            usage: (7, 11),
+        }),
+        |b| {
+            b.settlement_recorder(UsageCapturingRecorder(captured.clone()));
+        },
+    );
+
+    // Start the request, then drop the handler future before it resolves —
+    // exactly what axum does to the handler when the client disconnects. The
+    // upstream call is gated, so the detached task cannot have finished yet.
+    let mut fut = Box::pin(pipeline.clone().execute_detached(request()));
+    assert!(
+        futures::poll!(fut.as_mut()).is_pending(),
+        "detached task spawned but gated; handler future still pending"
+    );
+    drop(fut); // client disconnected
+
+    // The request must still run to completion and settle the real full usage.
+    gate.notify_one();
+    let drained = pipeline.drain_pending_settlements().await;
+    assert!(drained >= 1, "the detached execution was awaited on drain");
+
+    assert_eq!(
+        captured.lock().unwrap().clone(),
+        vec![(7, 11)],
+        "non-stream disconnect bills the full upstream usage, not zero"
+    );
 }
