@@ -12,7 +12,8 @@ use crate::event::{EventBus, PipelineEvent};
 use crate::language_model::settlement::SettlementContext;
 use crate::language_model::stream::UsageAccumulator;
 use crate::language_model::types::{
-    Content, ExecutionResult, PipelineRequest, PipelineResponse, Prompt, RoutingTarget, Usage,
+    ApiProtocol, Content, ExecutionResult, PipelineRequest, PipelineResponse, Prompt,
+    RoutingTarget, Usage,
 };
 use crate::plugin::PluginId;
 
@@ -52,6 +53,10 @@ pub struct PipelineContext {
     caller: CallerContext,
     headers: http::HeaderMap,
     prompt: Prompt,
+    /// The inbound wire protocol (Stage 0). Route resolution uses it to prefer
+    /// a native, same-protocol upstream. `None` when the request was built
+    /// without a known inbound protocol.
+    inbound_protocol: Option<ApiProtocol>,
 
     // ===== accumulated: written per stage, readable downstream =====
     /// The resolved fallback chain (Stage 2).
@@ -92,6 +97,7 @@ impl PipelineContext {
             caller: req.caller,
             headers: req.headers,
             prompt: req.prompt,
+            inbound_protocol: req.inbound_protocol,
             route_chain: None,
             execution_result: None,
             metadata: HashMap::new(),
@@ -156,6 +162,12 @@ impl PipelineContext {
     /// The canonical request body.
     pub fn prompt(&self) -> &Prompt {
         &self.prompt
+    }
+
+    /// The inbound wire protocol the request arrived on, if known. Route
+    /// resolution uses it to prefer a native (same-protocol) upstream.
+    pub fn inbound_protocol(&self) -> Option<ApiProtocol> {
+        self.inbound_protocol.clone()
     }
 
     /// Replace the canonical model name (used after preset/variant stripping).
@@ -412,6 +424,7 @@ mod tests {
             caller: CallerContext::local(),
             headers: http::HeaderMap::new(),
             prompt,
+            inbound_protocol: None,
         };
         PipelineContext::new(req)
     }
@@ -485,6 +498,19 @@ mod tests {
         ctx.apply_preset_overrides(&PromptOverrides::default());
         assert!(ctx.prompt().system.is_none());
         assert!(ctx.prompt().params.extra.is_empty());
+    }
+
+    #[test]
+    fn inbound_protocol_threads_from_request_to_context() {
+        // The HTTP server stamps the inbound protocol on the request; the
+        // context exposes it to route resolution. `None` when unset.
+        let mut req = PipelineRequest::new("m", CallerContext::local(), empty_prompt());
+        assert_eq!(PipelineContext::new(req.clone()).inbound_protocol(), None);
+        req.inbound_protocol = Some(ApiProtocol::Messages);
+        assert_eq!(
+            PipelineContext::new(req).inbound_protocol(),
+            Some(ApiProtocol::Messages)
+        );
     }
 
     fn prompt_with_text(system: Option<&str>, user_text: &str) -> Prompt {

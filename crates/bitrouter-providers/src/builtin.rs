@@ -110,7 +110,22 @@ mod tests {
         use bitrouter_sdk::language_model::types::ApiProtocol;
         assert_eq!(
             entry.api_protocol.resolve("gpt-4o"),
-            Some(ApiProtocol::ChatCompletions)
+            Some(vec![ApiProtocol::ChatCompletions])
+        );
+    }
+
+    #[test]
+    fn openai_advertises_chat_and_responses() {
+        use bitrouter_sdk::language_model::types::ApiProtocol;
+        // OpenAI serves the same models over both Chat Completions and the
+        // Responses API at one base URL. Advertising the ordered set lets
+        // protocol-native routing honour an inbound Responses request without
+        // per-request config, while Chat Completions stays the preferred head
+        // (the default for any other inbound protocol).
+        let openai = find("openai").unwrap();
+        assert_eq!(
+            openai.api_protocol.resolve("gpt-5.5"),
+            Some(vec![ApiProtocol::ChatCompletions, ApiProtocol::Responses])
         );
     }
 
@@ -135,30 +150,30 @@ mod tests {
         // GPT family → Responses (zen serves them via /responses).
         assert_eq!(
             zen.api_protocol.resolve("opencode/gpt-5.5"),
-            Some(ApiProtocol::Responses)
+            Some(vec![ApiProtocol::Responses])
         );
         assert_eq!(
             zen.api_protocol.resolve("opencode/gpt-5.3-codex"),
-            Some(ApiProtocol::Responses)
+            Some(vec![ApiProtocol::Responses])
         );
         // Claude family → Messages.
         assert_eq!(
             zen.api_protocol.resolve("opencode/claude-opus-4.7"),
-            Some(ApiProtocol::Messages)
+            Some(vec![ApiProtocol::Messages])
         );
         // Gemini family → Google.
         assert_eq!(
             zen.api_protocol.resolve("opencode/gemini-3.1-pro"),
-            Some(ApiProtocol::GenerateContent)
+            Some(vec![ApiProtocol::GenerateContent])
         );
         // Everything else (qwen, glm, kimi, minimax, …) → Chat Completions.
         assert_eq!(
             zen.api_protocol.resolve("opencode/qwen3.6-plus"),
-            Some(ApiProtocol::ChatCompletions)
+            Some(vec![ApiProtocol::ChatCompletions])
         );
         assert_eq!(
             zen.api_protocol.resolve("opencode/minimax-m2.7"),
-            Some(ApiProtocol::ChatCompletions)
+            Some(vec![ApiProtocol::ChatCompletions])
         );
     }
 
@@ -169,20 +184,20 @@ mod tests {
         // MiniMax → Messages (go serves MiniMax via /messages).
         assert_eq!(
             go.api_protocol.resolve("opencode-go/minimax-m2.7"),
-            Some(ApiProtocol::Messages)
+            Some(vec![ApiProtocol::Messages])
         );
         // Everyone else (glm, kimi, deepseek, mimo, qwen) → Chat Completions.
         assert_eq!(
             go.api_protocol.resolve("opencode-go/glm-5.1"),
-            Some(ApiProtocol::ChatCompletions)
+            Some(vec![ApiProtocol::ChatCompletions])
         );
         assert_eq!(
             go.api_protocol.resolve("opencode-go/kimi-k2.6"),
-            Some(ApiProtocol::ChatCompletions)
+            Some(vec![ApiProtocol::ChatCompletions])
         );
         assert_eq!(
             go.api_protocol.resolve("opencode-go/deepseek-v4-pro"),
-            Some(ApiProtocol::ChatCompletions)
+            Some(vec![ApiProtocol::ChatCompletions])
         );
     }
 
@@ -209,22 +224,22 @@ mod tests {
         // Claude family → Messages.
         assert_eq!(
             copilot.api_protocol.resolve("claude-sonnet-4.6"),
-            Some(ApiProtocol::Messages)
+            Some(vec![ApiProtocol::Messages])
         );
         // GPT-5-codex → Responses (chat-completions returns 404 in
         // Copilot for these models).
         assert_eq!(
             copilot.api_protocol.resolve("gpt-5.3-codex"),
-            Some(ApiProtocol::Responses)
+            Some(vec![ApiProtocol::Responses])
         );
         // Default → Chat Completions.
         assert_eq!(
             copilot.api_protocol.resolve("gpt-4o"),
-            Some(ApiProtocol::ChatCompletions)
+            Some(vec![ApiProtocol::ChatCompletions])
         );
         assert_eq!(
             copilot.api_protocol.resolve("gemini-2.5-pro"),
-            Some(ApiProtocol::ChatCompletions)
+            Some(vec![ApiProtocol::ChatCompletions])
         );
     }
 
