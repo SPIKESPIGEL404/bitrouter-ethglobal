@@ -17,14 +17,19 @@ use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use bitrouter_attestation::IntegrityProof;
 use bitrouter_pay::{
     payment::x402::{build_transfer_authorization_typed_data, TransferAuthorization},
-    run_attested_inference, ArcSigner, AGENT_WALLET_ADDRESS, ARC_TESTNET_CAIP2,
+    run_attested_inference, ArcMppBackend, ArcSigner, MppBackend, MppClient,
+    AGENT_WALLET_ADDRESS, ARC_TESTNET_CAIP2,
 };
 use serde_json::{json, Value};
 
 const WALLET_NAME: &str = "agent-treasury";
 const PROCEEDS_URL: &str =
     "https://myproceeds.xyz/api/x402/pay/cmqblj2m60004l704lp0jmr7u/infer";
-const MODEL: &str = "gemma4";
+/// BitRouter MPP endpoint used as a fallback when the Proceeds x402 upstream is
+/// unavailable. BitRouter speaks MPP natively via `mpp-br`; Proceeds is x402-only.
+const BITROUTER_MPP_URL: &str =
+    "https://gumball-country-monologue.ngrok-free.dev/v1/chat/completions";
+const MODEL: &str = "qwen3.6";
 const PROMPT: &str = "You are an AI agent. You just paid for your own inference \
     using USDC on Arc testnet. Describe what just happened in one sentence.";
 
@@ -208,14 +213,44 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         match tx {
             Some(h) => {
                 println!("[CHAIN] USDC transferred on Arc testnet — txHash: {h}");
-                println!("[MODEL] Response: <Proceeds upstream returned {status2} — payment still on-chain>\n");
+                // Proceeds settled payment but could not reach its model backend.
+                // BitRouter supports MPP natively, so fall back to it for the reply.
+                println!(
+                    "[FALLBACK] Proceeds upstream returned {status2}; retrying via BitRouter MPP..."
+                );
+                let mpp = MppClient::new(std::sync::Arc::new(ArcMppBackend::new(signer.clone()))
+                    as std::sync::Arc<dyn MppBackend>);
+                match mpp.post(BITROUTER_MPP_URL, Some(request_body.clone())).await {
+                    Ok(body) => {
+                        let reply = body
+                            .pointer("/choices/0/message/content")
+                            .and_then(Value::as_str)
+                            .map(str::to_string);
+                        match &reply {
+                            Some(text) => {
+                                println!("[MODEL] Response (via BitRouter MPP): {text}\n")
+                            }
+                            None => println!(
+                                "[MODEL] Response body (unexpected MPP format):\n{}\n",
+                                serde_json::to_string_pretty(&body).unwrap_or_default()
+                            ),
+                        }
+                        reply
+                    }
+                    Err(e) => {
+                        println!(
+                            "[MODEL] Response: <Proceeds upstream {status2}; MPP fallback failed: {e}>\n"
+                        );
+                        None
+                    }
+                }
             }
             None => {
                 println!("[CHAIN] payment was NOT confirmed on-chain ({status2})");
                 println!("[MODEL] Response: <payment failed>\n");
+                None
             }
         }
-        None
     };
 
     // ── Chainlink TEE attestation ─────────────────────────────────────────────
