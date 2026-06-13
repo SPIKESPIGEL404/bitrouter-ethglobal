@@ -18,12 +18,14 @@ path = "src/main.rs"
 
 [dependencies]
 bitrouter-sdk = { workspace = true, features = ["server", "config_file", "mcp", "acp"] }
+bitrouter-attestation.workspace = true
 bitrouter-cloud-sdk.workspace = true
 bitrouter-providers = { workspace = true, features = ["pkce"] }
 bitrouter-skills.workspace = true
 bitrouter-guardrails.workspace = true
 bitrouter-observe = { workspace = true, features = ["otel-http"] }
 bitrouter-chainlink = { workspace = true, optional = true }
+bitrouter-attestation-plugin = { workspace = true, optional = true }
 bitrouter-mcp = { path = "../../mcp", version = "1.0.0-alpha.14" }
 chrono.workspace = true
 sha2.workspace = true
@@ -40,6 +42,7 @@ clap.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 async-trait.workspace = true
+futures.workspace = true
 reqwest.workspace = true
 anyhow = "1"
 thiserror.workspace = true
@@ -47,12 +50,11 @@ thiserror.workspace = true
 [features]
 # Off-by-default hackathon demo: route the `chainlink_confidential` protocol to
 # the Chainlink Confidential Inference executor. A plain build excludes it.
-chainlink-demo = ["dep:bitrouter-chainlink"]
+chainlink-demo = ["dep:bitrouter-chainlink", "dep:bitrouter-attestation-plugin"]
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["full"] }
 wiremock = "0.6"
-futures.workspace = true
 tower = { workspace = true, features = ["util"] }
 axum.workspace = true
 axum-test = "20"

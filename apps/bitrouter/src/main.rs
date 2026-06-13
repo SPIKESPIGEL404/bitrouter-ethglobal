@@ -137,6 +137,33 @@ enum Command {
         #[arg(short, long)]
         provider: Option<String>,
     },
+    /// Verify a confidential model's TEE attestation (L1): prove it runs on
+    /// genuine Intel TDX + NVIDIA GPU hardware running the legitimate,
+    /// policy-pinned model. Reads the DCAP policy pins + NVIDIA EAT key from the
+    /// environment (see `bitrouter verify --help` notes / the skill).
+    Verify {
+        /// The confidential model id, e.g. `zai-org/GLM-5.1-FP8`.
+        model: String,
+    },
+    /// Verify a Chainlink confidential *exchange* (L1.5) by re-checking the
+    /// service-reported resource digest against the bytes you uploaded. Reports
+    /// `digests_consistent`; never claims TEE attestation (the dev-preview
+    /// exposes no signed quote). Requires `CHAINLINK_CONFIDENTIAL_API_KEY`
+    /// (+ optional `CHAINLINK_BASE`).
+    #[cfg(feature = "chainlink-demo")]
+    VerifyExchange {
+        /// The Chainlink inference id.
+        inference_id: String,
+        /// The model id (e.g. `gemma4`).
+        #[arg(long)]
+        model: String,
+        /// Path to the original uploaded resource file (its sha256 is checked).
+        #[arg(long)]
+        resource: std::path::PathBuf,
+        /// The response/output text the client received.
+        #[arg(long, default_value = "")]
+        response: String,
+    },
     /// MCP server introspection — list/status/discover against the upstreams
     /// declared under `mcp_servers` in `bitrouter.yaml`. v1.0 does not maintain
     /// a global tool registry; these are one-shot queries.
@@ -514,6 +541,14 @@ async fn run() -> Result<()> {
             let source = bitrouter::paths::resolve_config(config.as_deref())?;
             models(&source, provider.as_deref()).await
         }
+        Command::Verify { model } => verify_attestation(&model).await,
+        #[cfg(feature = "chainlink-demo")]
+        Command::VerifyExchange {
+            inference_id,
+            model,
+            resource,
+            response,
+        } => verify_exchange(&inference_id, &model, &resource, &response).await,
         Command::Tools { action } => tools(action).await,
         Command::Observe { action } => observe(action).await,
         Command::Policy { action } => policy(action).await,
@@ -1291,6 +1326,211 @@ fn print_route_chain(model: &str, chain: &[RouteHop], source: &str) {
             hop.api_protocol
         );
     }
+}
+
+/// `bitrouter verify <model>` — run an L1 TEE-attestation check for a
+/// confidential model and print the per-check breakdown.
+///
+/// Configuration comes from the environment (the DCAP policy MUST be pinned —
+/// the verifier refuses to run unpinned, per the load-bearing trust anchor):
+/// - `NEAR_BASE` (default `https://cloud-api.near.ai/v1`)
+/// - `NEAR_KMS_ROOTS` — accepted dstack KMS root pubkey(s), comma-separated
+/// - `NEAR_IMAGE_DIGESTS` and/or `NEAR_WORKLOAD_IDS` — at least one required
+/// - `NVIDIA_EAT_KEY_PEM` — path to NVIDIA's NRAS EAT key (EC public PEM)
+async fn verify_attestation(model: &str) -> Result<()> {
+    use std::sync::Arc;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    use bitrouter_attestation::{
+        AciDcapVerifierPolicy, ConfidentialVerifier, DcapQuoteVerifier, NVIDIA_NRAS_JWKS_URL,
+        NearVerifier, NvidiaEatKey, ReportTransport, ReqwestTransport,
+    };
+
+    fn env_list(key: &str) -> Vec<String> {
+        std::env::var(key)
+            .unwrap_or_default()
+            .split(',')
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .collect()
+    }
+
+    let base =
+        std::env::var("NEAR_BASE").unwrap_or_else(|_| "https://cloud-api.near.ai/v1".to_string());
+
+    let policy = AciDcapVerifierPolicy::new(
+        env_list("NEAR_WORKLOAD_IDS"),
+        env_list("NEAR_IMAGE_DIGESTS"),
+        env_list("NEAR_KMS_ROOTS"),
+    )
+    .map_err(|e| {
+        anyhow::anyhow!(
+            "attestation policy not pinned ({e}); set NEAR_KMS_ROOTS and \
+             NEAR_IMAGE_DIGESTS/NEAR_WORKLOAD_IDS"
+        )
+    })?;
+
+    // GPU EAT key: an explicit PEM override wins; otherwise fetch NVIDIA's JWKS
+    // (its signing keys rotate, so we resolve per-request by the EAT `kid`).
+    let nvidia_key = match std::env::var("NVIDIA_EAT_KEY_PEM") {
+        Ok(path) => NvidiaEatKey::from_ec_pem(&std::fs::read(&path)?)
+            .map_err(|e| anyhow::anyhow!("invalid NVIDIA_EAT_KEY_PEM ({path}): {e}"))?,
+        Err(_) => {
+            let url = std::env::var("NVIDIA_JWKS_URL")
+                .unwrap_or_else(|_| NVIDIA_NRAS_JWKS_URL.to_string());
+            match NvidiaEatKey::fetch_jwks(&url).await {
+                Ok(key) => key,
+                Err(e) => {
+                    bitrouter::error_report::info(format!(
+                        "could not fetch NVIDIA JWKS ({e}); the GPU check will fail closed"
+                    ));
+                    NvidiaEatKey::unconfigured()
+                }
+            }
+        }
+    };
+
+    let verifier = NearVerifier::new(
+        Arc::new(ReqwestTransport::new(&base)) as Arc<dyn ReportTransport>,
+        Arc::new(DcapQuoteVerifier::default()),
+        Arc::new(policy),
+        Arc::new(nvidia_key),
+    );
+
+    let now = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs();
+    let verdict = verifier.attestation_cached(model, now).await?;
+
+    let p = bitrouter::style::Palette::for_stdout();
+    let mark = |ok: bool| {
+        if ok {
+            format!("{}✓{}", p.green, p.reset)
+        } else {
+            format!("{}✗{}", p.red, p.reset)
+        }
+    };
+    let opt_mark = |v: Option<bool>| match v {
+        Some(true) => format!("{}✓{}", p.green, p.reset),
+        Some(false) => format!("{}✗{}", p.red, p.reset),
+        None => format!("{}-{}", p.dim, p.reset),
+    };
+
+    println!(
+        "{bold}{model}{reset}  (trust boundary: {})",
+        if verdict.trust_boundary.is_empty() {
+            "unreachable"
+        } else {
+            &verdict.trust_boundary
+        },
+        bold = p.bold,
+        reset = p.reset,
+    );
+    let c = &verdict.checks;
+    println!("  {} GPU NRAS attestation", mark(c.gpu_nras_pass));
+    println!("  {} Intel TDX DCAP quote", mark(c.dcap_quote_valid));
+    println!(
+        "  {} report_data binds key + nonce",
+        mark(c.report_data_binds_key_and_nonce)
+    );
+    println!(
+        "  {} compose matches measured config",
+        mark(c.compose_matches_mr_config)
+    );
+    println!(
+        "  {} event-log RTMR3 anchors policy fields",
+        opt_mark(c.event_log_rtmr_ok)
+    );
+    println!(
+        "  {} policy accepts (KMS root + image/workload pin)",
+        mark(c.policy_accepts)
+    );
+    println!("  {} TD debug disabled", mark(c.debug_disabled));
+    if !verdict.attested_addresses.is_empty() {
+        println!(
+            "  {dim}attested signer(s): {}{reset}",
+            verdict.attested_addresses.join(", "),
+            dim = p.dim,
+            reset = p.reset,
+        );
+    }
+    println!();
+    if verdict.verified {
+        println!(
+            "{}VERIFIED{} — genuine, policy-pinned TEE",
+            p.green, p.reset
+        );
+    } else {
+        println!(
+            "{}UNVERIFIED{} — not a confirmed legitimate TEE (see failing checks above)",
+            p.red, p.reset
+        );
+    }
+    Ok(())
+}
+
+/// `bitrouter verify-exchange` — L1.5 digest re-check for a Chainlink inference.
+#[cfg(feature = "chainlink-demo")]
+async fn verify_exchange(
+    inference_id: &str,
+    model: &str,
+    resource: &std::path::Path,
+    response: &str,
+) -> Result<()> {
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    use bitrouter_attestation::{ConfidentialVerifier, ExchangeInput, IntegrityProof};
+
+    let base = std::env::var("CHAINLINK_BASE")
+        .unwrap_or_else(|_| "https://confidential-ai-dev-preview.cldev.cloud".to_string());
+    let key = std::env::var("CHAINLINK_CONFIDENTIAL_API_KEY")
+        .map_err(|_| anyhow::anyhow!("set CHAINLINK_CONFIDENTIAL_API_KEY"))?;
+
+    let bytes = std::fs::read(resource)
+        .map_err(|e| anyhow::anyhow!("reading {}: {e}", resource.display()))?;
+    let now = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs();
+
+    let verifier = bitrouter_chainlink::ChainlinkVerifier::new(base, key);
+    let ex = ExchangeInput {
+        model,
+        request_body: &bytes,
+        response_body: response.as_bytes(),
+        chat_id: inference_id,
+        now_unix: now,
+    };
+    let out = verifier.verify_exchange(&ex).await?;
+
+    let p = bitrouter::style::Palette::for_stdout();
+    let mark = |ok: bool| {
+        if ok {
+            format!("{}✓{}", p.green, p.reset)
+        } else {
+            format!("{}✗{}", p.red, p.reset)
+        }
+    };
+    println!(
+        "{bold}{model}{reset}  inference {inference_id}",
+        bold = p.bold,
+        reset = p.reset,
+    );
+    match out.integrity {
+        IntegrityProof::ChainlinkResourceDigests {
+            digests_consistent,
+            resource_digest,
+            ..
+        } => {
+            println!(
+                "  {} resource digest consistent (sha256 of your file == reported)",
+                mark(digests_consistent)
+            );
+            println!("    reported digest:   {resource_digest}");
+            println!("    your request hash: {}", out.request_hash);
+        }
+        _ => println!("  (no Chainlink digest evidence returned)"),
+    }
+    println!(
+        "  {} TEE-attested (always ✗ — dev-preview exposes no signed quote)",
+        mark(out.verified)
+    );
+    Ok(())
 }
 
 // ===== management commands =====
