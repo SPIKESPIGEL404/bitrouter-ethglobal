@@ -6,9 +6,14 @@ SRC="/mnt/c/Users/akam leinad/bitrouter"
 DST="$HOME/bitrouter"
 
 # Sync the files changed this session
-cp "$SRC/plugins/bitrouter-pay/src/wallet/ows_signer.rs"   "$DST/plugins/bitrouter-pay/src/wallet/ows_signer.rs"
-cp "$SRC/plugins/bitrouter-pay/src/payment/x402.rs"        "$DST/plugins/bitrouter-pay/src/payment/x402.rs"
-cp "$SRC/plugins/bitrouter-pay/tests/integration_test.rs"  "$DST/plugins/bitrouter-pay/tests/integration_test.rs"
+cp "$SRC/plugins/bitrouter-pay/src/attester/chainlink.rs"       "$DST/plugins/bitrouter-pay/src/attester/chainlink.rs"
+cp "$SRC/plugins/bitrouter-pay/src/wallet/ows_signer.rs"        "$DST/plugins/bitrouter-pay/src/wallet/ows_signer.rs"
+cp "$SRC/plugins/bitrouter-pay/src/payment/x402.rs"             "$DST/plugins/bitrouter-pay/src/payment/x402.rs"
+cp "$SRC/plugins/bitrouter-pay/src/payment/mod.rs"              "$DST/plugins/bitrouter-pay/src/payment/mod.rs"
+cp "$SRC/plugins/bitrouter-pay/src/gate/mod.rs"                 "$DST/plugins/bitrouter-pay/src/gate/mod.rs"
+cp "$SRC/plugins/bitrouter-pay/src/lib.rs"                      "$DST/plugins/bitrouter-pay/src/lib.rs"
+cp "$SRC/crates/bitrouter-sdk/src/payment/gate.rs"              "$DST/crates/bitrouter-sdk/src/payment/gate.rs"
+cp "$SRC/plugins/bitrouter-pay/tests/integration_test.rs"       "$DST/plugins/bitrouter-pay/tests/integration_test.rs"
 
 cd "$DST"
 export OWS_VAULT_PATH=/home/maka/.ows/wallets

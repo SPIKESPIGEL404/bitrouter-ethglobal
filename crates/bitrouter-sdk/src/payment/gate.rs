@@ -10,14 +10,16 @@ pub struct PaymentRouteRequest {
     pub url: String,
     /// When true, run attestation after payment succeeds.
     pub attested: bool,
-    /// Optional JSON POST body for the upstream call.
+    /// Optional JSON POST body for the upstream call (MPP routes).
     pub body: Option<Value>,
     /// When true, use the MPP payment flow; otherwise x402.
     pub mpp: bool,
-    /// Model id for attested routes (`qwen3.6` or `gemma4`).
+    /// Model id for x402 inference and attested routes.
     pub model: Option<String>,
-    /// Prompt for attested routes.
+    /// Prompt for x402 inference and attested routes.
     pub prompt: Option<String>,
+    /// When true, use Anthropic request format; when false or None, use OpenAI format.
+    pub anthropic_format: Option<bool>,
 }
 
 /// Successful payment-gated response body.

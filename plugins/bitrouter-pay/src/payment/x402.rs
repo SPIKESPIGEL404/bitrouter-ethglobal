@@ -21,6 +21,30 @@ use crate::PayError;
 
 const PAYMENT_SIGNATURE: &str = "PAYMENT-SIGNATURE";
 
+/// Wire format for inference POST bodies sent to upstream AI APIs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InferenceFormat {
+    /// OpenAI chat completions: `{"model":…,"messages":[{"role":"user","content":…}]}`.
+    OpenAI,
+    /// Anthropic messages API: adds `"max_tokens":1024` to the OpenAI shape.
+    Anthropic,
+}
+
+/// Build an inference POST body in the requested wire format.
+pub fn build_inference_request_body(format: InferenceFormat, model: &str, prompt: &str) -> Value {
+    match format {
+        InferenceFormat::OpenAI => serde_json::json!({
+            "model": model,
+            "messages": [{"role": "user", "content": prompt}]
+        }),
+        InferenceFormat::Anthropic => serde_json::json!({
+            "model": model,
+            "messages": [{"role": "user", "content": prompt}],
+            "max_tokens": 1024
+        }),
+    }
+}
+
 /// Parameters of a USDC EIP-3009 `transferWithAuthorization` message.
 pub struct TransferAuthorization {
     pub from: Address,
@@ -99,8 +123,15 @@ impl X402Client {
     }
 
     /// POST to `url`, pay on 402 via EIP-3009, retry, return upstream JSON body.
-    pub async fn post(&self, url: &str, body: Option<Value>) -> Result<Value, PayError> {
-        let first = self.send(url, body.clone(), None).await?;
+    pub async fn post(
+        &self,
+        url: &str,
+        format: InferenceFormat,
+        model: &str,
+        prompt: &str,
+    ) -> Result<Value, PayError> {
+        let body = build_inference_request_body(format, model, prompt);
+        let first = self.send(url, Some(body.clone()), None).await?;
         if first.status().as_u16() != 402 {
             return parse_ok(first).await;
         }
@@ -143,7 +174,7 @@ impl X402Client {
 
         let proof_b64 = self.sign_eip3009(&accepted, &resource).await?;
 
-        let paid = self.send(url, body, Some(proof_b64)).await?;
+        let paid = self.send(url, Some(body), Some(proof_b64)).await?;
         if !paid.status().is_success() {
             let s = paid.status();
             let t = paid.text().await.unwrap_or_default();

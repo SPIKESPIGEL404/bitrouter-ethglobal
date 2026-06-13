@@ -43,7 +43,7 @@ pub use gate::{ArcPaymentGate, ArcPaymentGateConfig};
 #[cfg(feature = "mpp")]
 pub use payment::mpp::{ArcMppBackend, MppBackend, MppClient};
 #[cfg(feature = "x402")]
-pub use payment::x402::X402Client;
+pub use payment::x402::{build_inference_request_body, InferenceFormat, X402Client};
 #[cfg(feature = "arc")]
 pub use plugin::{DepositPaymentGateHook, PayPlugin, PaymentGateExtension};
 #[cfg(feature = "arc")]
