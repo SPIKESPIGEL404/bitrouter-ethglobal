@@ -13,6 +13,7 @@
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
 
+mod map;
 mod wire;
 
 /// The custom protocol id used in config (`api_protocol: chainlink_confidential`)
