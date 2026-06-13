@@ -17,8 +17,14 @@ use bitrouter_sdk::{BitrouterError, Result};
 use crate::memory::config::{MemoryScopeTable, ScopeDecision};
 
 /// Walrus tools that accept a `namespace` argument and so must be scoped.
+///
+/// This list is matched against the live relayer's tool set, not just the
+/// public docs: `memwal_remember_bulk` is a namespaced write that is easy to
+/// miss, and leaving it out lets a scoped agent write to any namespace. The
+/// non-namespaced `memwal_health` is deliberately absent.
 const NAMESPACED_TOOLS: &[&str] = &[
     "memwal_remember",
+    "memwal_remember_bulk",
     "memwal_recall",
     "memwal_analyze",
     "memwal_restore",
@@ -235,6 +241,23 @@ mod tests {
     async fn omitted_namespace_gets_agent_default() {
         let (inner, res) = run(call(Some("researcher"), "memwal_remember", None)).await;
         assert!(res.is_ok());
+        assert_eq!(inner.last_namespace().as_deref(), Some("research"));
+    }
+
+    #[tokio::test]
+    async fn remember_bulk_is_scoped() {
+        // `memwal_remember_bulk` is a namespaced write tool present on the live
+        // relayer but easy to miss from the docs — it must be guarded like
+        // `memwal_remember`, or a scoped agent could write to any namespace.
+        let (_inner, denied) = run(call(
+            Some("researcher"),
+            "memwal_remember_bulk",
+            Some("secret"),
+        ))
+        .await;
+        assert_eq!(denied.unwrap_err().status(), 401);
+        let (inner, ok) = run(call(Some("researcher"), "memwal_remember_bulk", None)).await;
+        assert!(ok.is_ok());
         assert_eq!(inner.last_namespace().as_deref(), Some("research"));
     }
 

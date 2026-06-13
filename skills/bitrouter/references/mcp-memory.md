@@ -17,6 +17,7 @@ into `mcp_servers` in `bitrouter.yaml`:
 ```yaml
 mcp_servers:
   memory:
+    name: memory                   # required field (may differ from the map key)
     transport:
       type: http
       url: https://relayer.memory.walrus.xyz/api/mcp
@@ -53,8 +54,9 @@ When `plugins.bitrouter-memory` is absent, scoping is disabled (passthrough).
 
 Each request's agent identity comes from the `x-bitrouter-agent` header. The
 orchestrator sets it when spawning a subagent. Rules applied to memory
-`tools/call`s (`memwal_remember`, `memwal_recall`, `memwal_analyze`,
-`memwal_restore`):
+`tools/call`s for the namespaced tools (`memwal_remember`,
+`memwal_remember_bulk`, `memwal_recall`, `memwal_analyze`, `memwal_restore` —
+matched against the live relayer's tool set, not just the docs):
 
 - Unrestricted agent (`namespaces: ["*"]`): never modified.
 - Scoped agent naming an **allowed** namespace: passes through.
