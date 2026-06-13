@@ -53,7 +53,7 @@ pub async fn run_attested_inference(
             "chainlink inference did not complete".into(),
         ));
     }
-    let output = done.output.clone().unwrap_or_default();
+    let output = done.output.unwrap_or_default();
 
     let verifier = ChainlinkVerifier::new(BASE_URL.to_string(), api_key.to_string());
     let ex = ExchangeInput {

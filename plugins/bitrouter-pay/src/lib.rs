@@ -5,6 +5,7 @@
 
 #![forbid(unsafe_code)]
 
+#[cfg(feature = "arc")]
 pub mod attester;
 #[cfg(feature = "arc")]
 pub mod chain;
