@@ -65,6 +65,8 @@ Key fields:
 
 ## Attestation status & roadmap
 
+> Full security audit (findings, evidence, trust-gap analysis, remediation): [`AUDIT.md`](./AUDIT.md).
+
 ### Current status: unsigned digests only
 
 The Chainlink dev-preview (ETHGlobal NY 2026) is billed as an "Attester Demo"
