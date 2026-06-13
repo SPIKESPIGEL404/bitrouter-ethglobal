@@ -13,12 +13,14 @@
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use alloy::primitives::{Address, B256};
-use bitrouter_pay::payment::x402::{build_transfer_authorization_typed_data, TransferAuthorization};
+use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
+use bitrouter_pay::payment::x402::{
+    TransferAuthorization, build_transfer_authorization_typed_data,
+};
 use bitrouter_pay::{
     ArcPaymentGate, ArcPaymentGateConfig, ArcSigner, AttestationReceipt, ChainlinkAttester,
     Resource,
 };
-use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use bitrouter_sdk::{PaymentGate, PaymentRouteRequest};
 use serde_json::json;
 
@@ -26,8 +28,7 @@ use serde_json::json;
 
 const WALLET_NAME: &str = "agent-treasury";
 const WALLET_ADDRESS: &str = "0xBB4CB05dA6ED0780cFDd0F088EaEEd420381DE38";
-const PROCEEDS_URL: &str =
-    "https://myproceeds.xyz/api/x402/pay/cmqblj2m60004l704lp0jmr7u/infer";
+const PROCEEDS_URL: &str = "https://myproceeds.xyz/api/x402/pay/cmqblj2m60004l704lp0jmr7u/infer";
 const PAY_TO: &str = "0xec56f2790840676a82ac11cbebb463eb28c9799a";
 const AMOUNT_EXPECTED: u128 = 1000;
 const CAIP2: &str = "eip155:5042002";
@@ -184,11 +185,7 @@ async fn test_x402_payment_loop() {
         nonce,
     };
 
-    let typed_data = build_transfer_authorization_typed_data(
-        domain_name,
-        domain_version,
-        &auth,
-    );
+    let typed_data = build_transfer_authorization_typed_data(domain_name, domain_version, &auth);
 
     // ── Step 4: sign EIP-712 typed data via the OWS CLI ──────────────────────
     println!("\nSigning typed data with OWS CLI...");

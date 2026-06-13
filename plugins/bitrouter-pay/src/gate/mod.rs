@@ -7,13 +7,13 @@ use bitrouter_sdk::{PaymentGate, PaymentGateResult, PaymentRouteRequest};
 use serde_json::Value;
 use tracing::info;
 
+use crate::PayError;
 use crate::attester::{ChainlinkAttester, Resource};
 #[cfg(feature = "mpp")]
 use crate::payment::mpp::{ArcMppBackend, MppBackend, MppClient};
 #[cfg(feature = "x402")]
 use crate::payment::x402::X402Client;
 use crate::wallet::ArcSigner;
-use crate::PayError;
 
 /// Configuration for [`ArcPaymentGate`].
 pub struct ArcPaymentGateConfig {
@@ -34,9 +34,7 @@ pub struct ArcPaymentGate {
 impl ArcPaymentGate {
     pub fn new(config: ArcPaymentGateConfig) -> Result<Self, PayError> {
         let signer = Arc::new(ArcSigner::new(config.wallet_id)?);
-        let attester = config
-            .chainlink_api_key
-            .map(ChainlinkAttester::new);
+        let attester = config.chainlink_api_key.map(ChainlinkAttester::new);
 
         Ok(Self {
             #[cfg(feature = "x402")]
@@ -76,9 +74,9 @@ impl ArcPaymentGate {
             let attester = self.attester.as_ref().ok_or_else(|| {
                 PayError::AttestError("attested route requires chainlink_api_key".into())
             })?;
-            let model = request.model.ok_or_else(|| {
-                PayError::AttestError("attested route requires model".into())
-            })?;
+            let model = request
+                .model
+                .ok_or_else(|| PayError::AttestError("attested route requires model".into()))?;
             let prompt = request.prompt.unwrap_or_default();
             let resources = vec![Resource::from_bytes(
                 "payload.json",

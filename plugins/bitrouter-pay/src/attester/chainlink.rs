@@ -2,11 +2,11 @@
 
 use std::time::{Duration, Instant};
 
-use base64::{engine::general_purpose::STANDARD, Engine as _};
+use base64::{Engine as _, engine::general_purpose::STANDARD};
 use serde::{Deserialize, Serialize};
 
-use crate::attester::receipt::AttestationReceipt;
 use crate::PayError;
+use crate::attester::receipt::AttestationReceipt;
 
 const BASE_URL: &str = "https://confidential-ai-dev-preview.cldev.cloud";
 const POLL_INTERVAL: Duration = Duration::from_secs(3);
@@ -46,7 +46,11 @@ pub struct Resource {
 
 impl Resource {
     /// Build a resource from raw bytes, preferring `text/plain` or `image/png`.
-    pub fn from_bytes(filename: impl Into<String>, content_type: impl Into<String>, bytes: &[u8]) -> Self {
+    pub fn from_bytes(
+        filename: impl Into<String>,
+        content_type: impl Into<String>,
+        bytes: &[u8],
+    ) -> Self {
         Self {
             filename: filename.into(),
             content_type: content_type.into(),
@@ -132,9 +136,7 @@ impl ChainlinkAttester {
             match snapshot.status.as_str() {
                 "completed" => return map_receipt(snapshot),
                 "failed" => {
-                    let msg = snapshot
-                        .error
-                        .unwrap_or_else(|| "inference failed".into());
+                    let msg = snapshot.error.unwrap_or_else(|| "inference failed".into());
                     return Err(AttestError::Failed(msg));
                 }
                 _ => continue,
@@ -187,13 +189,17 @@ struct InferenceStatus {
 
 fn map_receipt(snapshot: InferenceStatus) -> Result<AttestationReceipt, AttestError> {
     // Digests are per-resource; we take the first resource (typically the only one).
-    let res = snapshot.resources.into_iter().next().unwrap_or(ResourceStatus {
-        digest: None,
-        request_digest: None,
-        response_digest: None,
-        filename_digest: None,
-        filename_blinding: None,
-    });
+    let res = snapshot
+        .resources
+        .into_iter()
+        .next()
+        .unwrap_or(ResourceStatus {
+            digest: None,
+            request_digest: None,
+            response_digest: None,
+            filename_digest: None,
+            filename_blinding: None,
+        });
     Ok(AttestationReceipt {
         inference_id: snapshot.id,
         model: snapshot.model.unwrap_or_default(),
