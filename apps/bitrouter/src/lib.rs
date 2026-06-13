@@ -19,6 +19,7 @@ pub mod commands;
 pub mod daemon;
 pub mod db;
 pub mod error_report;
+pub mod memory;
 pub mod metering;
 pub mod paths;
 pub mod policy;
