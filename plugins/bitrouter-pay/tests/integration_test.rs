@@ -13,13 +13,10 @@
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use alloy::primitives::{Address, B256};
+use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use bitrouter_pay::payment::x402::{
-    build_inference_request_body, build_transfer_authorization_typed_data, InferenceFormat,
-    TransferAuthorization,
-};
-use bitrouter_pay::{
-    ArcMppBackend, ArcPaymentGate, ArcPaymentGateConfig, ArcSigner, AttestationReceipt,
-    ChainlinkAttester, MppClient, Resource,
+    InferenceFormat, TransferAuthorization, build_inference_request_body,
+    build_transfer_authorization_typed_data,
 };
 use bitrouter_pay::{ArcPaymentGate, ArcPaymentGateConfig, ArcSigner};
 use bitrouter_sdk::{PaymentGate, PaymentRouteRequest};
@@ -279,7 +276,12 @@ async fn run_x402_payment_loop(format: InferenceFormat, model: &str, label: &str
 #[tokio::test]
 #[ignore]
 async fn test_x402_payment_loop() {
-    run_x402_payment_loop(InferenceFormat::OpenAI, "qwen3.6", "Test 1: x402 payment loop (OpenAI format)").await;
+    run_x402_payment_loop(
+        InferenceFormat::OpenAI,
+        "qwen3.6",
+        "Test 1: x402 payment loop (OpenAI format)",
+    )
+    .await;
 }
 
 // ── Test 1b — x402 payment loop (Anthropic format) ───────────────────────────
@@ -419,27 +421,38 @@ async fn test_full_gate_flow() {
         serde_json::to_string_pretty(&result.body).unwrap_or_default()
     );
 
-    let receipt: AttestationReceipt = serde_json::from_value(result.body)
-        .expect("gate result body is not a valid AttestationReceipt");
+    use bitrouter_attestation::{IntegrityProof, VerifiedExchange};
+    let exchange: VerifiedExchange = serde_json::from_value(result.body)
+        .expect("gate result body is not a valid VerifiedExchange");
 
-    println!("\nAttestationReceipt from gate:");
-    println!("  inference_id:    {}", receipt.inference_id);
-    println!("  model:           {}", receipt.model);
-    println!("  request_digest:  {}", receipt.request_digest);
-    println!("  response_digest: {}", receipt.response_digest);
-    println!("  attested:        {}", receipt.attested);
+    let (inference_id, request_digest, response_digest) = match &exchange.integrity {
+        IntegrityProof::ChainlinkResourceDigests {
+            inference_id,
+            request_digest,
+            response_digest,
+            ..
+        } => (
+            inference_id.clone(),
+            request_digest.clone(),
+            response_digest.clone(),
+        ),
+        other => panic!("expected ChainlinkResourceDigests, got {other:?}"),
+    };
 
-    assert!(!receipt.inference_id.is_empty(), "inference_id is empty");
-    assert!(
-        !receipt.request_digest.is_empty(),
-        "request_digest is empty"
-    );
-    assert!(receipt.attested, "receipt.attested is false");
+    println!("\nVerifiedExchange from gate:");
+    println!("  inference_id:    {inference_id}");
+    println!("  model:           {}", exchange.model);
+    println!("  request_digest:  {request_digest}");
+    println!("  response_digest: {response_digest}");
+    println!("  verified:        {}", exchange.verified);
 
-    println!(
-        "\nLedger entry: url={PROCEEDS_URL} ref={}",
-        receipt.inference_id
-    );
+    assert!(!inference_id.is_empty(), "inference_id is empty");
+    assert!(!request_digest.is_empty(), "request_digest is empty");
+    // The Chainlink dev-preview exposes no enclave signature, so an honest
+    // gate never reports `verified` for these digests.
+    assert!(!exchange.verified, "unsigned digests must never verify");
+
+    println!("\nLedger entry: url={PROCEEDS_URL} ref={inference_id}");
 
     println!("\n✅ Test 3 passed — full gate flow (x402 + attestation) succeeded");
 }

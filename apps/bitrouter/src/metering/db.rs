@@ -46,4 +46,28 @@ pub struct RequestMetric {
     pub streamed: bool,
     /// Error string if the request failed, else `None`.
     pub error: Option<String>,
+    /// Unified-ledger receipt fields. Populated only when the corresponding
+    /// step ran: the buyer-pay gate (`rail` + `pay_tx`), the confidential
+    /// attester (`attestation_id` + digests), or a delegated subagent call
+    /// (`memory_delegate`). A plain inference leaves them all `None`.
+    pub receipt: LedgerReceipt,
+}
+
+/// The optional payment / attestation / delegation receipt attached to a
+/// settled request. Separated from the always-present metering fields so a
+/// recorder that has nothing to attach can `..Default::default()` it.
+#[derive(Debug, Clone, Default)]
+pub struct LedgerReceipt {
+    /// Payment rail (`x402` / `mpp`) the call was settled over, if any.
+    pub rail: Option<String>,
+    /// On-chain settlement transaction hash, if any.
+    pub pay_tx: Option<String>,
+    /// Confidential-inference / attestation id, if the call was attested.
+    pub attestation_id: Option<String>,
+    /// Attester-reported canonical request digest, if any.
+    pub request_digest: Option<String>,
+    /// Attester-reported canonical response digest, if any.
+    pub response_digest: Option<String>,
+    /// Memory delegate granted to a subagent call, if any.
+    pub memory_delegate: Option<String>,
 }

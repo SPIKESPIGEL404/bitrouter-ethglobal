@@ -11,6 +11,7 @@
 pub mod m20240101_000001_create_auth_tables;
 pub mod m20240101_000002_create_metering_tables;
 pub mod m20240101_000003_rename_legacy_charge_column;
+pub mod m20240101_000004_add_ledger_receipt_columns;
 
 use sea_orm_migration::{MigrationTrait, MigratorTrait};
 
@@ -25,6 +26,7 @@ impl MigratorTrait for Migrator {
             Box::new(m20240101_000001_create_auth_tables::Migration),
             Box::new(m20240101_000002_create_metering_tables::Migration),
             Box::new(m20240101_000003_rename_legacy_charge_column::Migration),
+            Box::new(m20240101_000004_add_ledger_receipt_columns::Migration),
         ]
     }
 }

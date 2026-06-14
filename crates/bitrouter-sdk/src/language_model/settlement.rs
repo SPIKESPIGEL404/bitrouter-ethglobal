@@ -56,6 +56,10 @@ pub struct SettlementContext {
     pub generation_time_ms: u64,
     /// The error, if the request failed (Settlement still runs).
     pub error: Option<BitrouterError>,
+    /// Confidential-inference evidence the executor surfaced for this call
+    /// (e.g. the Chainlink attester's id + digests), so a recorder can persist
+    /// it as part of the call's receipt. `None` for a plain inference.
+    pub attestation: Option<AttestationEvidence>,
     /// Events carried over from the request lifecycle (so recorders can
     /// inspect events emitted by earlier stages).
     ///
@@ -86,6 +90,21 @@ impl SettlementContext {
     pub fn get_events<E: PipelineEvent>(&self) -> Vec<&E> {
         self.events.get_all::<E>()
     }
+}
+
+/// Confidential-inference evidence pulled from the executor's
+/// `provider_metadata` (e.g. `provider_metadata["chainlink"]`). The digests are
+/// the attester's self-reported canonical hashes; whether they are *verified*
+/// is a separate concern (the dev-preview exposes no signature). A recorder
+/// persists these as receipt fields on the call's ledger row.
+#[derive(Debug, Clone)]
+pub struct AttestationEvidence {
+    /// The attester's inference id.
+    pub inference_id: String,
+    /// Canonical request digest, if the attester reported one.
+    pub request_digest: Option<String>,
+    /// Canonical response digest, if the attester reported one.
+    pub response_digest: Option<String>,
 }
 
 /// A bookkeeping recorder. Registered into an **always-run** list: every

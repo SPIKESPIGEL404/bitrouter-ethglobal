@@ -14,7 +14,8 @@
 use chrono::{DateTime, Datelike, Duration, TimeZone, Utc};
 use sea_orm::sea_query::OnConflict;
 use sea_orm::{
-    ColumnTrait, DatabaseConnection, EntityTrait, PaginatorTrait, QueryFilter, QuerySelect, Set,
+    ColumnTrait, DatabaseConnection, EntityTrait, PaginatorTrait, QueryFilter, QueryOrder,
+    QuerySelect, Set,
 };
 
 use bitrouter_sdk::{BitrouterError, Result};
@@ -172,6 +173,12 @@ impl MeteringStore {
             latency_ms: Set(record.latency_ms as i64),
             generation_time_ms: Set(record.generation_time_ms as i64),
             error: Set(record.error),
+            rail: Set(record.receipt.rail),
+            pay_tx: Set(record.receipt.pay_tx),
+            attestation_id: Set(record.receipt.attestation_id),
+            request_digest: Set(record.receipt.request_digest),
+            response_digest: Set(record.receipt.response_digest),
+            memory_delegate: Set(record.receipt.memory_delegate),
             created_at: Set(Utc::now().to_rfc3339()),
         };
         // `ON CONFLICT(request_id) DO UPDATE` so a retried / streamed-then-
@@ -195,6 +202,12 @@ impl MeteringStore {
                         requests::Column::LatencyMs,
                         requests::Column::GenerationTimeMs,
                         requests::Column::Error,
+                        requests::Column::Rail,
+                        requests::Column::PayTx,
+                        requests::Column::AttestationId,
+                        requests::Column::RequestDigest,
+                        requests::Column::ResponseDigest,
+                        requests::Column::MemoryDelegate,
                     ])
                     .to_owned(),
             )
@@ -202,6 +215,76 @@ impl MeteringStore {
             .await
             .map_err(|e| BitrouterError::internal(format!("record_request: {e}")))?;
         Ok(())
+    }
+
+    /// The most recent `limit` settled requests, newest first — the read side
+    /// of the `bitrouter ledger` view. Returns a render-friendly
+    /// [`LedgerEntry`] per row (the sea-orm entity type stays private to the
+    /// store).
+    pub async fn list_recent(&self, limit: u64) -> Result<Vec<LedgerEntry>> {
+        let rows = requests::Entity::find()
+            .order_by_desc(requests::Column::CreatedAt)
+            .limit(limit)
+            .all(&self.db)
+            .await
+            .map_err(|e| BitrouterError::internal(format!("list_recent: {e}")))?;
+        Ok(rows.into_iter().map(LedgerEntry::from).collect())
+    }
+}
+
+/// One row of the unified spend + receipts ledger (PRD §8.6). Joins the
+/// pipeline-observed spend (model, tokens, estimated µUSD) with the optional
+/// payment / attestation receipt captured for the call.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct LedgerEntry {
+    /// RFC3339 creation timestamp.
+    pub created_at: String,
+    /// Resolved model id.
+    pub model_id: String,
+    /// Resolved provider id.
+    pub provider_id: String,
+    /// Prompt tokens consumed.
+    pub prompt_tokens: u64,
+    /// Completion tokens consumed.
+    pub completion_tokens: u64,
+    /// Estimated charge in micro-USD.
+    pub estimated_charge_micro_usd: i64,
+    /// Whether the request was streamed.
+    pub streamed: bool,
+    /// Error string if the request failed.
+    pub error: Option<String>,
+    /// Payment rail (`x402` / `mpp`), if paid.
+    pub rail: Option<String>,
+    /// On-chain settlement tx hash, if paid.
+    pub pay_tx: Option<String>,
+    /// Confidential-inference / attestation id, if attested.
+    pub attestation_id: Option<String>,
+    /// Attester request digest, if attested.
+    pub request_digest: Option<String>,
+    /// Attester response digest, if attested.
+    pub response_digest: Option<String>,
+    /// Memory delegate granted, if a delegated subagent call.
+    pub memory_delegate: Option<String>,
+}
+
+impl From<requests::Model> for LedgerEntry {
+    fn from(m: requests::Model) -> Self {
+        Self {
+            created_at: m.created_at,
+            model_id: m.model_id,
+            provider_id: m.provider_id,
+            prompt_tokens: m.prompt_tokens.max(0) as u64,
+            completion_tokens: m.completion_tokens.max(0) as u64,
+            estimated_charge_micro_usd: m.estimated_charge_micro_usd,
+            streamed: m.streamed != 0,
+            error: m.error,
+            rail: m.rail,
+            pay_tx: m.pay_tx,
+            attestation_id: m.attestation_id,
+            request_digest: m.request_digest,
+            response_digest: m.response_digest,
+            memory_delegate: m.memory_delegate,
+        }
     }
 }
 

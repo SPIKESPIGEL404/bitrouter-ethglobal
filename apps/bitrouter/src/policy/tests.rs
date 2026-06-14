@@ -264,6 +264,7 @@ async fn spend_cap_is_enforced_via_metering_store() {
             generation_time_ms: 80,
             streamed: false,
             error: None,
+            receipt: Default::default(),
         })
         .await
         .unwrap();
@@ -292,6 +293,7 @@ async fn spend_cap_is_enforced_via_metering_store() {
             generation_time_ms: 80,
             streamed: false,
             error: None,
+            receipt: Default::default(),
         })
         .await
         .unwrap();
@@ -333,6 +335,7 @@ async fn rate_limit_is_enforced_via_metering_store() {
                 generation_time_ms: 0,
                 streamed: false,
                 error: None,
+                receipt: Default::default(),
             })
             .await
             .unwrap();

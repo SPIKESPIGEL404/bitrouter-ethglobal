@@ -2,8 +2,9 @@
 //!
 //! Demonstrates an AI agent that pays for its own inference: it signs a USDC
 //! `transferWithAuthorization` with an OWS-backed wallet, settles an x402
-//! paywall on Arc testnet through Proceeds, reads the model's reply, and obtains
-//! a Chainlink TEE attestation of the run.
+//! paywall on Arc testnet through Proceeds (with automatic MPP fallback inside
+//! [`ArcPaymentGate`] when the Proceeds upstream is unavailable), reads the
+//! model's reply, and obtains a Chainlink confidential-inference receipt.
 //!
 //! Run with:
 //!   OWS_VAULT_PATH=/path/to/wallets \
@@ -11,23 +12,15 @@
 //!   CHAINLINK_ATTESTER_API_KEY=<key> \
 //!   cargo run -p bitrouter-pay --example claude_code_demo
 
-use std::time::Duration;
-
-use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
-use bitrouter_attestation::IntegrityProof;
+use bitrouter_attestation::{IntegrityProof, VerifiedExchange};
 use bitrouter_pay::{
-    AGENT_WALLET_ADDRESS, ARC_TESTNET_CAIP2, ArcMppBackend, ArcSigner, MppBackend, MppClient,
-    payment::x402::{TransferAuthorization, build_transfer_authorization_typed_data},
-    run_attested_inference,
+    AGENT_WALLET_ADDRESS, ArcPaymentGate, ArcPaymentGateConfig, run_attested_inference,
 };
-use serde_json::{Value, json};
+use bitrouter_sdk::{PaymentGate, PaymentRouteRequest};
+use serde_json::Value;
 
 const WALLET_NAME: &str = "agent-treasury";
 const PROCEEDS_URL: &str = "https://myproceeds.xyz/api/x402/pay/cmqblj2m60004l704lp0jmr7u/infer";
-/// BitRouter MPP endpoint used as a fallback when the Proceeds x402 upstream is
-/// unavailable. BitRouter speaks MPP natively via `mpp-br`; Proceeds is x402-only.
-const BITROUTER_MPP_URL: &str =
-    "https://gumball-country-monologue.ngrok-free.dev/v1/chat/completions";
 const MODEL: &str = "qwen3.6";
 const PROMPT: &str = "You are an AI agent. You just paid for your own inference \
     using USDC on Arc testnet. Describe what just happened in one sentence.";
@@ -43,7 +36,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("│  Claude Code · autonomous inference payment on Arc testnet    │");
     println!("└─────────────────────────────────────────────────────────────┘\n");
 
-    // ── Build the payment gate (OWS signer + x402 + Chainlink) ───────────────
+    // ── Build the payment gate (OWS signer + x402 + MPP fallback + Chainlink) ─
     let gate = ArcPaymentGate::new(ArcPaymentGateConfig {
         wallet_id: WALLET_NAME.to_string(),
         chainlink_api_key: chainlink_api_key.clone(),
@@ -57,6 +50,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("         address: {wallet} (expected {AGENT_WALLET_ADDRESS})\n");
 
     // ── Pay the x402 paywall and read the model's reply ──────────────────────
+    // `gate.pay` runs x402-first and falls back to MPP internally, so the demo
+    // just submits one request and renders whatever settled.
     let request = PaymentRouteRequest {
         url: PROCEEDS_URL.to_string(),
         attested: false,
@@ -69,8 +64,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let model_reply: Option<String> = match gate.pay(request).await {
         Ok(result) => {
-            let tx = extract_tx_hash(&result.body.to_string());
-            match tx {
+            match extract_tx_hash(&result.body.to_string()) {
                 Some(hash) => {
                     println!("[CHAIN] USDC transferred on Arc testnet — txHash: {hash}")
                 }
@@ -88,78 +82,33 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
             reply
         }
-    } else {
-        let tx = extract_tx_hash_from_headers_or_body(&raw2);
-        match tx {
-            Some(h) => {
-                println!("[CHAIN] USDC transferred on Arc testnet — txHash: {h}");
-                // Proceeds settled payment but could not reach its model backend.
-                // BitRouter supports MPP natively, so fall back to it for the reply.
-                println!(
-                    "[FALLBACK] Proceeds upstream returned {status2}; retrying via BitRouter MPP..."
-                );
-                let mpp = MppClient::new(std::sync::Arc::new(ArcMppBackend::new(signer.clone()))
-                    as std::sync::Arc<dyn MppBackend>);
-                match mpp
-                    .post(BITROUTER_MPP_URL, Some(request_body.clone()))
-                    .await
-                {
-                    Ok(body) => {
-                        let reply = body
-                            .pointer("/choices/0/message/content")
-                            .and_then(Value::as_str)
-                            .map(str::to_string);
-                        match &reply {
-                            Some(text) => {
-                                println!("[MODEL] Response (via BitRouter MPP): {text}\n")
-                            }
-                            None => println!(
-                                "[MODEL] Response body (unexpected MPP format):\n{}\n",
-                                serde_json::to_string_pretty(&body).unwrap_or_default()
-                            ),
-                        }
-                        reply
-                    }
-                    Err(e) => {
-                        println!(
-                            "[MODEL] Response: <Proceeds upstream {status2}; MPP fallback failed: {e}>\n"
-                        );
-                        None
-                    }
-                }
-                None => println!("[CHAIN] USDC transferred on Arc testnet — payment completed"),
-            }
-            println!("[MODEL] Response: <upstream model service was unavailable; payment still settled>\n");
-            None
-        }
         Err(e) => {
             println!("[CHAIN] payment failed — {e}");
             return Err(e.into());
         }
     };
 
-    // ── Obtain a Chainlink TEE attestation of the inference ──────────────────
+    // ── Obtain a Chainlink confidential-inference receipt of the run ──────────
     match chainlink_api_key {
         Some(key) => {
-            let attester = ChainlinkAttester::new(key);
             let attest_prompt = match &model_reply {
                 Some(reply) => format!(
                     "Confirm and restate this agent's report of its on-chain payment: {reply}"
                 ),
                 None => PROMPT.to_string(),
             };
-            let now2 = std::time::SystemTime::now()
+            let now = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .map(|d| d.as_secs())
                 .unwrap_or(0);
-            match run_attested_inference(&key, MODEL, &attest_prompt, PROMPT.as_bytes(), now2).await
+            match run_attested_inference(&key, MODEL, &attest_prompt, PROMPT.as_bytes(), now).await
             {
                 Ok(verified) => print_receipt(&verified),
-                Err(e) => println!("[RECEIPT] Chainlink TEE attestation unavailable — {e}"),
+                Err(e) => println!("[RECEIPT] Chainlink confidential receipt unavailable — {e}"),
             }
         }
         None => println!(
-            "[RECEIPT] Chainlink TEE attestation skipped (set CHAINLINK_ATTESTER_API_KEY to enable)"
+            "[RECEIPT] Chainlink confidential receipt skipped (set CHAINLINK_ATTESTER_API_KEY to enable)"
         ),
     }
 
@@ -183,13 +132,29 @@ fn extract_tx_hash(text: &str) -> Option<String> {
     Some(rest[..end].to_string())
 }
 
-fn print_receipt(receipt: &AttestationReceipt) {
+/// Render the Chainlink confidential-inference receipt. The dev-preview exposes
+/// no enclave signature, so this is evidence (per-resource digests), not a
+/// signed TEE attestation — `verified` reflects that honestly.
+fn print_receipt(exchange: &VerifiedExchange) {
     println!(
-        "[RECEIPT] Chainlink TEE attestation: inference_id={} attested={}",
-        receipt.inference_id, receipt.attested
+        "[RECEIPT] Chainlink confidential inference — model={} verified={}",
+        exchange.model, exchange.verified
     );
-    println!("          model:           {}", receipt.model);
-    println!("          request_digest:  {}", receipt.request_digest);
-    println!("          response_digest: {}", receipt.response_digest);
-    println!("          completed_at:    {}", receipt.completed_at);
+    println!("          request_hash:  {}", exchange.request_hash);
+    println!("          response_hash: {}", exchange.response_hash);
+    match &exchange.integrity {
+        IntegrityProof::ChainlinkResourceDigests {
+            inference_id,
+            request_digest,
+            response_digest,
+            digests_consistent,
+            ..
+        } => {
+            println!("          inference_id:       {inference_id}");
+            println!("          request_digest:     {request_digest}");
+            println!("          response_digest:    {response_digest}");
+            println!("          digests_consistent: {digests_consistent}");
+        }
+        other => println!("          integrity: {other:?}"),
+    }
 }

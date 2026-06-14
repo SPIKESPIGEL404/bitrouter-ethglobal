@@ -14,4 +14,4 @@ pub use mpp::{ArcMppBackend, MppBackend, MppClient};
 pub use mpp_client::{ArcMppPayClient, PaidResponse};
 
 #[cfg(feature = "x402")]
-pub use x402::{build_inference_request_body, InferenceFormat, X402Client};
+pub use x402::{InferenceFormat, X402Client, build_inference_request_body};
