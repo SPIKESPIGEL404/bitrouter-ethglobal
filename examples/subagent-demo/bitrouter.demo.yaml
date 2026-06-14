@@ -13,9 +13,7 @@
 
 server:
   listen: "127.0.0.1:4356"
-
-# brvk_ keys + Budget policies ARE enforced (the whole point of the demo).
-auth:
+  # brvk_ keys + Budget policies ARE enforced (the whole point of the demo).
   skip_auth: false
 
 database:
