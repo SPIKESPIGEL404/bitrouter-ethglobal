@@ -8,4 +8,4 @@ pub mod x402;
 pub use mpp::{ArcMppBackend, MppBackend, MppClient};
 
 #[cfg(feature = "x402")]
-pub use x402::X402Client;
+pub use x402::{build_inference_request_body, InferenceFormat, X402Client};
