@@ -18,6 +18,15 @@ use crate::subagent::worker_config::materialize;
 /// The tool name the agent calls.
 pub const TOOL_NAME: &str = "spawn_subagent";
 
+/// The WIRE model id the daemon (and `PolicyHook`) sees — the part after the
+/// first `/`. opencode's `provider/model` reference has its `provider/` prefix
+/// stripped before the request leaves the worker, so the policy allowlist must
+/// key on this, not the full reference. Must match `worker_config::materialize`'s
+/// split (both split on the first `/`).
+fn wire_model_id(model: &str) -> &str {
+    model.split_once('/').map(|(_, m)| m).unwrap_or(model)
+}
+
 /// Native router toolset: mints a capped key, spawns an `opencode acp` worker,
 /// drives it, and returns a structured result. Holds the daemon handles it needs
 /// (none are available on `ToolContext`).
@@ -73,10 +82,15 @@ impl SpawnSubagentToolset {
         let unique = crate::auth::keys::generate().hash[..16].to_string();
         let policy_id = format!("pol-{unique}");
 
-        // 3. register the capped policy
+        // 3. register the capped policy.
+        // Pin `allowed_models` to the WIRE model id — the part after the first
+        // `/` — because that's what opencode sends upstream (the `provider/`
+        // prefix is opencode-internal and stripped before the request reaches
+        // `PolicyHook`). This MUST match `worker_config::materialize`'s split, or
+        // every worker call is denied as `ModelNotAllowed`.
         let policy = Policy {
             id: policy_id.clone(),
-            allowed_models: Some(vec![args.model.clone()]),
+            allowed_models: Some(vec![wire_model_id(&args.model).to_string()]),
             max_spend_micro_usd: Some(args.budget_micro_usd),
             allowed_tools: args.allowed_tools.clone(),
             ..Default::default()
@@ -207,6 +221,15 @@ impl RouterToolset for SpawnSubagentToolset {
 mod tests {
     use super::*;
     use bitrouter_sdk::caller::CallerContext;
+
+    #[test]
+    fn wire_model_id_strips_provider_prefix() {
+        // The policy allowlist must match what opencode sends on the wire.
+        assert_eq!(wire_model_id("bitrouter/z-ai/glm-5.1"), "z-ai/glm-5.1");
+        assert_eq!(wire_model_id("bitrouter/kimi-k2.6"), "kimi-k2.6");
+        // No provider prefix → unchanged.
+        assert_eq!(wire_model_id("m1"), "m1");
+    }
 
     async fn fixture() -> SpawnSubagentToolset {
         let db = crate::db::connect("sqlite::memory:").await.unwrap();

@@ -27,6 +27,8 @@ echo "==> worker spend (the subagent's brvk_ should show spend, capped at its bu
 bitrouter cloud usage
 
 echo
-echo "Finale: re-run with budget_micro_usd 1 to see the worker FAIL CLOSED — the"
-echo "first metered inference is denied (Forbidden) and the result shows capped:true."
-echo "If spend stays 0, the upstream isn't reporting streaming usage — switch models (spec §8)."
+echo "Finale: re-run with a tiny budget (e.g. budget_micro_usd 1) to see the worker"
+echo "FAIL CLOSED. The cap is checked pre-request against SETTLED spend, so the first"
+echo "inference runs; once its spend settles past the cap, the NEXT call is denied"
+echo "(Forbidden) and the result shows capped:true. If spend stays 0, the upstream"
+echo "isn't reporting streaming usage — switch models (spec §8)."

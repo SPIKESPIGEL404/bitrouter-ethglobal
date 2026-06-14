@@ -11,6 +11,23 @@ use tokio::process::{Child, ChildStdin, ChildStdout, Command};
 
 use bitrouter_sdk::{BitrouterError, Result};
 
+/// Environment variables passed through to the spawned worker. Deliberately a
+/// short allowlist (not the daemon's full env) so upstream provider API keys are
+/// never inherited — the worker reaches models only via its scoped `brvk_`.
+const ENV_PASSTHROUGH: &[&str] = &[
+    "PATH",
+    "HOME",
+    "LANG",
+    "LC_ALL",
+    "LC_CTYPE",
+    "TERM",
+    "TMPDIR",
+    "USER",
+    "SHELL",
+    "NODE_PATH",
+    "NODE_OPTIONS",
+];
+
 /// Outcome of driving one ACP prompt.
 #[derive(Debug, Clone, Default)]
 pub struct SessionOutcome {
@@ -36,6 +53,18 @@ pub struct WorkerSpawn {
 /// collect the outcome. `kill_on_drop` guarantees teardown.
 pub async fn drive_once(spawn: WorkerSpawn, task: &str) -> Result<SessionOutcome> {
     let mut cmd = Command::new(&spawn.command);
+    // Security: do NOT inherit the daemon's environment — it holds upstream
+    // provider API keys (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, …) the subagent
+    // must never see (the spec's "no upstream key to the child" guarantee). The
+    // worker reaches models ONLY through its scoped `brvk_` in `spawn.env`'s
+    // `OPENCODE_CONFIG`. Pass through just the minimal vars the harness needs to
+    // start (node/opencode lookup + locale), then the worker's own env.
+    cmd.env_clear();
+    for key in ENV_PASSTHROUGH {
+        if let Some(val) = std::env::var_os(key) {
+            cmd.env(key, val);
+        }
+    }
     cmd.args(&spawn.args)
         .envs(&spawn.env)
         .stdin(Stdio::piped())
@@ -129,6 +158,20 @@ pub async fn drive_once(spawn: WorkerSpawn, task: &str) -> Result<SessionOutcome
                 .get("stopReason")
                 .and_then(|v| v.as_str())
                 .map(|s| s.to_string());
+            break;
+        }
+        // Error response to our request (e.g. the worker's inference was DENIED
+        // by the budget cap). Don't swallow it — surface it as the stop reason so
+        // the fail-closed signal reaches the parent.
+        if msg.get("id").is_some() && msg.get("error").is_some() {
+            let emsg = msg["error"]
+                .get("message")
+                .and_then(|v| v.as_str())
+                .unwrap_or("agent error");
+            outcome.stop_reason = Some("error".to_string());
+            if outcome.final_message.is_empty() {
+                outcome.final_message = format!("agent error: {emsg}");
+            }
             break;
         }
         // Notification: has method, no id.

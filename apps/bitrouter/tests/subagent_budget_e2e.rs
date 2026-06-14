@@ -18,8 +18,10 @@
 //!   2. `bitrouter start --config examples/subagent-demo/bitrouter.demo.yaml`.
 //!   3. Drive the parent agent to call `spawn_subagent(model, budget_micro_usd=1,
 //!      task=...)` (a 1 µ$ cap).
-//!   4. Assert the worker's FIRST metered inference is denied (`Forbidden`) and the
-//!      structured tool result shows `capped: true` / a denied stop reason.
+//!   4. The cap is checked PRE-request against SETTLED spend (no per-request
+//!      reservation), so the first inference runs; once its spend settles past the
+//!      cap, the NEXT worker call is denied (`Forbidden`). Assert the structured
+//!      tool result shows `capped: true` (and/or `stop_reason: "error"`).
 //!   5. Cross-check `bitrouter cloud usage`: the worker key's spend == its cap.
 //!   6. If spend stays 0, the upstream is not reporting streaming usage — switch
 //!      models (spec §8). The cap silently no-ops on a `usage{0,0}` stream.
