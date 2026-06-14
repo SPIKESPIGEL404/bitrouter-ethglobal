@@ -9,7 +9,7 @@ use std::sync::{Arc, Mutex};
 
 use crate::caller::CallerContext;
 use crate::event::{EventBus, PipelineEvent};
-use crate::language_model::settlement::SettlementContext;
+use crate::language_model::settlement::{AttestationEvidence, SettlementContext};
 use crate::language_model::stream::UsageAccumulator;
 use crate::language_model::types::{
     ApiProtocol, Content, ExecutionResult, PipelineRequest, PipelineResponse, Prompt,
@@ -320,6 +320,31 @@ impl PipelineContext {
         let target = self.route_chain.as_ref().and_then(|c| c.first()).cloned();
         let exec = self.execution_result.as_ref();
         let usage = exec.and_then(|e| e.result.usage).unwrap_or_default();
+        // Lift any confidential-inference evidence the executor stashed in
+        // `provider_metadata` (today: the Chainlink attester's id + per-resource
+        // digests) into a typed field so recorders don't have to know the
+        // provider-specific metadata layout.
+        let attestation = exec
+            .map(|e| &e.result.provider_metadata)
+            .and_then(|pm| pm.get("chainlink"))
+            .and_then(|cl| {
+                let inference_id = cl.get("inference_id").and_then(|v| v.as_str())?.to_string();
+                let first = cl
+                    .get("resources")
+                    .and_then(|r| r.as_array())
+                    .and_then(|a| a.first());
+                let digest = |key: &str| {
+                    first
+                        .and_then(|r| r.get(key))
+                        .and_then(|v| v.as_str())
+                        .map(str::to_string)
+                };
+                Some(AttestationEvidence {
+                    inference_id,
+                    request_digest: digest("request_digest"),
+                    response_digest: digest("response_digest"),
+                })
+            });
         SettlementContext {
             request_id: self.request_id.clone(),
             caller: self.caller.clone(),
@@ -336,6 +361,7 @@ impl PipelineContext {
             latency_ms: exec.map(|e| e.latency_ms).unwrap_or(0),
             generation_time_ms: exec.map(|e| e.generation_time_ms).unwrap_or(0),
             error: None,
+            attestation,
             events: std::mem::take(&mut self.events),
         }
     }

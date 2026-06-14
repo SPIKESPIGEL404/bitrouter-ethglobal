@@ -94,6 +94,19 @@ impl SettlementRecorder for MeteringRecorder {
             generation_time_ms: ctx.generation_time_ms,
             streamed: ctx.streamed,
             error: ctx.error.as_ref().map(|e| e.to_string()),
+            // Carry any confidential-inference evidence the executor surfaced
+            // (Chainlink id + digests) onto the ledger row. Payment receipt
+            // fields (rail / tx / delegate) are attached by the pay path.
+            receipt: ctx
+                .attestation
+                .as_ref()
+                .map(|a| crate::metering::LedgerReceipt {
+                    attestation_id: Some(a.inference_id.clone()),
+                    request_digest: a.request_digest.clone(),
+                    response_digest: a.response_digest.clone(),
+                    ..Default::default()
+                })
+                .unwrap_or_default(),
         };
         self.store.record_request(metric).await
     }

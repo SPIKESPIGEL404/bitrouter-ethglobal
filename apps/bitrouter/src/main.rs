@@ -137,6 +137,21 @@ enum Command {
         #[arg(short, long)]
         provider: Option<String>,
     },
+    /// Show the unified spend + receipts ledger: per call, the model, payment
+    /// rail, estimated cost, settlement tx, and attestation id (PRD §8.6).
+    /// Reads the local metering DB named by `database.url` in the config.
+    Ledger {
+        /// Path to `bitrouter.yaml` (used to resolve `database.url`). Resolves
+        /// via the standard chain when omitted.
+        #[arg(short, long)]
+        config: Option<PathBuf>,
+        /// Maximum number of rows to show (newest first).
+        #[arg(short, long, default_value_t = 20)]
+        limit: u64,
+        /// Emit the rows as JSON instead of the human-readable table.
+        #[arg(long)]
+        json: bool,
+    },
     /// Verify a confidential model's TEE attestation (L1): prove it runs on
     /// genuine Intel TDX + NVIDIA GPU hardware running the legitimate,
     /// policy-pinned model. Reads the DCAP policy pins + NVIDIA EAT key from the
@@ -540,6 +555,14 @@ async fn run() -> Result<()> {
         Command::Models { config, provider } => {
             let source = bitrouter::paths::resolve_config(config.as_deref())?;
             models(&source, provider.as_deref()).await
+        }
+        Command::Ledger {
+            config,
+            limit,
+            json,
+        } => {
+            let source = bitrouter::paths::resolve_config(config.as_deref())?;
+            ledger(&source, limit, json).await
         }
         Command::Verify { model } => verify_attestation(&model).await,
         #[cfg(feature = "chainlink-demo")]
@@ -1326,6 +1349,77 @@ fn print_route_chain(model: &str, chain: &[RouteHop], source: &str) {
             hop.api_protocol
         );
     }
+}
+
+/// `bitrouter ledger` — render the unified spend + receipts ledger from the
+/// local metering DB (`database.url`). One row per settled call: the model,
+/// payment rail, estimated cost, settlement tx, and attestation id (PRD §8.6).
+async fn ledger(source: &bitrouter::paths::ConfigSource, limit: u64, json: bool) -> Result<()> {
+    let cfg = bitrouter::paths::load_config(source).await?;
+    let entries = commands::list_ledger(&cfg.database.url, limit).await?;
+    if json {
+        println!("{}", serde_json::to_string_pretty(&entries)?);
+        return Ok(());
+    }
+    print_ledger(&entries);
+    Ok(())
+}
+
+/// Render the ledger as an aligned table, newest first, with a spend total.
+/// Empty / `None` receipt fields render as `—` so an unpaid, unattested call
+/// reads cleanly alongside a paid + attested one.
+fn print_ledger(entries: &[bitrouter::metering::LedgerEntry]) {
+    if entries.is_empty() {
+        println!("ledger is empty — no settled requests recorded yet");
+        return;
+    }
+    /// Byte-safe left-truncation (ledger ids are ASCII; falls back to the full
+    /// string if `n` isn't a char boundary).
+    fn trunc(s: &str, n: usize) -> &str {
+        s.get(..n).unwrap_or(s)
+    }
+    /// Shorten an optional hash/id for the table, or `—` when absent.
+    fn short(s: &Option<String>) -> String {
+        match s {
+            Some(v) if v.len() > 12 => format!("{}…", v.get(..11).unwrap_or(v)),
+            Some(v) => v.clone(),
+            None => "—".to_string(),
+        }
+    }
+    println!(
+        "{:<19}  {:<16}  {:<10}  {:>7}  {:>9}  {:<5}  {:<12}  {:<12}  {:<6}",
+        "time", "model", "provider", "tokens", "uUSD", "rail", "pay_tx", "attest", "status"
+    );
+    for e in entries {
+        let tokens = e.prompt_tokens + e.completion_tokens;
+        let status = if e.error.is_some() {
+            "err"
+        } else if e.attestation_id.is_some() {
+            "attest"
+        } else {
+            "ok"
+        };
+        let time = e.created_at.get(..19).unwrap_or(&e.created_at);
+        println!(
+            "{:<19}  {:<16}  {:<10}  {:>7}  {:>9}  {:<5}  {:<12}  {:<12}  {:<6}",
+            time,
+            trunc(&e.model_id, 16),
+            trunc(&e.provider_id, 10),
+            tokens,
+            e.estimated_charge_micro_usd,
+            e.rail.clone().unwrap_or_else(|| "—".to_string()),
+            short(&e.pay_tx),
+            short(&e.attestation_id),
+            status,
+        );
+    }
+    let total: i64 = entries.iter().map(|e| e.estimated_charge_micro_usd).sum();
+    println!();
+    println!(
+        "total estimated spend: {total} uUSD (${:.6}) across {} call(s)",
+        total as f64 / 1_000_000.0,
+        entries.len(),
+    );
 }
 
 /// `bitrouter verify <model>` — run an L1 TEE-attestation check for a

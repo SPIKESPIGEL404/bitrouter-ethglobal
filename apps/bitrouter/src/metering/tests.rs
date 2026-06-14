@@ -34,6 +34,7 @@ fn ctx(api_key: &str, prompt: u64, completion: u64) -> SettlementContext {
         latency_ms: 100,
         generation_time_ms: 80,
         error: None,
+        attestation: None,
         events: bitrouter_sdk::EventBus::new(),
     }
 }
@@ -153,6 +154,122 @@ async fn migrate_renames_legacy_final_charge_column() -> Result<()> {
     let store = MeteringStore::new(pool);
     let spend = store.get_spend("k", TimeWindow::ThisMonth).await?;
     assert_eq!(spend, 42, "legacy row's spend is preserved across rename");
+    Ok(())
+}
+
+/// The unified ledger round-trips its receipt columns: a paid + attested call
+/// carries rail / tx / attestation / digests / delegate; a plain call leaves
+/// them empty. Also exercises that migration 4 added the columns to a fresh DB.
+#[tokio::test]
+async fn ledger_records_and_reads_receipt_fields() -> Result<()> {
+    use super::{LedgerReceipt, RequestMetric};
+    let pool = pool().await;
+    let store = MeteringStore::new(pool.clone());
+
+    store
+        .record_request(RequestMetric {
+            request_id: "r-pay".into(),
+            user_id: "u1".into(),
+            api_key_id: "k1".into(),
+            model_id: "gemma4".into(),
+            provider_id: "chainlink".into(),
+            prompt_tokens: 12,
+            completion_tokens: 4,
+            reasoning_tokens: 0,
+            cache_read_tokens: 0,
+            cache_write_tokens: 0,
+            estimated_charge_micro_usd: 1530,
+            latency_ms: 200,
+            generation_time_ms: 150,
+            streamed: false,
+            error: None,
+            receipt: LedgerReceipt {
+                rail: Some("x402".into()),
+                pay_tx: Some("0xabc123".into()),
+                attestation_id: Some("0198-infer".into()),
+                request_digest: Some("sha-req".into()),
+                response_digest: Some("sha-resp".into()),
+                memory_delegate: Some("0xSubagentSui".into()),
+            },
+        })
+        .await?;
+
+    store
+        .record_request(RequestMetric {
+            request_id: "r-plain".into(),
+            user_id: "u1".into(),
+            api_key_id: "k1".into(),
+            model_id: "gpt-5".into(),
+            provider_id: "openai".into(),
+            prompt_tokens: 1,
+            completion_tokens: 1,
+            reasoning_tokens: 0,
+            cache_read_tokens: 0,
+            cache_write_tokens: 0,
+            estimated_charge_micro_usd: 12,
+            latency_ms: 10,
+            generation_time_ms: 8,
+            streamed: false,
+            error: None,
+            receipt: LedgerReceipt::default(),
+        })
+        .await?;
+
+    let rows = store.list_recent(10).await?;
+    assert_eq!(rows.len(), 2, "both rows surface in the ledger");
+
+    let paid = rows
+        .iter()
+        .find(|e| e.model_id == "gemma4")
+        .expect("paid row present");
+    assert_eq!(paid.rail.as_deref(), Some("x402"));
+    assert_eq!(paid.pay_tx.as_deref(), Some("0xabc123"));
+    assert_eq!(paid.attestation_id.as_deref(), Some("0198-infer"));
+    assert_eq!(paid.request_digest.as_deref(), Some("sha-req"));
+    assert_eq!(paid.response_digest.as_deref(), Some("sha-resp"));
+    assert_eq!(paid.memory_delegate.as_deref(), Some("0xSubagentSui"));
+
+    let plain = rows
+        .iter()
+        .find(|e| e.model_id == "gpt-5")
+        .expect("plain row present");
+    assert!(
+        plain.rail.is_none() && plain.pay_tx.is_none() && plain.attestation_id.is_none(),
+        "a plain inference records no payment / attestation receipt"
+    );
+    Ok(())
+}
+
+/// A confidential-inference call surfaces the attester's id + digests on its
+/// SettlementContext; the recorder must persist them as the row's receipt so
+/// `bitrouter ledger` shows the attestation alongside the spend (PRD G6/G7).
+#[tokio::test]
+async fn attestation_evidence_lands_on_the_ledger_row() -> Result<()> {
+    use bitrouter_sdk::language_model::settlement::AttestationEvidence;
+    let pool = pool().await;
+    let store = MeteringStore::new(pool.clone());
+    let recorder = MeteringRecorder::new(store.clone(), pricing());
+    let mut c = ctx("k1", 10, 5);
+    c.attestation = Some(AttestationEvidence {
+        inference_id: "0198-abc".into(),
+        request_digest: Some("sha-req".into()),
+        response_digest: Some("sha-resp".into()),
+    });
+    recorder.record(&mut c).await?;
+
+    let rows = store.list_recent(10).await?;
+    let row = rows.first().expect("one settled row");
+    assert_eq!(row.attestation_id.as_deref(), Some("0198-abc"));
+    assert_eq!(row.request_digest.as_deref(), Some("sha-req"));
+    assert_eq!(row.response_digest.as_deref(), Some("sha-resp"));
+    // A plain (unattested) call leaves the receipt empty.
+    recorder.record(&mut ctx("k2", 1, 1)).await?;
+    let plain = store
+        .list_recent(10)
+        .await?
+        .into_iter()
+        .find(|r| r.attestation_id.is_none());
+    assert!(plain.is_some(), "an unattested call records no attestation");
     Ok(())
 }
 

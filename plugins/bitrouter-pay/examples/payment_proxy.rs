@@ -29,6 +29,7 @@ use axum::http::{StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use axum::routing::post;
 
+use bitrouter_pay::payment::x402::InferenceFormat;
 use bitrouter_pay::{AGENT_WALLET_ADDRESS, ARC_TESTNET_CHAIN_ID, ArcSigner, X402Client};
 use serde_json::Value;
 
@@ -176,7 +177,26 @@ async fn chat_completions(State(state): State<ProxyState>, body: Bytes) -> Respo
 /// model backend timing out) even though the payment landed — the hash is still
 /// present in the error body, so we scan both the success and failure text.
 async fn pay_via_proceeds(x402: &X402Client, body: &Value) -> Option<String> {
-    let text = match x402.post(PROCEEDS_URL, Some(body.clone())).await {
+    // The current `X402Client::post` builds the inference request itself from
+    // (format, model, prompt), so pull those out of the caller's OpenAI-style
+    // body — the model and the latest message content.
+    let model = body
+        .get("model")
+        .and_then(Value::as_str)
+        .unwrap_or("qwen3.6");
+    let prompt = body
+        .get("messages")
+        .and_then(Value::as_array)
+        .and_then(|msgs| {
+            msgs.iter()
+                .rev()
+                .find_map(|m| m.get("content").and_then(Value::as_str))
+        })
+        .unwrap_or_default();
+    let text = match x402
+        .post(PROCEEDS_URL, InferenceFormat::OpenAI, model, prompt)
+        .await
+    {
         Ok(v) => v.to_string(),
         Err(e) => e.to_string(),
     };
