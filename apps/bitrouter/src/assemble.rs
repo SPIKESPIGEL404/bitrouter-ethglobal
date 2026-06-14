@@ -210,6 +210,7 @@ pub async fn build_app_with_path(
     let metering_store = MeteringStore::new(db.clone());
     let metering_store_for_policy = metering_store.clone();
     let metering_store_for_recorder = metering_store.clone();
+    let metering_store_for_subagent = metering_store.clone();
     let pricing_for_recorder = pricing.clone();
     let policy_store: Arc<PolicyStore> = Arc::new(load_policy_store(config).await?);
     let policy_store_for_reload = policy_store.clone();
@@ -336,12 +337,20 @@ pub async fn build_app_with_path(
         }
     });
 
-    // Server-side tool loop — wired only when `server_tools.mcp_servers` names
-    // at least one configured MCP server. Reuses the MCP executor/routing built
-    // above; here BitRouter is an MCP *client* that executes the model's tool
-    // calls inside the LLM loop (distinct from the `/mcp` gateway above).
-    let server_tool_loop =
-        build_server_tool_loop(config, &mcp_routing, &mcp_executor, &memory_scope_cfg);
+    // Server-side tool loop — wired when `server_tools.mcp_servers` names at
+    // least one configured MCP server, when always-on memory is enabled, or
+    // when `server_tools.spawn_subagent` is set. Reuses the MCP executor/routing
+    // built above; here BitRouter is an MCP *client* that executes the model's
+    // tool calls inside the LLM loop (distinct from the `/mcp` gateway above).
+    let server_tool_loop = build_server_tool_loop(
+        config,
+        &mcp_routing,
+        &mcp_executor,
+        &db,
+        &policy_store,
+        &metering_store_for_subagent,
+        &memory_scope_cfg,
+    );
 
     // Optional ACP pure-routing pipeline — wired only when the config
     // declares at least one upstream agent. Mirrors the MCP wiring above;
@@ -476,7 +485,8 @@ pub async fn build_app_with_path(
     })
 }
 
-/// Build the server-side tool loop from `config.server_tools` plus the
+/// Build the server-side tool loop from `config.server_tools` over the MCP
+/// executor/routing already assembled for the `/mcp` gateway, plus the
 /// always-on memory wiring derived from `memory_cfg`.
 ///
 /// BitRouter acts as an MCP *client* here: it injects the named servers' tools
@@ -484,16 +494,22 @@ pub async fn build_app_with_path(
 /// (distinct from the `/mcp` gateway). When `memory_cfg.always.enabled` is set,
 /// the memory server is auto-added (even when absent from
 /// `server_tools.mcp_servers`), recall is forced as the first tool call, and a
-/// "persist before ending" instruction is prepended to the system prompt.
+/// "persist before ending" instruction is prepended to the system prompt. When
+/// `server_tools.spawn_subagent` is set, a [`SpawnSubagentToolset`] is added —
+/// it needs no MCP stack, so it can wire the loop on its own.
 ///
-/// Returns `None` when no server is named and always-memory is off, when the
-/// MCP stack was not built, or when none of the named servers exist.
+/// Returns `None` when nothing is wired: no MCP server named (and always-memory
+/// off), no `spawn_subagent`, or none of the named servers resolved.
 fn build_server_tool_loop(
     config: &Config,
     mcp_routing: &Option<Arc<ConfigMcpRoutingTable>>,
     mcp_executor: &Option<Arc<dyn bitrouter_sdk::mcp::Executor>>,
+    db: &sea_orm::DatabaseConnection,
+    policy_store: &Arc<PolicyStore>,
+    metering: &MeteringStore,
     memory_cfg: &MemoryScopeConfig,
 ) -> Option<Arc<ServerToolLoop>> {
+    let settings = &config.server_tools;
     let always = memory_cfg.always.as_ref().filter(|a| a.enabled);
     // The memory server to auto-wire, when always-memory is on and a server is
     // configured. `None` disables the always-memory wiring entirely.
@@ -503,23 +519,12 @@ fn build_server_tool_loop(
 
     // Servers whose tools the loop injects: the explicit `server_tools` list,
     // plus the memory server when always-memory is on (de-duplicated).
-    let mut server_names = config.server_tools.mcp_servers.clone();
+    let mut server_names = settings.mcp_servers.clone();
     if let Some(mem) = &memory_server
         && !server_names.iter().any(|n| n == mem)
     {
         server_names.push(mem.clone());
     }
-    if server_names.is_empty() {
-        return None;
-    }
-    let (Some(routing), Some(executor)) = (mcp_routing, mcp_executor) else {
-        tracing::warn!(
-            "the server-side tool loop names an MCP server but no mcp_servers are \
-             configured; the loop is disabled"
-        );
-        return None;
-    };
-    let routing: Arc<dyn bitrouter_sdk::mcp::RoutingTable> = routing.clone();
 
     // Resolve a server's advertised tool prefix (its `tool_prefix`, or `{name}__`).
     let prefix_of = |name: &str| -> Option<String> {
@@ -532,19 +537,44 @@ fn build_server_tool_loop(
     };
 
     let mut sets: Vec<Arc<dyn RouterToolset>> = Vec::with_capacity(server_names.len());
-    for name in &server_names {
-        let Some(prefix) = prefix_of(name) else {
-            tracing::warn!(server = %name,
-                "the server-side tool loop names an MCP server absent from mcp_servers; skipping");
-            continue;
-        };
-        sets.push(Arc::new(McpRouterToolset::new(
-            executor.clone(),
-            routing.clone(),
-            name.clone(),
-            Some(prefix),
-        )));
+
+    // MCP toolsets — only when a server is named *and* the MCP stack was built.
+    // Unlike spawn_subagent, these require the executor/routing assembled above.
+    if !server_names.is_empty() {
+        if let (Some(routing), Some(executor)) = (mcp_routing, mcp_executor) {
+            let routing: Arc<dyn bitrouter_sdk::mcp::RoutingTable> = routing.clone();
+            for name in &server_names {
+                let Some(prefix) = prefix_of(name) else {
+                    tracing::warn!(server = %name,
+                        "the server-side tool loop names an MCP server absent from mcp_servers; skipping");
+                    continue;
+                };
+                sets.push(Arc::new(McpRouterToolset::new(
+                    executor.clone(),
+                    routing.clone(),
+                    name.clone(),
+                    Some(prefix),
+                )));
+            }
+        } else {
+            tracing::warn!(
+                "the server-side tool loop names an MCP server but no mcp_servers are \
+                 configured; those toolsets are disabled"
+            );
+        }
     }
+
+    if let Some(sa) = &settings.spawn_subagent {
+        sets.push(Arc::new(
+            crate::subagent::toolset::SpawnSubagentToolset::new(
+                db.clone(),
+                policy_store.clone(),
+                metering.clone(),
+                sa.clone(),
+            ),
+        ));
+    }
+
     if sets.is_empty() {
         return None;
     }
@@ -876,26 +906,85 @@ mod server_tools_tests {
         )
     }
 
-    #[test]
-    fn no_loop_when_server_tools_unset() {
+    #[tokio::test]
+    async fn no_loop_when_server_tools_unset() {
         let config = Config::default();
+        let db = crate::db::connect("sqlite::memory:").await.unwrap();
+        crate::db::run_migrations(&db).await.unwrap();
+        let store = std::sync::Arc::new(crate::policy::PolicyStore::new());
+        let metering = crate::metering::MeteringStore::new(db.clone());
         assert!(
-            build_server_tool_loop(&config, &None, &None, &MemoryScopeConfig::default()).is_none()
+            build_server_tool_loop(
+                &config,
+                &None,
+                &None,
+                &db,
+                &store,
+                &metering,
+                &MemoryScopeConfig::default()
+            )
+            .is_none()
         );
     }
 
-    #[test]
-    fn no_loop_when_named_but_mcp_stack_absent() {
+    #[tokio::test]
+    async fn no_loop_when_named_but_mcp_stack_absent() {
         let mut config = Config::default();
         config.server_tools.mcp_servers = vec!["docs".to_string()];
+        let db = crate::db::connect("sqlite::memory:").await.unwrap();
+        crate::db::run_migrations(&db).await.unwrap();
+        let store = std::sync::Arc::new(crate::policy::PolicyStore::new());
+        let metering = crate::metering::MeteringStore::new(db.clone());
         // server_tools names a server but no MCP executor/routing was built.
         assert!(
-            build_server_tool_loop(&config, &None, &None, &MemoryScopeConfig::default()).is_none()
+            build_server_tool_loop(
+                &config,
+                &None,
+                &None,
+                &db,
+                &store,
+                &metering,
+                &MemoryScopeConfig::default()
+            )
+            .is_none()
         );
     }
 
-    #[test]
-    fn always_memory_auto_adds_server_without_explicit_server_tools() {
+    #[tokio::test]
+    async fn spawn_subagent_config_builds_a_loop() {
+        use bitrouter_sdk::language_model::server_tools::config::{
+            ServerToolsConfig, SpawnSubagentConfig,
+        };
+        let mut config = Config::default();
+        config.server_tools = ServerToolsConfig {
+            mcp_servers: vec![],
+            max_iterations: None,
+            spawn_subagent: Some(SpawnSubagentConfig {
+                models: vec!["bitrouter/z-ai/glm-5.1".into()],
+                ..Default::default()
+            }),
+        };
+        let db = crate::db::connect("sqlite::memory:").await.unwrap();
+        crate::db::run_migrations(&db).await.unwrap();
+        let store = std::sync::Arc::new(crate::policy::PolicyStore::new());
+        let metering = crate::metering::MeteringStore::new(db.clone());
+        let built = build_server_tool_loop(
+            &config,
+            &None,
+            &None,
+            &db,
+            &store,
+            &metering,
+            &MemoryScopeConfig::default(),
+        );
+        assert!(
+            built.is_some(),
+            "spawn_subagent alone should build the loop"
+        );
+    }
+
+    #[tokio::test]
+    async fn always_memory_auto_adds_server_without_explicit_server_tools() {
         // `server_tools.mcp_servers` is empty, but enabling always-memory must
         // still wire the memory server into the loop.
         let mut config = Config::default();
@@ -910,11 +999,26 @@ mod server_tools_tests {
         let routing = Some(routing(&config));
         let executor: Option<Arc<dyn bitrouter_sdk::mcp::Executor>> =
             Some(Arc::new(RmcpExecutor::new()));
-        assert!(build_server_tool_loop(&config, &routing, &executor, &memory_cfg).is_some());
+        let db = crate::db::connect("sqlite::memory:").await.unwrap();
+        crate::db::run_migrations(&db).await.unwrap();
+        let store = std::sync::Arc::new(crate::policy::PolicyStore::new());
+        let metering = crate::metering::MeteringStore::new(db.clone());
+        assert!(
+            build_server_tool_loop(
+                &config,
+                &routing,
+                &executor,
+                &db,
+                &store,
+                &metering,
+                &memory_cfg
+            )
+            .is_some()
+        );
     }
 
-    #[test]
-    fn always_memory_disabled_is_no_op() {
+    #[tokio::test]
+    async fn always_memory_disabled_is_no_op() {
         // Memory server present but `always` absent and no server_tools ⇒ no loop.
         let mut config = Config::default();
         config
@@ -922,6 +1026,13 @@ mod server_tools_tests {
             .insert("memory".to_string(), http_server("memory"));
         let memory_cfg: MemoryScopeConfig =
             serde_json::from_value(serde_json::json!({ "server": "memory" })).unwrap();
-        assert!(build_server_tool_loop(&config, &None, &None, &memory_cfg).is_none());
+        let db = crate::db::connect("sqlite::memory:").await.unwrap();
+        crate::db::run_migrations(&db).await.unwrap();
+        let store = std::sync::Arc::new(crate::policy::PolicyStore::new());
+        let metering = crate::metering::MeteringStore::new(db.clone());
+        assert!(
+            build_server_tool_loop(&config, &None, &None, &db, &store, &metering, &memory_cfg)
+                .is_none()
+        );
     }
 }

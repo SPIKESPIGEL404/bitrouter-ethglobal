@@ -11,10 +11,10 @@ use crate::PayError;
 use crate::attester::run_attested_inference;
 #[cfg(feature = "mpp")]
 use crate::payment::mpp::{ArcMppBackend, MppBackend, MppClient};
-#[cfg(feature = "x402")]
-use crate::payment::x402::{InferenceFormat, X402Client};
 #[cfg(all(feature = "x402", feature = "mpp"))]
 use crate::payment::x402::build_inference_request_body;
+#[cfg(feature = "x402")]
+use crate::payment::x402::{InferenceFormat, X402Client};
 use crate::wallet::ArcSigner;
 
 /// BitRouter MPP endpoint used as fallback when x402 upstream is unavailable.
@@ -91,7 +91,10 @@ impl ArcPaymentGate {
     /// attempted first; if it fails with an upstream/payment error (i.e. the payment was
     /// submitted but the AI backend returned 4xx/5xx), MPP is tried as a fallback.
     /// Signing errors and malformed-challenge errors are not retried.
-    async fn execute_payment_route(&self, request: &PaymentRouteRequest) -> Result<Value, PayError> {
+    async fn execute_payment_route(
+        &self,
+        request: &PaymentRouteRequest,
+    ) -> Result<Value, PayError> {
         if request.mpp {
             #[cfg(feature = "mpp")]
             return self.mpp.post(&request.url, request.body.clone()).await;
@@ -109,9 +112,10 @@ impl ArcPaymentGate {
             } else {
                 InferenceFormat::OpenAI
             };
-            let model = request.model.as_deref().ok_or_else(|| {
-                PayError::PaymentFailed("x402 route requires model".into())
-            })?;
+            let model = request
+                .model
+                .as_deref()
+                .ok_or_else(|| PayError::PaymentFailed("x402 route requires model".into()))?;
             let prompt = request.prompt.as_deref().unwrap_or("");
 
             let x402_result = self.x402.post(&request.url, fmt, model, prompt).await;
@@ -130,7 +134,9 @@ impl ArcPaymentGate {
                             PayError::PaymentFailed(_) | PayError::UpstreamError(_)
                         ) =>
                     {
-                        info!("x402 failed ({x402_err}), attempting MPP fallback via {BITROUTER_MPP_URL}");
+                        info!(
+                            "x402 failed ({x402_err}), attempting MPP fallback via {BITROUTER_MPP_URL}"
+                        );
                         let fallback_body = build_inference_request_body(fmt, model, prompt);
                         match self.mpp.post(BITROUTER_MPP_URL, Some(fallback_body)).await {
                             Ok(b) => {

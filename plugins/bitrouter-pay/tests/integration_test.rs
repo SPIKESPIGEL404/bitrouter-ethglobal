@@ -14,8 +14,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use alloy::primitives::{Address, B256};
 use bitrouter_pay::payment::x402::{
-    build_inference_request_body, build_transfer_authorization_typed_data, InferenceFormat,
-    TransferAuthorization,
+    InferenceFormat, TransferAuthorization, build_inference_request_body,
+    build_transfer_authorization_typed_data,
 };
 use bitrouter_pay::{
     ArcMppBackend, ArcPaymentGate, ArcPaymentGateConfig, ArcSigner, AttestationReceipt,
@@ -279,7 +279,12 @@ async fn run_x402_payment_loop(format: InferenceFormat, model: &str, label: &str
 #[tokio::test]
 #[ignore]
 async fn test_x402_payment_loop() {
-    run_x402_payment_loop(InferenceFormat::OpenAI, "qwen3.6", "Test 1: x402 payment loop (OpenAI format)").await;
+    run_x402_payment_loop(
+        InferenceFormat::OpenAI,
+        "qwen3.6",
+        "Test 1: x402 payment loop (OpenAI format)",
+    )
+    .await;
 }
 
 // ── Test 1b — x402 payment loop (Anthropic format) ───────────────────────────
