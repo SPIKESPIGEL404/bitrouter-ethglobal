@@ -338,10 +338,10 @@ pub async fn build_app_with_path(
     });
 
     // Server-side tool loop — wired when `server_tools.mcp_servers` names at
-    // least one configured MCP server, or when `server_tools.spawn_subagent`
-    // is set. Reuses the MCP executor/routing built above; here BitRouter is
-    // an MCP *client* that executes the model's tool calls inside the LLM loop
-    // (distinct from the `/mcp` gateway above).
+    // least one configured MCP server, when always-on memory is enabled, or
+    // when `server_tools.spawn_subagent` is set. Reuses the MCP executor/routing
+    // built above; here BitRouter is an MCP *client* that executes the model's
+    // tool calls inside the LLM loop (distinct from the `/mcp` gateway above).
     let server_tool_loop = build_server_tool_loop(
         config,
         &mcp_routing,
@@ -349,6 +349,7 @@ pub async fn build_app_with_path(
         &db,
         &policy_store,
         &metering_store_for_subagent,
+        &memory_scope_cfg,
     );
 
     // Optional ACP pure-routing pipeline — wired only when the config
@@ -436,6 +437,17 @@ pub async fn build_app_with_path(
             app
         }
     };
+    // MPP payment gate (demo only): when `MPP_SECRET_KEY` is set, every
+    // inbound inference request must fund itself with a Tempo charge on Arc
+    // testnet before the pipeline runs. The hook denies an unpaid request with
+    // a 402 carrying a fresh MPP challenge; a request that echoes a verified
+    // credential is admitted. No `MPP_SECRET_KEY` → no paywall, so a plain
+    // demo run keeps the open (unpaid) behaviour.
+    #[cfg(feature = "chainlink-demo")]
+    let app = match build_mpp_paywall()? {
+        Some(plugin) => app.plugin(plugin),
+        None => app,
+    };
     // Apply the optional MCP pipeline configuration in a second builder step
     // so the language_model configuration above stays the same shape it has
     // had since v0.
@@ -474,12 +486,20 @@ pub async fn build_app_with_path(
 }
 
 /// Build the server-side tool loop from `config.server_tools` over the MCP
-/// executor/routing already assembled for the `/mcp` gateway. Returns `None`
-/// when neither `server_tools.mcp_servers` nor `server_tools.spawn_subagent`
-/// is configured. Each named MCP server is attached as an [`McpRouterToolset`]
-/// using a `Direct` selector and the server's `tool_prefix` (default
-/// `"{name}__"`), so router tool names cannot collide with the caller's own
-/// tools. When `spawn_subagent` is set, a [`SpawnSubagentToolset`] is added.
+/// executor/routing already assembled for the `/mcp` gateway, plus the
+/// always-on memory wiring derived from `memory_cfg`.
+///
+/// BitRouter acts as an MCP *client* here: it injects the named servers' tools
+/// into LLM requests and executes the model's tool calls inside the loop
+/// (distinct from the `/mcp` gateway). When `memory_cfg.always.enabled` is set,
+/// the memory server is auto-added (even when absent from
+/// `server_tools.mcp_servers`), recall is forced as the first tool call, and a
+/// "persist before ending" instruction is prepended to the system prompt. When
+/// `server_tools.spawn_subagent` is set, a [`SpawnSubagentToolset`] is added —
+/// it needs no MCP stack, so it can wire the loop on its own.
+///
+/// Returns `None` when nothing is wired: no MCP server named (and always-memory
+/// off), no `spawn_subagent`, or none of the named servers resolved.
 fn build_server_tool_loop(
     config: &Config,
     mcp_routing: &Option<Arc<ConfigMcpRoutingTable>>,
@@ -487,23 +507,48 @@ fn build_server_tool_loop(
     db: &sea_orm::DatabaseConnection,
     policy_store: &Arc<PolicyStore>,
     metering: &MeteringStore,
+    memory_cfg: &MemoryScopeConfig,
 ) -> Option<Arc<ServerToolLoop>> {
     let settings = &config.server_tools;
-    let mut sets: Vec<Arc<dyn RouterToolset>> = Vec::new();
+    let always = memory_cfg.always.as_ref().filter(|a| a.enabled);
+    // The memory server to auto-wire, when always-memory is on and a server is
+    // configured. `None` disables the always-memory wiring entirely.
+    let memory_server = always
+        .map(|_| memory_cfg.server.clone())
+        .filter(|s| !s.is_empty());
 
-    if !settings.mcp_servers.is_empty() {
+    // Servers whose tools the loop injects: the explicit `server_tools` list,
+    // plus the memory server when always-memory is on (de-duplicated).
+    let mut server_names = settings.mcp_servers.clone();
+    if let Some(mem) = &memory_server
+        && !server_names.iter().any(|n| n == mem)
+    {
+        server_names.push(mem.clone());
+    }
+
+    // Resolve a server's advertised tool prefix (its `tool_prefix`, or `{name}__`).
+    let prefix_of = |name: &str| -> Option<String> {
+        config.mcp_servers.get(name).map(|server| {
+            server
+                .tool_prefix
+                .clone()
+                .unwrap_or_else(|| format!("{name}__"))
+        })
+    };
+
+    let mut sets: Vec<Arc<dyn RouterToolset>> = Vec::with_capacity(server_names.len());
+
+    // MCP toolsets — only when a server is named *and* the MCP stack was built.
+    // Unlike spawn_subagent, these require the executor/routing assembled above.
+    if !server_names.is_empty() {
         if let (Some(routing), Some(executor)) = (mcp_routing, mcp_executor) {
             let routing: Arc<dyn bitrouter_sdk::mcp::RoutingTable> = routing.clone();
-            for name in &settings.mcp_servers {
-                let Some(server) = config.mcp_servers.get(name) else {
+            for name in &server_names {
+                let Some(prefix) = prefix_of(name) else {
                     tracing::warn!(server = %name,
-                        "server_tools.mcp_servers names an MCP server absent from mcp_servers; skipping");
+                        "the server-side tool loop names an MCP server absent from mcp_servers; skipping");
                     continue;
                 };
-                let prefix = server
-                    .tool_prefix
-                    .clone()
-                    .unwrap_or_else(|| format!("{name}__"));
                 sets.push(Arc::new(McpRouterToolset::new(
                     executor.clone(),
                     routing.clone(),
@@ -513,8 +558,8 @@ fn build_server_tool_loop(
             }
         } else {
             tracing::warn!(
-                "server_tools.mcp_servers is set but no mcp_servers are configured; \
-                 those toolsets are disabled"
+                "the server-side tool loop names an MCP server but no mcp_servers are \
+                 configured; those toolsets are disabled"
             );
         }
     }
@@ -534,14 +579,50 @@ fn build_server_tool_loop(
         return None;
     }
     let mut loop_config = ServerToolLoopConfig::default();
-    if let Some(max) = settings.max_iterations {
+    if let Some(max) = config.server_tools.max_iterations {
         loop_config.max_iterations = max;
     }
-    Some(Arc::new(ServerToolLoop::new(
-        ToolsetRegistry::new(sets),
-        loop_config,
-        Arc::new(AllowAll),
-    )))
+    let mut server_loop =
+        ServerToolLoop::new(ToolsetRegistry::new(sets), loop_config, Arc::new(AllowAll));
+
+    // Always-on memory: force the prefixed recall tool first and instruct the
+    // model to persist via the prefixed remember tool before ending the turn.
+    if let Some(always) = always
+        && let Some(mem) = &memory_server
+        && let Some(prefix) = prefix_of(mem)
+    {
+        let recall = format!("{prefix}{}", always.recall_tool);
+        let remember = format!("{prefix}memwal_remember");
+        let instruction = always.remember_instruction.replace("{remember}", &remember);
+        server_loop = server_loop
+            .with_forced_first_tool(Some(recall))
+            .with_system_instruction(Some(instruction));
+    }
+    Some(Arc::new(server_loop))
+}
+
+/// Build the server-side MPP paywall plugin when `MPP_SECRET_KEY` is set.
+///
+/// Returns `Ok(None)` when the secret is absent or empty, so a demo run
+/// without the env var keeps the open (unpaid) behaviour and existing
+/// functionality is preserved. The collecting address and per-request price
+/// come from `MPP_RECIPIENT` / `MPP_AMOUNT`, defaulting to the Arc-testnet
+/// treasury address and `0.001` USDC respectively. The charge is always bound
+/// to Arc testnet (`eip155:5042002`).
+#[cfg(feature = "chainlink-demo")]
+fn build_mpp_paywall() -> Result<Option<bitrouter_pay::MppPaywallPlugin>> {
+    let secret = match std::env::var("MPP_SECRET_KEY") {
+        Ok(s) if !s.is_empty() => s,
+        _ => return Ok(None),
+    };
+    let recipient = std::env::var("MPP_RECIPIENT")
+        .unwrap_or_else(|_| bitrouter_pay::AGENT_WALLET_ADDRESS.to_string());
+    let amount = std::env::var("MPP_AMOUNT").unwrap_or_else(|_| "0.001".to_string());
+    let config = bitrouter_pay::MppPaywallConfig::arc_testnet(recipient, secret, amount);
+    let plugin = bitrouter_pay::MppPaywallPlugin::new(config)
+        .map_err(|e| anyhow::anyhow!("building the MPP paywall: {e}"))?;
+    tracing::info!("MPP paywall enabled — every /v1/chat/completions request must pay 0.001 USDC");
+    Ok(Some(plugin))
 }
 
 /// Build the per-provider `AuthAppliers` registry. Each entry covers a
@@ -793,7 +874,37 @@ mod otel_config_tests {
 
 #[cfg(test)]
 mod server_tools_tests {
-    use super::{Config, build_server_tool_loop};
+    use std::sync::Arc;
+
+    use bitrouter_sdk::mcp::transport::{McpServerConfig, McpTransport};
+
+    use super::{
+        Config, ConfigMcpRoutingTable, McpServerAggregateConfig, MemoryScopeConfig, RmcpExecutor,
+        build_server_tool_loop,
+    };
+
+    fn http_server(name: &str) -> McpServerConfig {
+        McpServerConfig::with_defaults(
+            name,
+            McpTransport::Http {
+                url: "https://relayer.example/api/mcp".to_string(),
+                headers: Default::default(),
+            },
+        )
+    }
+
+    fn routing(config: &Config) -> Arc<ConfigMcpRoutingTable> {
+        Arc::new(
+            ConfigMcpRoutingTable::from_configs(config.mcp_servers.iter().map(|(k, v)| {
+                let agg = McpServerAggregateConfig {
+                    aggregate: v.aggregate,
+                    tool_prefix: v.tool_prefix.clone().unwrap_or_else(|| format!("{k}__")),
+                };
+                (k.clone(), v.clone(), agg)
+            }))
+            .unwrap(),
+        )
+    }
 
     #[tokio::test]
     async fn no_loop_when_server_tools_unset() {
@@ -802,7 +913,18 @@ mod server_tools_tests {
         crate::db::run_migrations(&db).await.unwrap();
         let store = std::sync::Arc::new(crate::policy::PolicyStore::new());
         let metering = crate::metering::MeteringStore::new(db.clone());
-        assert!(build_server_tool_loop(&config, &None, &None, &db, &store, &metering).is_none());
+        assert!(
+            build_server_tool_loop(
+                &config,
+                &None,
+                &None,
+                &db,
+                &store,
+                &metering,
+                &MemoryScopeConfig::default()
+            )
+            .is_none()
+        );
     }
 
     #[tokio::test]
@@ -814,7 +936,18 @@ mod server_tools_tests {
         let store = std::sync::Arc::new(crate::policy::PolicyStore::new());
         let metering = crate::metering::MeteringStore::new(db.clone());
         // server_tools names a server but no MCP executor/routing was built.
-        assert!(build_server_tool_loop(&config, &None, &None, &db, &store, &metering).is_none());
+        assert!(
+            build_server_tool_loop(
+                &config,
+                &None,
+                &None,
+                &db,
+                &store,
+                &metering,
+                &MemoryScopeConfig::default()
+            )
+            .is_none()
+        );
     }
 
     #[tokio::test]
@@ -835,10 +968,71 @@ mod server_tools_tests {
         crate::db::run_migrations(&db).await.unwrap();
         let store = std::sync::Arc::new(crate::policy::PolicyStore::new());
         let metering = crate::metering::MeteringStore::new(db.clone());
-        let built = build_server_tool_loop(&config, &None, &None, &db, &store, &metering);
+        let built = build_server_tool_loop(
+            &config,
+            &None,
+            &None,
+            &db,
+            &store,
+            &metering,
+            &MemoryScopeConfig::default(),
+        );
         assert!(
             built.is_some(),
             "spawn_subagent alone should build the loop"
+        );
+    }
+
+    #[tokio::test]
+    async fn always_memory_auto_adds_server_without_explicit_server_tools() {
+        // `server_tools.mcp_servers` is empty, but enabling always-memory must
+        // still wire the memory server into the loop.
+        let mut config = Config::default();
+        config
+            .mcp_servers
+            .insert("memory".to_string(), http_server("memory"));
+        let memory_cfg: MemoryScopeConfig = serde_json::from_value(serde_json::json!({
+            "server": "memory",
+            "always": { "enabled": true }
+        }))
+        .unwrap();
+        let routing = Some(routing(&config));
+        let executor: Option<Arc<dyn bitrouter_sdk::mcp::Executor>> =
+            Some(Arc::new(RmcpExecutor::new()));
+        let db = crate::db::connect("sqlite::memory:").await.unwrap();
+        crate::db::run_migrations(&db).await.unwrap();
+        let store = std::sync::Arc::new(crate::policy::PolicyStore::new());
+        let metering = crate::metering::MeteringStore::new(db.clone());
+        assert!(
+            build_server_tool_loop(
+                &config,
+                &routing,
+                &executor,
+                &db,
+                &store,
+                &metering,
+                &memory_cfg
+            )
+            .is_some()
+        );
+    }
+
+    #[tokio::test]
+    async fn always_memory_disabled_is_no_op() {
+        // Memory server present but `always` absent and no server_tools ⇒ no loop.
+        let mut config = Config::default();
+        config
+            .mcp_servers
+            .insert("memory".to_string(), http_server("memory"));
+        let memory_cfg: MemoryScopeConfig =
+            serde_json::from_value(serde_json::json!({ "server": "memory" })).unwrap();
+        let db = crate::db::connect("sqlite::memory:").await.unwrap();
+        crate::db::run_migrations(&db).await.unwrap();
+        let store = std::sync::Arc::new(crate::policy::PolicyStore::new());
+        let metering = crate::metering::MeteringStore::new(db.clone());
+        assert!(
+            build_server_tool_loop(&config, &None, &None, &db, &store, &metering, &memory_cfg)
+                .is_none()
         );
     }
 }
