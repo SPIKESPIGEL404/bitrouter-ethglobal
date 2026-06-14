@@ -11,16 +11,23 @@
 //!   CHAINLINK_ATTESTER_API_KEY=<key> \
 //!   cargo run -p bitrouter-pay --example claude_code_demo
 
+use std::time::Duration;
+
+use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
+use bitrouter_attestation::IntegrityProof;
 use bitrouter_pay::{
-    ArcPaymentGate, ArcPaymentGateConfig, AttestationReceipt, ChainlinkAttester,
-    AGENT_WALLET_ADDRESS,
+    AGENT_WALLET_ADDRESS, ARC_TESTNET_CAIP2, ArcMppBackend, ArcSigner, MppBackend, MppClient,
+    payment::x402::{TransferAuthorization, build_transfer_authorization_typed_data},
+    run_attested_inference,
 };
-use bitrouter_sdk::{PaymentGate, PaymentRouteRequest};
-use serde_json::Value;
+use serde_json::{Value, json};
 
 const WALLET_NAME: &str = "agent-treasury";
-const PROCEEDS_URL: &str =
-    "https://myproceeds.xyz/api/x402/pay/cmqblj2m60004l704lp0jmr7u/infer";
+const PROCEEDS_URL: &str = "https://myproceeds.xyz/api/x402/pay/cmqblj2m60004l704lp0jmr7u/infer";
+/// BitRouter MPP endpoint used as a fallback when the Proceeds x402 upstream is
+/// unavailable. BitRouter speaks MPP natively via `mpp-br`; Proceeds is x402-only.
+const BITROUTER_MPP_URL: &str =
+    "https://gumball-country-monologue.ngrok-free.dev/v1/chat/completions";
 const MODEL: &str = "qwen3.6";
 const PROMPT: &str = "You are an AI agent. You just paid for your own inference \
     using USDC on Arc testnet. Describe what just happened in one sentence.";
@@ -81,12 +88,44 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
             reply
         }
-        Err(e) if e.contains("paymentStatus") && e.contains("completed") => {
-            // Payment landed on-chain but Proceeds could not reach the upstream
-            // model service in time. The transfer still happened.
-            match extract_tx_hash(&e) {
-                Some(hash) => {
-                    println!("[CHAIN] USDC transferred on Arc testnet — txHash: {hash}")
+    } else {
+        let tx = extract_tx_hash_from_headers_or_body(&raw2);
+        match tx {
+            Some(h) => {
+                println!("[CHAIN] USDC transferred on Arc testnet — txHash: {h}");
+                // Proceeds settled payment but could not reach its model backend.
+                // BitRouter supports MPP natively, so fall back to it for the reply.
+                println!(
+                    "[FALLBACK] Proceeds upstream returned {status2}; retrying via BitRouter MPP..."
+                );
+                let mpp = MppClient::new(std::sync::Arc::new(ArcMppBackend::new(signer.clone()))
+                    as std::sync::Arc<dyn MppBackend>);
+                match mpp
+                    .post(BITROUTER_MPP_URL, Some(request_body.clone()))
+                    .await
+                {
+                    Ok(body) => {
+                        let reply = body
+                            .pointer("/choices/0/message/content")
+                            .and_then(Value::as_str)
+                            .map(str::to_string);
+                        match &reply {
+                            Some(text) => {
+                                println!("[MODEL] Response (via BitRouter MPP): {text}\n")
+                            }
+                            None => println!(
+                                "[MODEL] Response body (unexpected MPP format):\n{}\n",
+                                serde_json::to_string_pretty(&body).unwrap_or_default()
+                            ),
+                        }
+                        reply
+                    }
+                    Err(e) => {
+                        println!(
+                            "[MODEL] Response: <Proceeds upstream {status2}; MPP fallback failed: {e}>\n"
+                        );
+                        None
+                    }
                 }
                 None => println!("[CHAIN] USDC transferred on Arc testnet — payment completed"),
             }
@@ -109,11 +148,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 ),
                 None => PROMPT.to_string(),
             };
-            match attester.infer(MODEL, &attest_prompt, Vec::new()).await {
-                Ok(receipt) => print_receipt(&receipt),
-                Err(e) => println!(
-                    "[RECEIPT] Chainlink TEE attestation unavailable — {e}"
-                ),
+            let now2 = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_secs())
+                .unwrap_or(0);
+            match run_attested_inference(&key, MODEL, &attest_prompt, PROMPT.as_bytes(), now2).await
+            {
+                Ok(verified) => print_receipt(&verified),
+                Err(e) => println!("[RECEIPT] Chainlink TEE attestation unavailable — {e}"),
             }
         }
         None => println!(

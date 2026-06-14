@@ -427,6 +427,17 @@ pub async fn build_app_with_path(
             app
         }
     };
+    // MPP payment gate (demo only): when `MPP_SECRET_KEY` is set, every
+    // inbound inference request must fund itself with a Tempo charge on Arc
+    // testnet before the pipeline runs. The hook denies an unpaid request with
+    // a 402 carrying a fresh MPP challenge; a request that echoes a verified
+    // credential is admitted. No `MPP_SECRET_KEY` → no paywall, so a plain
+    // demo run keeps the open (unpaid) behaviour.
+    #[cfg(feature = "chainlink-demo")]
+    let app = match build_mpp_paywall()? {
+        Some(plugin) => app.plugin(plugin),
+        None => app,
+    };
     // Apply the optional MCP pipeline configuration in a second builder step
     // so the language_model configuration above stays the same shape it has
     // had since v0.
@@ -464,59 +475,28 @@ pub async fn build_app_with_path(
     })
 }
 
-/// Build the server-side tool loop from `config.server_tools` over the MCP
-/// executor/routing already assembled for the `/mcp` gateway. Returns `None`
-/// when no `server_tools.mcp_servers` are configured (or the MCP stack is
-/// absent). Each named server is attached as an [`McpRouterToolset`] using a
-/// `Direct` selector and the server's `tool_prefix` (default `"{name}__"`), so
-/// router tool names cannot collide with the caller's own tools.
-fn build_server_tool_loop(
-    config: &Config,
-    mcp_routing: &Option<Arc<ConfigMcpRoutingTable>>,
-    mcp_executor: &Option<Arc<dyn bitrouter_sdk::mcp::Executor>>,
-) -> Option<Arc<ServerToolLoop>> {
-    let settings = &config.server_tools;
-    if settings.mcp_servers.is_empty() {
-        return None;
-    }
-    let (Some(routing), Some(executor)) = (mcp_routing, mcp_executor) else {
-        tracing::warn!(
-            "server_tools.mcp_servers is set but no mcp_servers are configured; \
-             the server-side tool loop is disabled"
-        );
-        return None;
+/// Build the server-side MPP paywall plugin when `MPP_SECRET_KEY` is set.
+///
+/// Returns `Ok(None)` when the secret is absent or empty, so a demo run
+/// without the env var keeps the open (unpaid) behaviour and existing
+/// functionality is preserved. The collecting address and per-request price
+/// come from `MPP_RECIPIENT` / `MPP_AMOUNT`, defaulting to the Arc-testnet
+/// treasury address and `0.001` USDC respectively. The charge is always bound
+/// to Arc testnet (`eip155:5042002`).
+#[cfg(feature = "chainlink-demo")]
+fn build_mpp_paywall() -> Result<Option<bitrouter_pay::MppPaywallPlugin>> {
+    let secret = match std::env::var("MPP_SECRET_KEY") {
+        Ok(s) if !s.is_empty() => s,
+        _ => return Ok(None),
     };
-    let routing: Arc<dyn bitrouter_sdk::mcp::RoutingTable> = routing.clone();
-    let mut sets: Vec<Arc<dyn RouterToolset>> = Vec::with_capacity(settings.mcp_servers.len());
-    for name in &settings.mcp_servers {
-        let Some(server) = config.mcp_servers.get(name) else {
-            tracing::warn!(server = %name,
-                "server_tools.mcp_servers names an MCP server absent from mcp_servers; skipping");
-            continue;
-        };
-        let prefix = server
-            .tool_prefix
-            .clone()
-            .unwrap_or_else(|| format!("{name}__"));
-        sets.push(Arc::new(McpRouterToolset::new(
-            executor.clone(),
-            routing.clone(),
-            name.clone(),
-            Some(prefix),
-        )));
-    }
-    if sets.is_empty() {
-        return None;
-    }
-    let mut loop_config = ServerToolLoopConfig::default();
-    if let Some(max) = settings.max_iterations {
-        loop_config.max_iterations = max;
-    }
-    Some(Arc::new(ServerToolLoop::new(
-        ToolsetRegistry::new(sets),
-        loop_config,
-        Arc::new(AllowAll),
-    )))
+    let recipient = std::env::var("MPP_RECIPIENT")
+        .unwrap_or_else(|_| bitrouter_pay::AGENT_WALLET_ADDRESS.to_string());
+    let amount = std::env::var("MPP_AMOUNT").unwrap_or_else(|_| "0.001".to_string());
+    let config = bitrouter_pay::MppPaywallConfig::arc_testnet(recipient, secret, amount);
+    let plugin = bitrouter_pay::MppPaywallPlugin::new(config)
+        .map_err(|e| anyhow::anyhow!("building the MPP paywall: {e}"))?;
+    tracing::info!("MPP paywall enabled — every /v1/chat/completions request must pay 0.001 USDC");
+    Ok(Some(plugin))
 }
 
 /// Build the per-provider `AuthAppliers` registry. Each entry covers a

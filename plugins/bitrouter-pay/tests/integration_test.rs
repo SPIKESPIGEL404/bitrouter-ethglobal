@@ -444,152 +444,221 @@ async fn test_full_gate_flow() {
     println!("\n✅ Test 3 passed — full gate flow (x402 + attestation) succeeded");
 }
 
-// ── Test 4 — x402 + MPP fallback gate ────────────────────────────────────────
+// ── Test 4 — MPP pay-as-you-go proxy ─────────────────────────────────────────
 
-/// Proves: `ArcPaymentGate` tries x402 first and automatically falls back to MPP
-/// when x402 returns an upstream error (502/400).
-///
-/// Accepted outcomes:
-/// - x402 succeeds → body returned, test passes.
-/// - x402 fails with upstream error → MPP fallback is attempted; error message
-///   must contain "MPP fallback also failed", proving both paths were exercised.
-///
-/// The test fails only if x402 errors out before the fallback wiring can engage
-/// (e.g. signing error, malformed challenge), which would indicate a regression.
-#[tokio::test]
-#[ignore]
-async fn test_gate_payment_with_fallback() {
-    load_env();
+use std::sync::Arc;
 
-    println!("=== Test 4: x402 + MPP fallback gate flow ===\n");
+use axum::Router;
+use axum::body::Bytes;
+use axum::extract::State;
+use axum::http::{HeaderMap, StatusCode, header};
+use axum::response::{IntoResponse, Response};
+use axum::routing::post;
 
-    let gate = ArcPaymentGate::new(ArcPaymentGateConfig {
-        wallet_id: WALLET_NAME.to_string(),
-        chainlink_api_key: None,
-    })
-    .unwrap_or_else(|e| panic!("ArcPaymentGate::new failed: {e}"));
+use bitrouter_pay::{ArcMppBackend, ArcMppPayClient, MppBackend};
+use mpp_br::server::{Mpp, TempoChargeMethod, TempoConfig, TempoProvider, tempo};
 
-    let request = PaymentRouteRequest {
-        url: PROCEEDS_URL.to_string(),
-        attested: false,
-        body: None,
-        mpp: false,
-        model: Some("qwen3.6".to_string()),
-        prompt: Some("Say hello.".to_string()),
-        anthropic_format: Some(false),
-    };
+const PROXY_LISTEN: &str = "127.0.0.1:4357";
+const BITROUTER_UPSTREAM: &str = "http://127.0.0.1:4356/v1/chat/completions";
+const PROXY_MPP_SECRET: &str = "bitrouter-pay-secret";
+const PROXY_PRICE: &str = "0.001";
 
-    println!("Calling gate.pay() — x402 first, MPP fallback if x402 upstream fails...");
+#[derive(Clone)]
+struct ProxyState {
+    mpp: Arc<Mpp<TempoChargeMethod<TempoProvider>>>,
+    http: reqwest::Client,
+}
 
-    match gate.pay(request).await {
-        Ok(result) => {
-            println!("\nPayment succeeded via x402:");
-            println!(
-                "{}",
-                serde_json::to_string_pretty(&result.body).unwrap_or_default()
-            );
-            assert!(!result.body.is_null(), "result body is null");
-            println!("\n✅ Test 4 passed — x402 succeeded (MPP fallback not needed)");
-        }
-        Err(e) => {
-            println!("\nPayment error: {e}");
-            // x402 must have attempted MPP fallback; the combined error proves it.
-            assert!(
-                e.contains("MPP fallback also failed"),
-                "MPP fallback was NOT attempted after x402 upstream failure.\n\
-                 Expected error containing 'MPP fallback also failed', got: {e}"
-            );
-            println!("\n✅ Test 4 passed — MPP fallback was correctly attempted after x402 upstream failure");
-        }
+/// Build the server-side MPP verifier for the in-process proxy.
+fn build_proxy_mpp() -> Result<Mpp<TempoChargeMethod<TempoProvider>>, Box<dyn std::error::Error>> {
+    use bitrouter_pay::{ARC_TESTNET_CHAIN_ID, ARC_TESTNET_RPC, ARC_TESTNET_USDC};
+
+    let mpp = Mpp::create(
+        tempo(TempoConfig {
+            recipient: WALLET_ADDRESS,
+        })
+        .rpc_url(ARC_TESTNET_RPC)
+        .chain_id(ARC_TESTNET_CHAIN_ID)
+        .currency(ARC_TESTNET_USDC)
+        .secret_key(PROXY_MPP_SECRET)
+        .decimals(6)
+        .realm("bitrouter"),
+    )?;
+    Ok(mpp)
+}
+
+fn proxy_is_payment_scheme(value: &str) -> bool {
+    value.len() > 8 && value[..7].eq_ignore_ascii_case("Payment") && value.as_bytes()[7] == b' '
+}
+
+fn proxy_challenge_response(state: &ProxyState) -> Response {
+    match state.mpp.charge(PROXY_PRICE).and_then(|c| c.to_header()) {
+        Ok(h) => (
+            StatusCode::PAYMENT_REQUIRED,
+            [(header::WWW_AUTHENTICATE, h)],
+        )
+            .into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("challenge error: {e}"),
+        )
+            .into_response(),
     }
 }
 
-// ── Test 5 — MPP direct (diagnostic) ─────────────────────────────────────────
+/// `POST /v1/chat/completions` — verify MPP payment, then forward to BitRouter.
+async fn proxy_chat_completions(
+    State(state): State<ProxyState>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Response {
+    let json_body: serde_json::Value = match serde_json::from_slice(&body) {
+        Ok(v) => v,
+        Err(e) => return (StatusCode::BAD_REQUEST, format!("bad JSON: {e}")).into_response(),
+    };
 
-/// Diagnostic: sends a plain POST to the Proceeds URL and prints every header
-/// and the full body of the 402 response, then attempts MPP payment.
-///
-/// This tells us whether Proceeds returns a `WWW-Authenticate` header suitable
-/// for MPP, or is strictly x402-only.
-#[tokio::test]
-#[ignore]
-async fn test_mpp_direct() {
-    load_env();
+    let auth = headers
+        .get(mpp_br::AUTHORIZATION_HEADER)
+        .and_then(|v| v.to_str().ok())
+        .map(str::trim)
+        .filter(|v| proxy_is_payment_scheme(v));
 
-    println!("=== Test 5: MPP direct (diagnostic) ===\n");
+    let Some(auth) = auth else {
+        return proxy_challenge_response(&state);
+    };
 
-    // ── Step 1: probe the 402 response ───────────────────────────────────────
-    let body = build_inference_request_body(InferenceFormat::OpenAI, "qwen3.6", "Say hello.");
-    let http = reqwest::Client::new();
+    let credential = match mpp_br::parse_authorization(auth) {
+        Ok(c) => c,
+        Err(_) => return proxy_challenge_response(&state),
+    };
 
-    println!("→ POST {PROCEEDS_URL}");
+    let receipt = match state.mpp.verify_credential(&credential).await {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("[MPP] verification failed: {e}");
+            return proxy_challenge_response(&state);
+        }
+    };
+
     println!(
-        "Request body:\n{}",
-        serde_json::to_string_pretty(&body).unwrap_or_default()
+        "[MPP] payment verified — txHash: {} — forwarding to BitRouter",
+        receipt.reference
     );
 
-    let probe = http
-        .post(PROCEEDS_URL)
-        .json(&body)
+    let receipt_header = mpp_br::format_receipt(&receipt).ok();
+
+    match state
+        .http
+        .post(BITROUTER_UPSTREAM)
+        .json(&json_body)
         .send()
         .await
-        .unwrap_or_else(|e| panic!("initial POST failed: {e}"));
-
-    let probe_status = probe.status();
-    println!("\n← {probe_status}");
-
-    println!("\n── 402 Response Headers ────────────────────────────────────────");
-    let mut www_authenticate: Option<String> = None;
-    for (k, v) in probe.headers() {
-        let val = v.to_str().unwrap_or("<binary>");
-        println!("  {k}: {val}");
-        if k.as_str().eq_ignore_ascii_case("www-authenticate") {
-            www_authenticate = Some(val.to_string());
-        }
-    }
-    println!("────────────────────────────────────────────────────────────────");
-
-    let probe_body = probe.text().await.unwrap_or_default();
-    println!("\n── 402 Response Body ───────────────────────────────────────────");
-    println!("{probe_body}");
-    println!("────────────────────────────────────────────────────────────────");
-
-    match &www_authenticate {
-        Some(v) => println!("\n✔ WWW-Authenticate header present: {v}"),
-        None => println!("\n✘ No WWW-Authenticate header — Proceeds may not support MPP at this URL"),
-    }
-
-    // ── Step 2: attempt MPP payment ───────────────────────────────────────────
-    println!("\n── MPP Payment Attempt ─────────────────────────────────────────");
-    let signer = std::sync::Arc::new(
-        ArcSigner::new(WALLET_NAME.to_string())
-            .unwrap_or_else(|e| panic!("ArcSigner::new failed: {e}")),
-    );
-    println!("Signer address: {}", signer.address());
-
-    let backend = std::sync::Arc::new(ArcMppBackend::new(signer))
-        as std::sync::Arc<dyn bitrouter_pay::payment::mpp::MppBackend>;
-    let mpp = MppClient::new(backend);
-
-    println!("Calling MppClient::post({PROCEEDS_URL})...");
-    match mpp.post(PROCEEDS_URL, Some(body)).await {
-        Ok(resp_body) => {
-            println!("\n← 200 OK");
-            println!(
-                "Response body:\n{}",
-                serde_json::to_string_pretty(&resp_body).unwrap_or_default()
-            );
-            assert!(!resp_body.is_null(), "MPP response body is null");
-            println!("\n✅ Test 5 passed — MPP payment succeeded");
-        }
-        Err(e) => {
-            println!("\nMPP payment failed: {e}");
-            if www_authenticate.is_none() {
-                println!("DIAGNOSTIC: Proceeds returned no WWW-Authenticate header — MPP is not supported at this URL.");
-                println!("✅ Test 5 passed (diagnostic) — MPP not supported by this Proceeds endpoint");
-            } else {
-                panic!("MPP payment failed despite WWW-Authenticate being present: {e}");
+    {
+        Ok(resp) => {
+            let status =
+                StatusCode::from_u16(resp.status().as_u16()).unwrap_or(StatusCode::BAD_GATEWAY);
+            let text = resp.text().await.unwrap_or_default();
+            let mut response =
+                (status, [(header::CONTENT_TYPE, "application/json")], text).into_response();
+            if let Some(rh) = receipt_header
+                && let (Ok(name), Ok(hv)) = (
+                    header::HeaderName::from_bytes(mpp_br::PAYMENT_RECEIPT_HEADER.as_bytes()),
+                    header::HeaderValue::from_str(&rh),
+                )
+            {
+                response.headers_mut().insert(name, hv);
             }
+            response
         }
+        Err(e) => (StatusCode::BAD_GATEWAY, format!("upstream error: {e}")).into_response(),
     }
+}
+
+/// Start the in-process MPP payment proxy on [`PROXY_LISTEN`]. The TCP listener
+/// is bound before returning so the port is ready for the caller.
+async fn spawn_payment_proxy() -> Result<(), Box<dyn std::error::Error>> {
+    let mpp = build_proxy_mpp()?;
+    let state = ProxyState {
+        mpp: Arc::new(mpp),
+        http: reqwest::Client::new(),
+    };
+    let app = Router::new()
+        .route("/v1/chat/completions", post(proxy_chat_completions))
+        .with_state(state);
+    let listener = tokio::net::TcpListener::bind(PROXY_LISTEN).await?;
+    tokio::spawn(async move {
+        let _ = axum::serve(listener, app).await;
+    });
+    Ok(())
+}
+
+/// Proves: the standalone MPP proxy charges 0.001 USDC per request, settles the
+/// payment on Arc testnet, and forwards verified requests to BitRouter's
+/// qwen3.6 endpoint.
+///
+/// Prerequisites (live test):
+/// 1. BitRouter serving on `127.0.0.1:4356` with a `qwen3.6` route.
+/// 2. OWS `agent-treasury` wallet present + funded with Arc testnet USDC.
+///
+/// Steps:
+/// 1. Start the proxy on `127.0.0.1:4357`.
+/// 2. Pay-as-you-go POST via `ArcMppPayClient` (402 → OWS sign → retry).
+/// 3. Assert payment settled (receipt tx hash) and qwen3.6 returned content.
+#[tokio::test]
+#[ignore]
+async fn test_mpp_payment_proxy() {
+    load_env();
+
+    println!("=== Test 4: MPP pay-as-you-go proxy ===\n");
+
+    spawn_payment_proxy()
+        .await
+        .expect("failed to start payment proxy");
+    println!("Payment proxy started on http://{PROXY_LISTEN}");
+
+    let signer = Arc::new(ArcSigner::new(WALLET_NAME.to_string()).unwrap_or_else(|e| {
+        panic!("ArcSigner::new failed: {e}\nEnsure OWS_VAULT_PATH / OWS_WALLET_NAME are set.")
+    }));
+    assert_eq!(
+        signer.address().to_string().to_lowercase(),
+        WALLET_ADDRESS.to_lowercase(),
+        "wrong wallet loaded"
+    );
+
+    let backend = Arc::new(ArcMppBackend::new(signer)) as Arc<dyn MppBackend>;
+    let client = ArcMppPayClient::new(backend);
+
+    let body = json!({
+        "model": "qwen3.6",
+        "messages": [{ "role": "user", "content": "Say hello in one word." }],
+    });
+
+    let url = format!("http://{PROXY_LISTEN}/v1/chat/completions");
+    println!("→ POST {url} (pay-as-you-go via MPP)");
+
+    let paid = client
+        .post(&url, Some(body))
+        .await
+        .unwrap_or_else(|e| panic!("MPP pay-as-you-go failed: {e}"));
+
+    println!("← status {}", paid.status);
+    if let Some(tx) = paid.tx_hash() {
+        println!("[MPP] payment settled on Arc testnet — txHash: {tx}");
+    }
+    println!(
+        "Inference body:\n{}",
+        serde_json::to_string_pretty(&paid.body).unwrap_or_default()
+    );
+
+    assert_eq!(paid.status, 200, "expected 200 from proxy after payment");
+    assert!(
+        paid.tx_hash().is_some(),
+        "no Payment-Receipt tx hash — payment did not settle on Arc testnet"
+    );
+    let content = paid.body["choices"][0]["message"]["content"]
+        .as_str()
+        .unwrap_or("");
+    assert!(!content.is_empty(), "qwen3.6 returned empty content");
+
+    println!("\n✅ Test 4 passed — MPP proxy charged 0.001 USDC and forwarded to qwen3.6");
 }
