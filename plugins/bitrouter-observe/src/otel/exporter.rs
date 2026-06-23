@@ -149,7 +149,18 @@ impl OtelExporter {
     /// Create a new exporter, install the W3C propagator globally, and build
     /// a per-exporter `TracerProvider` (not installed globally — we hand out
     /// our own `BoxedTracer`).
-    pub fn new(mut config: OtelConfig) -> Result<Self, Box<dyn std::error::Error>> {
+    ///
+    /// `bearer` is an optional live-bearer source for account-attributed
+    /// telemetry: when `Some`, the OTLP/HTTP transport resolves a fresh
+    /// `Authorization` per export (refreshing as needed), so attribution
+    /// survives access-token expiry without a daemon restart. `None` keeps the
+    /// static-header behaviour (an explicit `config.bearer_token`, or anonymous).
+    /// The bearer is HTTP-only — under the gRPC transport it is ignored (see
+    /// `crate::otel::transport`).
+    pub fn new(
+        mut config: OtelConfig,
+        bearer: Option<Arc<dyn crate::otel::TelemetryBearer>>,
+    ) -> Result<Self, Box<dyn std::error::Error>> {
         config = config.with_env_overrides();
 
         // Install the W3C TraceContext propagator so inbound `traceparent`
@@ -161,7 +172,7 @@ impl OtelExporter {
 
         // Transport (OTLP/HTTP vs OTLP/gRPC) is chosen at compile time by the
         // crate's feature flags — see `crate::otel::transport`.
-        let span_exporter = crate::otel::transport::span_exporter(&config)?;
+        let span_exporter = crate::otel::transport::span_exporter(&config, bearer)?;
 
         let batch_config = BatchConfigBuilder::default()
             .with_max_queue_size(config.traces.batch.max_queue_size)
@@ -708,6 +719,16 @@ impl ObserveHook for OtelExporter {
             .map(|buf| buf.clone())
             .unwrap_or_default();
         opentelemetry::trace::get_active_span(|span| {
+            // PostHog's "URL / Screen" column reads `$screen_name`. Set it once,
+            // here at request end, to the resolved `<provider>/<model>` route —
+            // or the requested model when no provider was reached (early
+            // failure) — so the column is informative and never blank. Setting
+            // it once avoids duplicate attribute keys on the span.
+            let screen_name = match &ctx.execution_result {
+                Some(result) => format!("{}/{}", result.provider_id, result.model_id),
+                None => ctx.model().to_string(),
+            };
+            span.set_attribute(KeyValue::new("$screen_name", screen_name));
             if let Some(result) = &ctx.execution_result {
                 span.set_attribute(KeyValue::new(
                     "bitrouter.provider_id",
@@ -1270,6 +1291,62 @@ mod hop_tests {
             tp.starts_with("00-") && tp.len() == 55,
             "traceparent must be a valid W3C v0 string; got {tp}"
         );
+    }
+
+    #[tokio::test]
+    async fn root_chat_screen_name_refined_to_provider_slash_model() {
+        // PostHog renders `$screen_name` in its "URL / Screen" column. On the
+        // root chat span (the single PostHog event per request) we set it to the
+        // resolved `<provider>/<model>` route once the request completes, so the
+        // column shows which provider+model served each call.
+        let (exporter, captured) = make_test_exporter();
+        let mut ctx = PipelineContext::new(fresh_request());
+        let target = fresh_target("openai");
+
+        exporter.after_phase(Phase::PreRequest, &ctx).await;
+        exporter.on_hop_start(&ctx, &target).await;
+        let result = fresh_result(&target);
+        exporter
+            .on_hop_end(&ctx, &target, HopOutcome::Generated(&result))
+            .await;
+        ctx.execution_result = Some(result.clone());
+        exporter
+            .on_request_end(&ctx, &RequestOutcome::Completed)
+            .await;
+        exporter.provider.force_flush();
+
+        let spans = captured.lock().unwrap().clone();
+        let root_chat = spans
+            .iter()
+            .find(|s| s.name == "chat test-model" && s.span_kind == SpanKind::Internal)
+            .expect("root chat INTERNAL span");
+        assert_eq!(
+            str_attr(root_chat, "$screen_name"),
+            Some("openai/test-model")
+        );
+    }
+
+    #[tokio::test]
+    async fn root_chat_screen_name_baseline_is_requested_model() {
+        // When a request ends without a resolved provider (e.g. it failed before
+        // any upstream attempt), `$screen_name` still carries the requested model
+        // set at PreRequest — the column is never blank.
+        let (exporter, captured) = make_test_exporter();
+        let ctx = PipelineContext::new(fresh_request());
+
+        exporter.after_phase(Phase::PreRequest, &ctx).await;
+        // No execution_result on ctx → no provider/model refinement.
+        exporter
+            .on_request_end(&ctx, &RequestOutcome::Completed)
+            .await;
+        exporter.provider.force_flush();
+
+        let spans = captured.lock().unwrap().clone();
+        let root_chat = spans
+            .iter()
+            .find(|s| s.name == "chat test-model" && s.span_kind == SpanKind::Internal)
+            .expect("root chat INTERNAL span");
+        assert_eq!(str_attr(root_chat, "$screen_name"), Some("test-model"));
     }
 
     #[tokio::test]
