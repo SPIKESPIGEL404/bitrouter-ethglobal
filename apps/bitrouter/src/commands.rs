@@ -10,6 +10,10 @@ use bitrouter_sdk::language_model::{RoutingPrefs, RoutingTable};
 
 use crate::auth::{NewApiKey, db as auth_db, generate};
 use crate::daemon::RouteHop;
+use crate::output::reports::skills::{
+    FailedSkill, SkillAddReport, SkillEntry, SkillHit, SkillInitReport, SkillRemoveReport,
+    SkillsFindReport, SkillsListReport, SkillsUpdateReport, SkippedSkill, UpdatedSkill,
+};
 
 /// The starter `bitrouter.yaml` written by `bitrouter init`. Mirrors
 /// the zero-config in-memory default so a user who runs `init` and
@@ -439,7 +443,16 @@ fn prompt_method_choice(provider: &str, options: &[AuthMethod]) -> Result<AuthMe
 /// there's more than one, runs the chosen flow, and persists the
 /// resulting [`bitrouter_providers::oauth::credential_store::Credential`]
 /// under `(provider_id, label)`.
-pub async fn login_provider(provider_id: &str, label: &str) -> Result<()> {
+/// What `login_provider` accomplished — surfaced as the CLI's JSON result while
+/// the interactive prompts and confirmation go to stderr.
+pub struct LoginOutcome {
+    pub provider: String,
+    pub label: String,
+    pub method: String,
+    pub path: String,
+}
+
+pub async fn login_provider(provider_id: &str, label: &str) -> Result<LoginOutcome> {
     use bitrouter_providers::builtin;
 
     // The `bitrouter` cloud gateway is compiled in; every other provider's
@@ -511,7 +524,12 @@ pub async fn login_provider(provider_id: &str, label: &str) -> Result<()> {
         store.path().display()
     );
     eprintln!();
-    Ok(())
+    Ok(LoginOutcome {
+        provider: provider_id.to_string(),
+        label: label.to_string(),
+        method: kind.to_string(),
+        path: store.path().display().to_string(),
+    })
 }
 
 /// Adopt the user's existing Claude Code session as the live credential source
@@ -811,7 +829,7 @@ impl bitrouter_providers::oauth::login::LoginUx for StderrLoginUx {
 
 /// `bitrouter logout <provider>` — drop every stored credential for the
 /// provider (subscription OAuth or pasted API key), if any.
-pub async fn logout_provider(provider_id: &str) -> Result<()> {
+pub async fn logout_provider(provider_id: &str) -> Result<usize> {
     let mut store = bitrouter_providers::oauth::credential_store::CredentialStore::default_path()
         .context("opening credential store")?;
     let removed = store
@@ -821,7 +839,7 @@ pub async fn logout_provider(provider_id: &str) -> Result<()> {
         0 => eprintln!("  No stored credentials for {provider_id}; nothing to remove."),
         n => eprintln!("  ✓ Removed {n} stored credential(s) for {provider_id}."),
     }
-    Ok(())
+    Ok(removed)
 }
 
 // ===== skills (client installer) =====
@@ -884,7 +902,7 @@ pub async fn skills_add(
     overwrite: bool,
     registry: Option<&str>,
     namespace: Option<&str>,
-) -> Result<()> {
+) -> Result<SkillAddReport> {
     use bitrouter_skills::{install, source as skill_source};
 
     if source.trim().is_empty() {
@@ -902,37 +920,41 @@ pub async fn skills_add(
         skill_source::parse_source(source)?
     };
     let outcome = install::install(&parsed, &target, overwrite, select, None).await?;
-    let verb = if outcome.was_updated {
-        "updated"
-    } else {
-        "installed"
-    };
-    println!("{verb} {} → {}", outcome.name, outcome.dest.display());
-    Ok(())
+    Ok(SkillAddReport {
+        action: if outcome.was_updated {
+            "updated"
+        } else {
+            "installed"
+        },
+        name: outcome.name,
+        dest: outcome.dest.display().to_string(),
+    })
 }
 
 /// `bitrouter skills list` — show installed skills.
-pub fn skills_list(global: bool) -> Result<()> {
+pub fn skills_list(global: bool) -> Result<SkillsListReport> {
     use bitrouter_skills::install;
     let target = skills_target(global)?;
-    let installed = install::list_installed(&target)?;
-    if installed.is_empty() {
-        println!("no skills installed");
-        return Ok(());
-    }
-    for (name, path) in installed {
-        println!("{name}\t{}", path.display());
-    }
-    Ok(())
+    let skills = install::list_installed(&target)?
+        .into_iter()
+        .map(|(name, path)| SkillEntry {
+            name,
+            path: path.display().to_string(),
+        })
+        .collect();
+    Ok(SkillsListReport { skills })
 }
 
 /// `bitrouter skills remove` — uninstall a skill by name.
-pub fn skills_remove(name: &str, global: bool) -> Result<()> {
+pub fn skills_remove(name: &str, global: bool) -> Result<SkillRemoveReport> {
     use bitrouter_skills::install;
     let target = skills_target(global)?;
     let dir = install::remove(name, &target)?;
-    println!("removed {name} ({})", dir.display());
-    Ok(())
+    Ok(SkillRemoveReport {
+        name: name.to_string(),
+        path: dir.display().to_string(),
+        removed: true,
+    })
 }
 
 /// `bitrouter skills find` — search a registry.
@@ -940,28 +962,31 @@ pub async fn skills_find(
     query: &str,
     registry: Option<&str>,
     namespace: Option<&str>,
-) -> Result<()> {
+) -> Result<SkillsFindReport> {
     use bitrouter_skills::marketplace;
     let base = registry.unwrap_or(DEFAULT_SKILLS_REGISTRY);
     let nsid = namespace
         .ok_or_else(|| anyhow::anyhow!("--namespace <nsid> is required to query a registry"))?;
     let client = skills_http_client()?;
     let market = marketplace::fetch_marketplace(&client, base, nsid).await?;
-    let hits = market.search(query);
-    if hits.is_empty() {
-        println!("no skills matching {query:?} in {base}");
-        return Ok(());
-    }
-    for entry in hits {
-        let version = entry.version.as_deref().unwrap_or("-");
-        let description = entry.description.as_deref().unwrap_or("");
-        println!("{}\t{version}\t{description}", entry.name);
-    }
-    Ok(())
+    let results = market
+        .search(query)
+        .into_iter()
+        .map(|entry| SkillHit {
+            name: entry.name.clone(),
+            version: entry.version.clone().unwrap_or_else(|| "-".to_string()),
+            description: entry.description.clone().unwrap_or_default(),
+        })
+        .collect();
+    Ok(SkillsFindReport {
+        query: query.to_string(),
+        registry: base.to_string(),
+        results,
+    })
 }
 
 /// `bitrouter skills init` — scaffold a SKILL.md.
-pub fn skills_init(name: &str, output: &std::path::Path) -> Result<()> {
+pub fn skills_init(name: &str, output: &std::path::Path) -> Result<SkillInitReport> {
     bitrouter_skills::install::validate_skill_name(name)?;
     if output.exists() {
         anyhow::bail!("{} already exists; refusing to overwrite", output.display());
@@ -970,8 +995,10 @@ pub fn skills_init(name: &str, output: &std::path::Path) -> Result<()> {
         "---\nname: {name}\ndescription: TODO — one line on what this skill does and when to use it.\n---\n\n# {name}\n\nTODO: instructions for the agent.\n\n## When to use\n\n## Steps\n"
     );
     std::fs::write(output, body).with_context(|| format!("writing {}", output.display()))?;
-    println!("wrote {}", output.display());
-    Ok(())
+    Ok(SkillInitReport {
+        path: output.display().to_string(),
+        created: true,
+    })
 }
 
 /// `bitrouter skills update` — re-install installed skills from the registry.
@@ -980,7 +1007,7 @@ pub async fn skills_update(
     global: bool,
     registry: Option<&str>,
     namespace: Option<&str>,
-) -> Result<()> {
+) -> Result<SkillsUpdateReport> {
     use bitrouter_skills::install;
     use bitrouter_skills::marketplace;
     use bitrouter_skills::source::SkillSource;
@@ -1004,8 +1031,11 @@ pub async fn skills_update(
         None => installed,
     };
     if names.is_empty() {
-        println!("no skills installed to update");
-        return Ok(());
+        return Ok(SkillsUpdateReport {
+            updated: Vec::new(),
+            skipped: Vec::new(),
+            failed: Vec::new(),
+        });
     }
 
     let nsid = namespace
@@ -1014,9 +1044,14 @@ pub async fn skills_update(
     let market = marketplace::fetch_marketplace(&client, base, nsid).await?;
 
     // Update each skill independently: one failure must not abort the rest.
-    // Re-install into the same directory (`install_as`) so a skill stays put
-    // even if its upstream frontmatter name has drifted.
-    let mut failures = 0u32;
+    // Re-install into the same directory so a skill stays put even if its
+    // upstream frontmatter name has drifted. Per-skill outcomes are collected
+    // into the report, which exits non-zero when any skill failed.
+    let mut report = SkillsUpdateReport {
+        updated: Vec::new(),
+        skipped: Vec::new(),
+        failed: Vec::new(),
+    };
     for skill_name in names {
         match market.find(&skill_name) {
             Some(entry) => {
@@ -1027,22 +1062,23 @@ pub async fn skills_update(
                     Err(e) => Err(e),
                 };
                 match result {
-                    Ok(outcome) => {
-                        println!("updated {} → {}", outcome.name, outcome.dest.display())
-                    }
-                    Err(e) => {
-                        failures += 1;
-                        eprintln!("failed to update {skill_name}: {e}");
-                    }
+                    Ok(outcome) => report.updated.push(UpdatedSkill {
+                        name: outcome.name,
+                        dest: outcome.dest.display().to_string(),
+                    }),
+                    Err(e) => report.failed.push(FailedSkill {
+                        name: skill_name,
+                        error: e.to_string(),
+                    }),
                 }
             }
-            None => println!("skipped {skill_name} (not in registry {base})"),
+            None => report.skipped.push(SkippedSkill {
+                name: skill_name,
+                reason: format!("not in registry {base}"),
+            }),
         }
     }
-    if failures > 0 {
-        anyhow::bail!("{failures} skill(s) failed to update");
-    }
-    Ok(())
+    Ok(report)
 }
 
 #[cfg(test)]

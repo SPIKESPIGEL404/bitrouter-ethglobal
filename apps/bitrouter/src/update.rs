@@ -305,8 +305,10 @@ pub async fn maybe_nudge(home: &Path, p: &style::Palette) {
     };
 
     if let Some(latest) = latest.filter(|l| is_newer(l, current_version())) {
-        println!();
-        println!(
+        // Diagnostic, not the command result — goes to stderr so it never
+        // pollutes a command's JSON stdout (e.g. `bitrouter status`).
+        eprintln!();
+        eprintln!(
             "  {dim}↑ {latest} available — run `bitrouter update`{reset}",
             dim = p.dim,
             reset = p.reset,
