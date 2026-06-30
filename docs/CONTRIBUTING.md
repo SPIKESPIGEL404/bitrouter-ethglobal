@@ -7,11 +7,15 @@ same PR.
 
 ## What publishes
 
-The published tree is exactly what [`docs/meta.json`](./meta.json) lists. Anything
-not referenced there (e.g. `superpowers/`, `awesome-submissions/`) stays internal
-and is never synced to the site. The API reference under `reference/*` is
-**generated** from the BitRouter Cloud OpenAPI spec — do not hand-author operation
-pages; only `reference/index.md` is authored here.
+Each top-level folder here (`get-started`, `concepts`, `features`, `guides`,
+`integrations`) is a documentation section synced to the site. Internal folders
+(`superpowers/`, `awesome-submissions/`) are excluded. Page order within a section
+is the `pages` list in that section's `meta.json`.
+
+The overall section order and the **site-only** sections — the Cloud **API
+reference** (generated from the BitRouter Cloud OpenAPI spec) and **AI resources**
+(docs MCP, llms.txt, drop-in skills) — live in the `bitrouter-docs` repo, which
+renders this tree. Don't author those here.
 
 ## Authoring contract (plain Markdown)
 
