@@ -1,7 +1,7 @@
 ---
 title: 自托管 vs 云
 description: 了解自托管 BitRouter 能提供什么，以及 BitRouter Cloud 在此基础上增加了什么——帮助你选择正确的起点。
-sourceHash: 87e105ad86554088a642f7f31e8e7a575133c9240b86bffbb764c0a8c41d04f1
+sourceHash: 285427fef893d159acdf9770fd34cc0f2d3a7543b7951105c987fabbcbba5c67
 ---
 
 BitRouter 以单一开源二进制的形式发布，采用 Apache 2.0 协议。你可以完全自托管，使用自己的供应商密钥，无需为软件本身付费。**BitRouter Cloud** 是一个可选的托管层，在你需要托管基础设施、团队功能或无需自己配置的供应商网络时，附加到同一个二进制上即可。

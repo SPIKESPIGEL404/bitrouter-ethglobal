@@ -1,7 +1,7 @@
 ---
 title: Self-Hosted vs Cloud
 description: Understand what running BitRouter self-hosted gives you out of the box, and what BitRouter Cloud adds on top — so you can choose the right starting point.
-sourceHash: 87e105ad86554088a642f7f31e8e7a575133c9240b86bffbb764c0a8c41d04f1
+sourceHash: 285427fef893d159acdf9770fd34cc0f2d3a7543b7951105c987fabbcbba5c67
 ---
 
 BitRouter ships as a single open-source binary under Apache 2.0. You can run it entirely self-hosted with your own provider keys and never pay for the software itself. **BitRouter Cloud** is an optional hosted layer you attach to that same binary when you want managed infrastructure, team features, or a provider network you don't have to wire up yourself.

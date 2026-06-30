@@ -1,7 +1,7 @@
 ---
 title: Models & Providers
 description: The hosted BitRouter Cloud provider — one account, no upstream keys — the full model catalog with pricing, and automatic discounts on open models.
-sourceHash: 23450d9a4679b410958367cad435234ce0d29c48855b90386675bd75626041bd
+sourceHash: 86d87ac9130c04fd5ca161b83bc6f263323dbb88eb5d4be1d45f451a216af27c
 ---
 
 The **BitRouter Cloud provider** lets an agent call any model below with a single BitRouter account — no upstream provider keys, no per-provider signups. You pay BitRouter directly at the prices listed here, billed per request; failed requests aren't billed.
@@ -15,9 +15,15 @@ Prefer your own provider accounts? Use [BYOK](/docs/features/byok) instead — y
 
 ## Supported models & pricing
 
-Prices are USD per **million tokens**, refreshed at each docs build from the live catalog. Open models are served **25% below official** by default — see [Discounted open models](#discounted-open-models) below.
+Prices are USD per **million tokens**, refreshed continuously from the live catalog. Open models are served **25% below official** by default — see [Discounted open models](#discounted-open-models) below.
 
 <ModelsTable />
+
+## Providers
+
+Every model above is served by one or more **registered providers**. Membership lives in the public, open-source [provider-registry](https://github.com/bitrouter/provider-registry) — anyone can [register a provider](/docs/guides/register-as-a-provider). The list refreshes from the registry continuously, so a newly-merged provider shows up within minutes.
+
+<ProvidersTable />
 
 ## Discounted open models
 

@@ -1,7 +1,7 @@
 ---
 title: Models & Providers
 description: 托管的 BitRouter Cloud 供应商——一个账户，无需上游密钥——完整的模型目录与定价，并对开放模型自动打折。
-sourceHash: 23450d9a4679b410958367cad435234ce0d29c48855b90386675bd75626041bd
+sourceHash: 86d87ac9130c04fd5ca161b83bc6f263323dbb88eb5d4be1d45f451a216af27c
 ---
 
 **BitRouter Cloud 供应商**让 agent 只用一个 BitRouter 账户即可调用下面的任意模型——无需上游供应商密钥，也无需逐个供应商注册。你按这里列出的价格直接向 BitRouter 付费，按请求计费；失败的请求不计费。
@@ -15,9 +15,15 @@ bitrouter start         # the `bitrouter` provider auto-enables once signed in
 
 ## 受支持的模型与定价
 
-价格以美元 / **百万 token** 计，并在每次文档构建时从实时目录刷新。开放模型默认以**官方价低 25%** 提供——参见下文[折扣开放模型](#discounted-open-models)。
+价格以美元 / **百万 token** 计，并持续从实时目录刷新。开放模型默认以**官方价低 25%** 提供——参见下文[折扣开放模型](#discounted-open-models)。
 
 <ModelsTable />
+
+## 供应商
+
+上述每个模型都由一个或多个**已注册供应商**提供服务。成员资格维护在公开、开源的 [provider-registry](https://github.com/bitrouter/provider-registry) 中——任何人都可以[注册供应商](/docs/guides/register-as-a-provider)。该列表持续从注册表刷新，因此新合并的供应商会在几分钟内出现。
+
+<ProvidersTable />
 
 ## 折扣开放模型
 

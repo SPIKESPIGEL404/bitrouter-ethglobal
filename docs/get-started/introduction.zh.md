@@ -1,7 +1,7 @@
 ---
 title: 介绍
 description: 面向 LLM Agent 的开放智能路由器
-sourceHash: 3ab349f82f74efaab0c28d767daaffb9e8578da0329be264fa9466cf5efa4dcd
+sourceHash: d98ac30ce61a9f4c773cb4c3d2cb2e7f5123012dacae3b17c6f32904ecdeeefb
 ---
 
 ## 什么是 BitRouter？

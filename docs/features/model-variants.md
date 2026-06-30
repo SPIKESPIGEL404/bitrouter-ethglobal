@@ -1,7 +1,7 @@
 ---
 title: Model Variants
 description: Append :cost, :latency, or :throughput to a model id to choose how BitRouter ranks providers — inline, per request, no body fields.
-sourceHash: 8681f90080a44a7c0a8016c1dbcbfa3b2bb0c54172c3ef9a443e984dc81a5bcf
+sourceHash: 9704500065fd7a0150d6564893f63556411fefc50300238ffb7d68e85410b8eb
 ---
 
 When a model is served by more than one provider, BitRouter has to choose which endpoint to send each request to. A **model variant** lets you make that choice inline: append a `:<profile>` suffix to the model id and BitRouter ranks providers by the axis you named.

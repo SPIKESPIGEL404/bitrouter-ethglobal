@@ -1,7 +1,7 @@
 ---
 title: Models
 description: On BitRouter a model is an aggregate served by many providers — reached through four protocols, ranked per request, with discounted open supply.
-sourceHash: 414a380b6db9f372d9aa9f0a2591c99997a38d6da48c3d55d85715af48b57f85
+sourceHash: 5db2bbc903ccb998b052947933b808037a2c8e06a473f3657c0e65672db6eecf
 ---
 
 On BitRouter a "model" is not a single endpoint. It's an **aggregate**: one logical model — say `openai/gpt-4o` or `anthropic/claude-sonnet-4.6` — that can be served by many providers at once. You address it by a stable **model id**, and BitRouter decides which underlying provider endpoint actually answers each request.

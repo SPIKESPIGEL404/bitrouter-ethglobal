@@ -1,7 +1,7 @@
 ---
 title: 模型变体
 description: 在模型 ID 后追加 :cost、:latency 或 :throughput，即可内联选择 BitRouter 如何对供应商排序——逐请求、无需任何请求体字段。
-sourceHash: 8681f90080a44a7c0a8016c1dbcbfa3b2bb0c54172c3ef9a443e984dc81a5bcf
+sourceHash: 9704500065fd7a0150d6564893f63556411fefc50300238ffb7d68e85410b8eb
 ---
 
 当一个模型由多个供应商承载时，BitRouter 必须为每个请求挑选发往哪个上游。**模型变体**让你内联做出这个选择：在模型 ID 后追加一个 `:<profile>` 后缀，BitRouter 就会按你指定的维度对供应商排序。

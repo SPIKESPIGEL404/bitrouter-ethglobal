@@ -1,7 +1,7 @@
 ---
 title: Installation
 description: Install the open-source BitRouter binary and run it locally, or sign in to BitRouter Cloud — same core either way.
-sourceHash: 2f5476456d252a6f53b6feae8377a38454c1df1050a834f2be019144c0874962
+sourceHash: 3e9c4c0d2e7d148bb2cdf6f0abf5e02101e9a3da5de30dd3f091335a5c59423e
 ---
 
 BitRouter has two front doors, and both run the **same open-source core**. Self-host the binary with your own keys, or sign in to BitRouter Cloud — the routing engine is identical. See [Self-host vs Cloud](/docs/get-started/self-hosted-vs-cloud) for what the hosted account adds on top.

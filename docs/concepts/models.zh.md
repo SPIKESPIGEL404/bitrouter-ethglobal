@@ -1,7 +1,7 @@
 ---
 title: 模型（Models）
 description: 在 BitRouter 上，模型是由众多供应商共同提供的聚合体——通过四种协议触达、逐请求排序，并提供折扣的开源供给。
-sourceHash: 414a380b6db9f372d9aa9f0a2591c99997a38d6da48c3d55d85715af48b57f85
+sourceHash: 5db2bbc903ccb998b052947933b808037a2c8e06a473f3657c0e65672db6eecf
 ---
 
 在 BitRouter 上，"模型"并不是单个端点，而是一个**聚合体**：一个逻辑模型——比如 `openai/gpt-4o` 或 `anthropic/claude-sonnet-4.6`——可以同时由多个供应商提供。你通过一个稳定的**模型 id** 来访问它，由 BitRouter 决定每个请求实际由哪个底层供应商端点来响应。

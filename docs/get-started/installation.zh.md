@@ -1,7 +1,7 @@
 ---
 title: 安装
 description: 安装开源的 BitRouter 二进制并在本地运行，或登录 BitRouter Cloud——两种方式核心完全一致。
-sourceHash: 2f5476456d252a6f53b6feae8377a38454c1df1050a834f2be019144c0874962
+sourceHash: 3e9c4c0d2e7d148bb2cdf6f0abf5e02101e9a3da5de30dd3f091335a5c59423e
 ---
 
 BitRouter 有两扇入口，且都运行**同一套开源核心**。用你自己的密钥自托管二进制，或登录 BitRouter Cloud——路由引擎完全相同。云端账号在其之上额外提供了什么，见 [自托管 vs 云端](/docs/get-started/self-hosted-vs-cloud)。
