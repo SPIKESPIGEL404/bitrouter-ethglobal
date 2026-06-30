@@ -1,0 +1,6 @@
+{
+  "title": "AI Resources",
+  "icon": "Sparkles",
+  "defaultOpen": false,
+  "pages": ["mcp", "skills", "llms-txt"]
+}
