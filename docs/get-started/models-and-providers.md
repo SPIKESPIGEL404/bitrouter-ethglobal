@@ -1,5 +1,5 @@
 ---
-title: Managed Models
+title: Models & Providers
 description: The hosted BitRouter Cloud provider — one account, no upstream keys — the full model catalog with pricing, and automatic discounts on open models.
 sourceHash: 23450d9a4679b410958367cad435234ce0d29c48855b90386675bd75626041bd
 ---

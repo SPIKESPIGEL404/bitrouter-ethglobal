@@ -8,7 +8,7 @@ sourceHash: 3ab349f82f74efaab0c28d767daaffb9e8578da0329be264fa9466cf5efa4dcd
 
 BitRouter is an **agent-native LLM router that optimizes your agent with every run**. It's a single local binary that gives any agent one endpoint to discover, route to, and pay for LLMs and tools across providers — with **zero harness changes**. Point your runtime at it and every model call becomes reliable, traceable, secure, and cost-effective.
 
-It runs anywhere your agent runs, with no dependencies to install, and is operated as a permissionless network where any provider can register and any agent can connect. The [Core](/docs/get-started/installation) is **open-source under Apache 2.0 and self-hostable for free** — bring your own keys or run a local model and you owe nothing. [Cloud](/docs/get-started/self-hosted-vs-cloud) is an optional hosted layer that adds managed providers, agentic payments, and account-wide guardrail policies on top. See the full [models & pricing](/docs/get-started/managed-models) catalog.
+It runs anywhere your agent runs, with no dependencies to install, and is operated as a permissionless network where any provider can register and any agent can connect. The [Core](/docs/get-started/installation) is **open-source under Apache 2.0 and self-hostable for free** — bring your own keys or run a local model and you owe nothing. [Cloud](/docs/get-started/self-hosted-vs-cloud) is an optional hosted layer that adds managed providers, agentic payments, and account-wide guardrail policies on top. See the full [models & pricing](/docs/get-started/models-and-providers) catalog.
 
 ## Why agents run on BitRouter
 

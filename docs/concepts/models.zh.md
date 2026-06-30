@@ -40,4 +40,4 @@ sourceHash: 414a380b6db9f372d9aa9f0a2591c99997a38d6da48c3d55d85715af48b57f85
 - [结构化输出](/docs/features/structured-outputs) —— 跨供应商强制执行 JSON schema。
 - [添加外部密钥（BYOK）](/docs/features/byok) —— 通过你自己的供应商账号路由。
 - [本地与私有模型](/docs/integrations/models) —— 把 BitRouter 指向你自己的服务器。
-- [托管供应商与定价](/docs/get-started/managed-models) —— 托管供应商及完整目录。
+- [托管供应商与定价](/docs/get-started/models-and-providers) —— 托管供应商及完整目录。

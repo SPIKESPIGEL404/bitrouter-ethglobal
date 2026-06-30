@@ -1,5 +1,5 @@
 ---
-title: 托管模型
+title: Models & Providers
 description: 托管的 BitRouter Cloud 供应商——一个账户，无需上游密钥——完整的模型目录与定价，并对开放模型自动打折。
 sourceHash: 23450d9a4679b410958367cad435234ce0d29c48855b90386675bd75626041bd
 ---
