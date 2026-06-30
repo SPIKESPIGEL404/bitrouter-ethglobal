@@ -1,7 +1,7 @@
 ---
 title: 供应商选择
 description: 当一个模型由多个供应商承载时，选择 BitRouter 如何对它们排序——按成本、延迟或吞吐。
-sourceHash: 0e2870e41a94300daeab5b041a75a5aafc87cfd384a6b26a0d944426e518547a
+sourceHash: 08b021ccc3b9394f871bb91d23e8b05efba77e223208d9a19f2ba08e51b49f72
 ---
 
 BitRouter 上多数模型都由多个供应商承载。当你请求 `openai/gpt-4o` 时，BitRouter 必须挑选一个已注册的上游来发送请求。默认会用一个综合评分；通过 `provider.sort` 字段，你可以显式选择策略。
@@ -38,7 +38,7 @@ curl http://127.0.0.1:4356/v1/chat/completions \
 
 ## BYOK 供应商优先
 
-如果你已为某个供应商 [添加了外部密钥](/docs/cloud/byok)，那么只要该供应商能承载某个模型，BitRouter 就会优先选它——排在所有非 BYOK 供应商之前，且不受 `provider.sort` 影响。BYOK 请求按上游标价直接计入你自己的账号、没有抽成；而且你已经显式选择了这家供应商，让默认行为尊重这个选择，是唯一不会让你后续被意外打到的策略。
+如果你已为某个供应商 [添加了外部密钥](/docs/features/byok)，那么只要该供应商能承载某个模型，BitRouter 就会优先选它——排在所有非 BYOK 供应商之前，且不受 `provider.sort` 影响。BYOK 请求按上游标价直接计入你自己的账号、没有抽成；而且你已经显式选择了这家供应商，让默认行为尊重这个选择，是唯一不会让你后续被意外打到的策略。
 
 在所有 BYOK 候选之中，`provider.sort` 策略照常生效。因此 `provider.sort: "latency"` 配合为 OpenAI 与 Anthropic 配置的 BYOK 密钥时，BitRouter 会先按 TTFT 在这两家之间排序；只有当两条 BYOK 通路都失败，才会按延迟向非 BYOK 供应商兜底。
 

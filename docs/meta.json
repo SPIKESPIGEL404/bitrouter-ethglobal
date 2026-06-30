@@ -1,0 +1,5 @@
+{
+  "title": "Documentation",
+  "root": true,
+  "pages": ["get-started", "concepts", "features", "integrations", "guides", "ai-resources", "reference"]
+}

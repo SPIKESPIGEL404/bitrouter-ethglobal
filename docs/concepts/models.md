@@ -1,7 +1,7 @@
 ---
 title: Models
 description: On BitRouter a model is an aggregate served by many providers — reached through four protocols, ranked per request, with discounted open supply.
-sourceHash: e1544dfd69567911bf9502a7c8a48d50ed3d09bec8d022333d38a10dec4df33c
+sourceHash: 414a380b6db9f372d9aa9f0a2591c99997a38d6da48c3d55d85715af48b57f85
 ---
 
 On BitRouter a "model" is not a single endpoint. It's an **aggregate**: one logical model — say `openai/gpt-4o` or `anthropic/claude-sonnet-4.6` — that can be served by many providers at once. You address it by a stable **model id**, and BitRouter decides which underlying provider endpoint actually answers each request.
@@ -38,6 +38,6 @@ Open (non-closed-source) models carry a second property: BitRouter serves them t
 - [Model variants](/docs/features/model-variants) — the `:cost` / `:latency` / `:throughput` suffixes.
 - [Presets](/docs/features/presets) — named, reusable routing configurations.
 - [Structured outputs](/docs/features/structured-outputs) — enforce a JSON schema across providers.
-- [Add external keys (BYOK)](/docs/cloud/byok) — route through your own provider account.
+- [Add external keys (BYOK)](/docs/features/byok) — route through your own provider account.
 - [Local & private models](/docs/integrations/models) — point BitRouter at your own server.
-- [Managed provider & pricing](/docs/cloud/managed-models) — the hosted provider and the full catalog.
+- [Managed provider & pricing](/docs/get-started/managed-models) — the hosted provider and the full catalog.

@@ -1,7 +1,7 @@
 ---
 title: Presets
 description: Save a named @preset per namespace — a reusable bundle of base model, system prompt, params, and routing rules you invoke inline with @name.
-sourceHash: eb0ce00e47e6e605f968e6f0c9c4c4683d24704492b2ea9fa427dd644f23aff3
+sourceHash: 90a1b5a2af25e5fe3408474b108b5de98300d306800452813d8c56ab31f27d29
 ---
 
 A **preset** is a named, reusable routing configuration you save once on a namespace and invoke inline by putting `@<name>` in the `model` field. Where a [model variant](/docs/features/model-variants) (`:cost`) only re-ranks providers for one request, a preset can also **substitute the base model**, **prepend a system prompt**, **set default generation params**, and **restrict which providers are eligible** — all behind a single short token.
@@ -85,7 +85,7 @@ A preset can be disabled without deleting it (`POST …/routing-presets/{id}/dis
 Resolution happens *before* policy enforcement, and a preset can only ever **narrow** what a key could already do — never widen it:
 
 - [Guardrail](/docs/features/guardrails) model allow/deny lists and BYOK rules judge the **resolved base model**, so a preset that substitutes `openai/gpt-5` is checked exactly as if you had asked for `openai/gpt-5` directly. A preset can't smuggle a request past a model denylist.
-- `routing.only` / `routing.ignore` can only *remove* providers from the eligible set — they can never add a provider the request wasn't already allowed to reach. [BYOK](/docs/cloud/byok) providers still rank ahead of platform ones.
+- `routing.only` / `routing.ignore` can only *remove* providers from the eligible set — they can never add a provider the request wasn't already allowed to reach. [BYOK](/docs/features/byok) providers still rank ahead of platform ones.
 - Billing is unchanged — you pay the selected provider's rate for the resolved base model.
 
 ## Errors

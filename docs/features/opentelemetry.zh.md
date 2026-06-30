@@ -1,12 +1,12 @@
 ---
 title: OpenTelemetry
 description: BitRouter 原生支持 OpenTelemetry——为每次请求生成 trace 与指标，通过 OTLP 导出到你运行的任意后端。本页的一切都是开源的，运行在你自己的基础设施上。
-sourceHash: ef28aa78c3274e051be41b56da7aa3697492926bc3c90a7211cdf20c593963de
+sourceHash: bdb0ade9182ea76246cb218b8b1d126497ab54b4ab6cd22ed66cdb606e6f8d1a
 ---
 
 BitRouter **原生支持 OpenTelemetry**。你经路由器发送的每一次请求都会变成一条 **trace**——覆盖从入口、路由、每一次上游尝试（包括故障转移）到结算的完整生命周期——外加一组**指标**，全部遵循 [OpenTelemetry GenAI 语义约定](https://opentelemetry.io/docs/specs/semconv/gen-ai/)，并通过 OTLP 推送到你已经在运行的任意后端。
 
-本页的一切都是**开源的**，完全运行在你自己的基础设施上——中间不存在任何 BitRouter 的遥测端点。它在**你为它指定目标之前都是关闭的**，且默认不导出消息内容。如果你不想运维一个 collector，[BitRouter Cloud](/docs/cloud/tracing) 提供一个无需运维的托管请求视图。
+本页的一切都是**开源的**，完全运行在你自己的基础设施上——中间不存在任何 BitRouter 的遥测端点。它在**你为它指定目标之前都是关闭的**，且默认不导出消息内容。如果你不想运维一个 collector，[BitRouter Cloud](/docs/features/opentelemetry#cloud-activity-hosted) 提供一个无需运维的托管请求视图。
 
 ## 一条 trace 长什么样
 
@@ -216,8 +216,67 @@ bitrouter observe status --json
 ## 下一步
 
 <Cards>
-  <Card title="云端追踪" href="/docs/cloud/tracing" description="托管的请求视图——消费、token 与逐请求日志，无需运维。" />
+  <Card title="云端追踪" href="/docs/features/opentelemetry#cloud-activity-hosted" description="托管的请求视图——消费、token 与逐请求日志，无需运维。" />
   <Card title="自托管 BitRouter" href="/docs/guides/self-host" description="在生产环境运行路由器，并接好遥测。" />
   <Card title="模型故障转移" href="/docs/features/model-fallback" description="你在每条 trace 里都会看到的故障转移链。" />
   <Card title="Guardrails" href="/docs/features/guardrails" description="请求与响应的内容防火墙。" />
+</Cards>
+
+## Cloud Activity（托管）
+
+开源的 [OpenTelemetry](/docs/features/opentelemetry) 导出运行在你自己的后端上。**BitRouter Cloud** 提供托管的替代方案：每一次 `/v1` 请求都会在服务端被追踪进一个 **Activity** 视图——无 collector、无数据仓库、无需运维。内容（prompt 与响应）从不存储。
+
+### Activity 仪表盘
+
+登录 [cloud.bitrouter.ai](https://cloud.bitrouter.ai) 并打开 **Activity**。它以三张 KPI 卡片开场，覆盖你选择的时间窗口——**1 天**、**1 周**、**1 个月**或**全部时间**：
+
+| KPI | 度量 |
+| --- | --- |
+| **消费（Spend）** | 窗口内累计扣费（USD） |
+| **请求（Requests）** | 窗口内请求数 |
+| **Token** | 窗口内 prompt + completion token 数 |
+
+每个数字都作用于**当前工作区**（[namespace](/docs/features/namespaces)），因此仪表盘始终反映你登录所在的工作区。
+
+### 请求日志
+
+KPI 下方，请求日志按时间倒序列出每一次 `/v1` 请求。每一行都是一条逐请求的追踪记录：
+
+| 列 | 详情 |
+| --- | --- |
+| **时间** | 请求到达的时刻 |
+| **模型** | 服务该请求的模型 id，流式调用带 `stream` 标记 |
+| **Provider** | 服务它的上游 provider |
+| **Token** | prompt + completion 合计 |
+| **成本** | 最终扣费（USD） |
+| **延迟** | 端到端延迟 |
+| **来源** | 资金来源（信用余额、BYOK、MPP 会话） |
+| **状态** | 成功、错误、被拒、已取消 |
+
+每条记录还带有所用的**路由档位**（`balanced`、`cost`、`latency`、`throughput`）以及触发的受限**能力**（如 `structured_outputs`）——因此一次发生了故障转移或触及预算的请求，无需离开仪表盘即可看清。
+
+<Callout type="info">
+**只存回执，不存正文。** Cloud 存储请求的*记录*——模型、provider、token、成本、延迟、状态、路由档位——从不存储 prompt 或响应内容。
+</Callout>
+
+### 用量归因与 API
+
+仪表盘中的一切也都可通过管理 API 获取，按工作区作用域，并由 `usage:read` scope 控制：
+
+- **聚合用量**——某个 `[from, to)` 窗口内的消费、token 计数、请求数，以及按能力的细分。
+- **请求历史**——分页的请求日志，含路由档位与所用能力。
+
+它们与你从 [CLI](/docs/concepts/cli) 运行的 `bitrouter cloud usage` 和 `bitrouter cloud requests` 是同一套。`usage` 与 `requests` 端点及其字段见 [API 参考](/docs/reference)。
+
+### 深度 trace
+
+Cloud 存储的是逐请求的**回执**，而非 OpenTelemetry span 瀑布图。当你需要完整的 span 树——入口 span、路由决策、以及每次上游尝试的 `CLIENT` span——它存在于**你自己的 OTLP collector** 中。用开源的 [OpenTelemetry](/docs/features/opentelemetry) 导出接好一次，Activity 视图便会链接到它。
+
+### 下一步
+
+<Cards>
+  <Card title="OpenTelemetry" href="/docs/features/opentelemetry" description="自托管 OTLP 导出——span 模型、指标与各后端配置。" />
+  <Card title="工作区" href="/docs/features/namespaces" description="按工作区作用域管理密钥、用量与策略。" />
+  <Card title="CLI" href="/docs/concepts/cli" description="在终端运行 bitrouter cloud usage / requests。" />
+  <Card title="API 参考" href="/docs/reference" description="usage 与 requests 管理端点。" />
 </Cards>

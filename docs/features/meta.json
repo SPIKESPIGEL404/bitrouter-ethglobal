@@ -9,6 +9,7 @@
     "model-variants",
     "presets",
     "structured-outputs",
+    "byok",
     "---Tools gateway---",
     "server-tools",
     "websearch",
@@ -16,7 +17,9 @@
     "advisor",
     "fusion",
     "---Cross-cutting---",
+    "namespaces",
     "guardrails",
-    "opentelemetry"
+    "opentelemetry",
+    "payment"
   ]
 }

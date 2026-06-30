@@ -1,7 +1,7 @@
 ---
 title: Provider Selection
 description: Choose how BitRouter ranks providers when a model is served by more than one — by cost, latency, or throughput.
-sourceHash: 0e2870e41a94300daeab5b041a75a5aafc87cfd384a6b26a0d944426e518547a
+sourceHash: 08b021ccc3b9394f871bb91d23e8b05efba77e223208d9a19f2ba08e51b49f72
 ---
 
 Most models on BitRouter are served by more than one provider. When you request `openai/gpt-4o`, BitRouter has to pick which registered endpoint to send the request to. By default it uses a balanced score; with the `provider.sort` field, you choose the policy explicitly.
@@ -38,7 +38,7 @@ The same `provider.sort` field works on `/v1/messages` (Anthropic) and `/v1beta/
 
 ## BYOK providers come first
 
-If you've [added an external key](/docs/cloud/byok) for a provider, BitRouter prefers that provider for any model it can serve — ahead of every non-BYOK provider, regardless of `provider.sort`. Your BYOK key bills against your own account at upstream list price with no rev share, and you opted into that provider explicitly; honoring that opt-in by default is the only choice that doesn't surprise you later.
+If you've [added an external key](/docs/features/byok) for a provider, BitRouter prefers that provider for any model it can serve — ahead of every non-BYOK provider, regardless of `provider.sort`. Your BYOK key bills against your own account at upstream list price with no rev share, and you opted into that provider explicitly; honoring that opt-in by default is the only choice that doesn't surprise you later.
 
 Within the BYOK-eligible set, the `provider.sort` policy still applies. So `provider.sort: "latency"` plus BYOK keys for OpenAI and Anthropic ranks those two by TTFT first, and falls back to non-BYOK providers (also ranked by latency) only if both BYOK paths fail.
 

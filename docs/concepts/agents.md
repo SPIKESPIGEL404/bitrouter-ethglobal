@@ -1,7 +1,7 @@
 ---
 title: Agents
 description: What agent-native means on BitRouter — the ACP gateway for identity, discovery, and task dispatch, plus KYA identity for autonomous pay-per-use.
-sourceHash: de5b0c53a66dfa96e4e6012ed86e7a10216cc7254e3e2b316911b1ef0429cfd3
+sourceHash: fc31b2f87105a5965a9c5873d86ccca9e30838d57f686649231ce9c427cea858
 ---
 
 BitRouter is **agent-native**: the primitives below assume the caller is an autonomous agent, not a human at a keyboard. That shows up in two places — how agents are identified and reached, and how they pay.
@@ -16,4 +16,4 @@ An autonomous agent holding your keys is a liability unless it has an identity o
 
 ## Learn how to
 
-- [Agentic payment](/docs/cloud/payment) — autonomous pay-per-use via MPP / x402.
+- [Agentic payment](/docs/features/payment) — autonomous pay-per-use via MPP / x402.

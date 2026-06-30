@@ -1,12 +1,12 @@
 ---
 title: OpenTelemetry
 description: BitRouter is OpenTelemetry-native — traces and metrics for every request, exported over OTLP to any backend you run. Everything here is open-source and runs on your own infrastructure.
-sourceHash: ef28aa78c3274e051be41b56da7aa3697492926bc3c90a7211cdf20c593963de
+sourceHash: bdb0ade9182ea76246cb218b8b1d126497ab54b4ab6cd22ed66cdb606e6f8d1a
 ---
 
 BitRouter is **OpenTelemetry-native**. Every request you send through the router becomes a **trace** — the full lifecycle from ingress through routing, each upstream attempt (including failovers), and settlement — plus a set of **metrics**, all following the [OpenTelemetry GenAI semantic conventions](https://opentelemetry.io/docs/specs/semconv/gen-ai/) and pushed over OTLP to any backend you already run.
 
-Everything on this page is **open-source** and runs entirely on your own infrastructure — there's no BitRouter telemetry endpoint in the middle. It's **off until you point it somewhere**, and it excludes message content by default. If you'd rather not run a collector, [BitRouter Cloud](/docs/cloud/tracing) gives you a hosted request view with nothing to operate.
+Everything on this page is **open-source** and runs entirely on your own infrastructure — there's no BitRouter telemetry endpoint in the middle. It's **off until you point it somewhere**, and it excludes message content by default. If you'd rather not run a collector, [BitRouter Cloud](/docs/features/opentelemetry#cloud-activity-hosted) gives you a hosted request view with nothing to operate.
 
 ## How a trace looks
 
@@ -228,8 +228,67 @@ router and confirm the trace lands in your backend; you should see one inbound
 ## Next steps
 
 <Cards>
-  <Card title="Cloud Tracing" href="/docs/cloud/tracing" description="Hosted request view — spend, tokens, and a per-request log, nothing to operate." />
+  <Card title="Cloud Tracing" href="/docs/features/opentelemetry#cloud-activity-hosted" description="Hosted request view — spend, tokens, and a per-request log, nothing to operate." />
   <Card title="Self-host BitRouter" href="/docs/guides/self-host" description="Run the router in production, with telemetry wired in." />
   <Card title="Model fallback" href="/docs/features/model-fallback" description="The failover chains you'll see in every trace." />
   <Card title="Guardrails" href="/docs/features/guardrails" description="Content firewall for requests and responses." />
+</Cards>
+
+## Cloud Activity (hosted)
+
+The open-source [OpenTelemetry](/docs/features/opentelemetry) export runs on your own backend. **BitRouter Cloud** gives you the hosted alternative: every `/v1` request is traced into an **Activity** view server-side — no collector, no warehouse, nothing to run. Content (prompts and responses) is never stored.
+
+### The Activity dashboard
+
+Sign in to [cloud.bitrouter.ai](https://cloud.bitrouter.ai) and open **Activity**. It opens on three KPI cards over a window you pick — **1 day**, **1 week**, **1 month**, or **all time**:
+
+| KPI | What it measures |
+| --- | --- |
+| **Spend** | Total USD charged over the window |
+| **Requests** | Number of requests over the window |
+| **Tokens** | Prompt + completion tokens over the window |
+
+Every figure is scoped to the **active workspace** ([namespace](/docs/features/namespaces)), so a dashboard always reflects the workspace you're signed into.
+
+### The request log
+
+Below the KPIs, the request log lists every `/v1` request, newest first. Each row is a per-request trace record:
+
+| Column | Detail |
+| --- | --- |
+| **Time** | When the request landed |
+| **Model** | The model id served, with a `stream` marker for streamed calls |
+| **Provider** | The upstream provider that served it |
+| **Tokens** | Prompt + completion total |
+| **Cost** | Final charge in USD |
+| **Latency** | End-to-end latency |
+| **Source** | Funding source (credit balance, BYOK, MPP session) |
+| **Status** | Succeeded, error, denied, cancelled |
+
+Each record also carries the **routing profile** used (`balanced`, `cost`, `latency`, `throughput`) and the gated **capabilities** exercised (e.g. `structured_outputs`) — so a request that failed over or hit a budget is legible without leaving the dashboard.
+
+<Callout type="info">
+**Receipts, not bodies.** Cloud stores the request *record* — model, provider, tokens, cost, latency, status, routing profile — never the prompt or response content.
+</Callout>
+
+### Usage attribution & the API
+
+Everything in the dashboard is also available over the management API, scoped per workspace and gated by the `usage:read` scope:
+
+- **Aggregate usage** — spend, token counts, request count, and a per-capability breakdown over a `[from, to)` window.
+- **Request history** — the paginated request log, including routing profile and capabilities used.
+
+These are the same `bitrouter cloud usage` and `bitrouter cloud requests` commands you run from the [CLI](/docs/concepts/cli). See the [API Reference](/docs/reference) for the `usage` and `requests` endpoints and their fields.
+
+### Deep traces
+
+Cloud stores per-request **receipts**, not OpenTelemetry span waterfalls. When you need the full span tree — the ingress span, the routing decision, and a `CLIENT` span per upstream attempt — that lives in **your own OTLP collector**. Wire it up once with the open-source [OpenTelemetry](/docs/features/opentelemetry) export and the Activity view links out to it.
+
+### Next steps
+
+<Cards>
+  <Card title="OpenTelemetry" href="/docs/features/opentelemetry" description="Self-run OTLP export — the span model, metrics, and backend recipes." />
+  <Card title="Workspaces" href="/docs/features/namespaces" description="Per-workspace scoping for keys, usage, and policy." />
+  <Card title="CLI" href="/docs/concepts/cli" description="bitrouter cloud usage / requests from the terminal." />
+  <Card title="API Reference" href="/docs/reference" description="The usage and requests management endpoints." />
 </Cards>

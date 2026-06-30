@@ -1,7 +1,7 @@
 ---
 title: Migrate from LiteLLM
 description: Move a LiteLLM SDK or Proxy setup to BitRouter — local binary, hosted cloud, or both.
-sourceHash: 32b591ecf0f5a1756c9288236b3ca60079d1f32c7cfded61abc6073f5c0e7756
+sourceHash: 374ade959220237745e7bd565e3c56fbe9c79914947aea588f4507ef86fb5121
 ---
 
 # Migrating from LiteLLM to BitRouter
@@ -26,7 +26,7 @@ LiteLLM is a Python SDK and self-hosted proxy for unifying access to 100+ LLM pr
 
 With LiteLLM, the proxy is something you operate. With BitRouter, **the hosted cloud and local binary expose the same OpenAI-compatible endpoint** — you can start local during development, then point at `cloud.bitrouter.ai` for production (or vice versa) without changing client code. The CLI, the wizard, and Agent Skills all work in either mode; toggle with one keypress in the setup TUI. See the [Quick Start](/docs/get-started/quickstart) for both flows.
 
-This matters when your agent should *pay per request* without you provisioning keys for it — Cloud mode supports [x402 / MPP autonomous payments](/docs/cloud/payment), which LiteLLM has no equivalent for.
+This matters when your agent should *pay per request* without you provisioning keys for it — Cloud mode supports [x402 / MPP autonomous payments](/docs/features/payment), which LiteLLM has no equivalent for.
 
 ### 2. Agent-native, not all-in-one
 
@@ -35,10 +35,10 @@ LiteLLM has shipped MCP, A2A, Skills, and a CLI alongside its horizontal LLM gat
 - [MCP gateway](/docs/concepts/tools) — proxy MCP servers so agents discover tools across hosts.
 - [ACP gateway](/docs/concepts/agents) — first-class support for the Agent Client Protocol used by Claude Code, Codex, OpenCode, and others.
 - [Guardrails](/docs/features/guardrails) — regex rules on the proxy hop that redact or block matching content inline.
-- [Cloud Tracing](/docs/cloud/tracing) — built-in spend and request tracing, no external collector required.
+- [Cloud Tracing](/docs/features/opentelemetry#cloud-activity-hosted) — built-in spend and request tracing, no external collector required.
 - Agent Skills gateway (coming soon) — install and route capabilities by skill, not by raw model name.
 - [Headless CLI](/docs/concepts/cli) — TUI wizard plus scriptable commands for setup and ops.
-- [Agentic auth & payment](/docs/cloud/payment) — x402 / MPP so an agent can pay per request without you provisioning a key for it. LiteLLM has no equivalent.
+- [Agentic auth & payment](/docs/features/payment) — x402 / MPP so an agent can pay per request without you provisioning a key for it. LiteLLM has no equivalent.
 
 If you depend on LiteLLM's team-admin UI, virtual keys, and per-user budgets, LiteLLM is still the better fit. If you're building agents — especially agents that should transact autonomously — BitRouter is.
 
@@ -119,14 +119,14 @@ To skip the local proxy entirely, point clients at `https://cloud.bitrouter.ai/v
 | `router_settings` (retries, fallback) | Model fallback rules | [Model fallback](/docs/features/model-fallback) |
 | `routing_strategy` (least-busy, latency) | Provider selection | [Provider selection](/docs/features/provider-selection) |
 | `cache` (Redis/DynamoDB backed) | Not built into the proxy — handle in app/edge if needed | — |
-| Virtual keys + budgets + admin UI | Workspace keys (cloud); env-var keys (local) | [BYOK](/docs/cloud/byok), [Workspaces](/docs/cloud/workspaces) |
+| Virtual keys + budgets + admin UI | Workspace keys (cloud); env-var keys (local) | [BYOK](/docs/features/byok), [Workspaces](/docs/features/namespaces) |
 | Guardrails / PII / content filter | Agent firewall on the proxy hop | [Guardrails](/docs/features/guardrails) |
 | Callbacks (Langfuse, Datadog, etc.) | Built-in spend + request logs; OTLP export | [OpenTelemetry](/docs/features/opentelemetry) |
 | MCP Gateway | MCP gateway | [MCP](/docs/concepts/tools) |
 | A2A Agent Gateway | ACP gateway | [ACP](/docs/concepts/agents) |
 | Skills Gateway / `/skills` endpoint | Skills gateway with [agentskills.io](https://agentskills.io) registry | [Agent Skills](/docs/concepts/tools) |
 | LiteLLM Proxy CLI | `bitrouter` CLI / TUI | [Headless CLI](/docs/concepts/cli) |
-| — (no equivalent) | Autonomous agent payment (x402 / MPP) | [Payment](/docs/cloud/payment) |
+| — (no equivalent) | Autonomous agent payment (x402 / MPP) | [Payment](/docs/features/payment) |
 
 ## What BitRouter intentionally doesn't ship
 

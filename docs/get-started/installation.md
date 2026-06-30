@@ -1,10 +1,10 @@
 ---
 title: Installation
 description: Install the open-source BitRouter binary and run it locally, or sign in to BitRouter Cloud — same core either way.
-sourceHash: d4b56dc0f92595c69244937a7dfa7e7a4a5763c612f92d6fa86a74bc1a8d496f
+sourceHash: 2f5476456d252a6f53b6feae8377a38454c1df1050a834f2be019144c0874962
 ---
 
-BitRouter has two front doors, and both run the **same open-source core**. Self-host the binary with your own keys, or sign in to BitRouter Cloud — the routing engine is identical. See [Self-host vs Cloud](/docs/cloud/overview) for what the hosted account adds on top.
+BitRouter has two front doors, and both run the **same open-source core**. Self-host the binary with your own keys, or sign in to BitRouter Cloud — the routing engine is identical. See [Self-host vs Cloud](/docs/get-started/self-hosted-vs-cloud) for what the hosted account adds on top.
 
 ## Self-host the binary
 
@@ -49,7 +49,7 @@ bitrouter start
 # Proxy running at http://127.0.0.1:4356
 ```
 
-BitRouter auto-detects any key set in the environment — no config file needed. Any provider whose key is present is immediately available. See [BYOK](/docs/cloud/byok) for the full list of recognized variables, or [local & private models](/docs/integrations/models) to point BitRouter at Ollama, vLLM, or LM Studio for free.
+BitRouter auto-detects any key set in the environment — no config file needed. Any provider whose key is present is immediately available. See [BYOK](/docs/features/byok) for the full list of recognized variables, or [local & private models](/docs/integrations/models) to point BitRouter at Ollama, vLLM, or LM Studio for free.
 
 For advanced routing rules, guardrails, or multi-account failover, scaffold a config file:
 
@@ -67,7 +67,7 @@ bitrouter auth login    # RFC 8628 device flow against api.bitrouter.ai
 bitrouter start         # the `bitrouter` provider auto-enables once signed in
 ```
 
-You can also point an agent straight at the hosted endpoint without running a local binary. Either way the core is the same — a Cloud account is an account and network, not a separate deployment. See [Self-host vs Cloud](/docs/cloud/overview) for the full breakdown, and the [managed provider](/docs/cloud/managed-models) for the model catalog and pricing.
+You can also point an agent straight at the hosted endpoint without running a local binary. Either way the core is the same — a Cloud account is an account and network, not a separate deployment. See [Self-host vs Cloud](/docs/get-started/self-hosted-vs-cloud) for the full breakdown, and the [managed provider](/docs/get-started/managed-models) for the model catalog and pricing.
 
 ## Point your agent at the proxy
 
@@ -75,5 +75,5 @@ However you start it, BitRouter is a drop-in proxy. Point your agent runtime at 
 
 <Cards>
   <Card title="Quick Start" href="/docs/get-started/quickstart" description="Get an agent routing through BitRouter in under a minute" />
-  <Card title="Self-host vs Cloud" href="/docs/cloud/overview" description="Identical core; what a Cloud account adds on top" />
+  <Card title="Self-host vs Cloud" href="/docs/get-started/self-hosted-vs-cloud" description="Identical core; what a Cloud account adds on top" />
 </Cards>

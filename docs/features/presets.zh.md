@@ -1,7 +1,7 @@
 ---
 title: 预设（Presets）
 description: 在命名空间上保存一个命名的 @preset——一个可复用的「基础模型 + 系统提示 + 参数 + 路由规则」组合，用 @name 内联调用。
-sourceHash: eb0ce00e47e6e605f968e6f0c9c4c4683d24704492b2ea9fa427dd644f23aff3
+sourceHash: 90a1b5a2af25e5fe3408474b108b5de98300d306800452813d8c56ab31f27d29
 ---
 
 **预设（preset）** 是你在命名空间上保存一次、之后通过在 `model` 字段里写 `@<name>` 来内联调用的一份命名路由配置。[模型变体](/docs/features/model-variants)（`:cost`）只为单个请求对供应商重新排序；而预设还能 **替换基础模型**、**注入系统提示**、**设置默认生成参数**，并 **限制可用的供应商**——全部收敛在一个简短的 token 后面。
@@ -85,7 +85,7 @@ curl http://127.0.0.1:4356/v1/chat/completions \
 解析发生在策略执行 *之前*，且预设只能 **收窄** 一把密钥原本就能做的事——绝不会放宽：
 
 - [护栏（Guardrail）](/docs/features/guardrails) 的模型允许/拒绝名单与 BYOK 规则判定的是 **解析后的基础模型**，因此一个把模型替换为 `openai/gpt-5` 的预设，会被当作你直接请求 `openai/gpt-5` 一样校验。预设无法绕过模型黑名单偷渡请求。
-- `routing.only` / `routing.ignore` 只能从候选集中 *移除* 供应商——绝不能添加一个请求原本无权触达的供应商。[BYOK](/docs/cloud/byok) 供应商仍然排在平台供应商之前。
+- `routing.only` / `routing.ignore` 只能从候选集中 *移除* 供应商——绝不能添加一个请求原本无权触达的供应商。[BYOK](/docs/features/byok) 供应商仍然排在平台供应商之前。
 - 计费不变——你按所选供应商对解析后基础模型的费率付费。
 
 ## 错误

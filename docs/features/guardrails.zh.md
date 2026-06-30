@@ -1,7 +1,7 @@
 ---
 title: 护栏
 description: 命名的正则规则，对请求与响应中匹配的内容执行拦截或脱敏——在路由器内部强制执行，无需额外的模型调用。
-sourceHash: 0bae5505185420d274320ddfff6e4f1772fd86df135ebc9007fd987aa9b51b7f
+sourceHash: 86d6e83b4e26ff5831ec2aee39c1d5d278b2252e27e7d49a2c496aea163bdbb4
 ---
 
 **护栏（guardrail）**是一条带动作的命名正则规则。BitRouter 在入站时扫描请求 prompt、在出站时扫描响应流；当某条规则命中时，它要么**拦截**请求（或中止响应流），要么**脱敏**命中的片段。强制执行发生在路由器内部、在代理这一跳上——无需额外的模型调用，也不依赖外部服务。
@@ -46,4 +46,4 @@ plugins:
 
 ## 在云端
 
-以上一切都在开源二进制中、基于你的配置文件运行。**BitRouter Cloud** 把同样的 block/redact 规则作为一条按工作区的策略替你托管，你在控制台里编辑——无需部署配置文件。参见[工作区](/docs/cloud/workspaces)。
+以上一切都在开源二进制中、基于你的配置文件运行。**BitRouter Cloud** 把同样的 block/redact 规则作为一条按工作区的策略替你托管，你在控制台里编辑——无需部署配置文件。参见[工作区](/docs/features/namespaces)。

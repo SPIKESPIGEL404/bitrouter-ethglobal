@@ -1,7 +1,7 @@
 ---
 title: Overview
 description: Bring any model source under BitRouter — a Claude or Codex subscription, an OpenRouter key, or a model you serve yourself.
-sourceHash: eb4dbfc5edc8d8105ab7f26fd909e7199bb02ad99b9e14bc860c415cc4d94065
+sourceHash: 7be29fb8987333cd00928957202cd1263655a3e44205aef251f6c3d22aebfc2b
 ---
 
 A **model source** is wherever your tokens actually come from. BitRouter puts every source behind one endpoint and one [registry](/docs/concepts/models), so an agent addresses models by their `provider/model` id and never sees the difference between a subscription, an aggregator, and a GPU in your closet.
@@ -24,7 +24,7 @@ There are three shapes of source, by how you authenticate:
 | **Aggregators / hosted** (OpenRouter, …) | Bring-your-own API key | A provider block in `bitrouter.yaml` |
 | **Self-hosted** (Ollama, vLLM) | Usually none — loopback | A provider block in `bitrouter.yaml` |
 
-Subscriptions skip `bitrouter.yaml` entirely: `bitrouter login anthropic` or `bitrouter login openai-codex` runs the plan's OAuth flow and stores the refreshing token for BitRouter to attach at request time. Everything else is a provider block — an `api_base`, an optional `api_key`, and the models that source serves.
+Subscriptions skip `bitrouter.yaml` entirely: `bitrouter providers login anthropic` or `bitrouter providers login openai-codex` runs the plan's OAuth flow and stores the refreshing token for BitRouter to attach at request time. Everything else is a provider block — an `api_base`, an optional `api_key`, and the models that source serves.
 
 ```yaml
 # bitrouter.yaml

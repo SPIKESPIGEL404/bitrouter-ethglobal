@@ -1,7 +1,7 @@
 ---
 title: Guardrails
 description: Named regex rules that block or redact matching content in requests and responses — enforced inside the router, no model call required.
-sourceHash: 0bae5505185420d274320ddfff6e4f1772fd86df135ebc9007fd987aa9b51b7f
+sourceHash: 86d6e83b4e26ff5831ec2aee39c1d5d278b2252e27e7d49a2c496aea163bdbb4
 ---
 
 A **guardrail** is a named regex rule with an action. BitRouter scans request prompts on the way in and response streams on the way out; when a rule matches, it either **blocks** the request (or aborts the stream) or **redacts** the matched span. Enforcement happens inside the router, on the proxy hop — no extra model call, no external service.
@@ -46,4 +46,4 @@ The two sides are deliberately asymmetric:
 
 ## On Cloud
 
-Everything above runs in the open-source binary off your config file. **BitRouter Cloud** manages the same block/redact rules for you as a per-workspace policy you edit in the console — no config file to deploy. See [Workspaces](/docs/cloud/workspaces).
+Everything above runs in the open-source binary off your config file. **BitRouter Cloud** manages the same block/redact rules for you as a per-workspace policy you edit in the console — no config file to deploy. See [Workspaces](/docs/features/namespaces).

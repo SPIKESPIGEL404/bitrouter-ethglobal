@@ -1,7 +1,7 @@
 ---
 title: 模型（Models）
 description: 在 BitRouter 上，模型是由众多供应商共同提供的聚合体——通过四种协议触达、逐请求排序，并提供折扣的开源供给。
-sourceHash: e1544dfd69567911bf9502a7c8a48d50ed3d09bec8d022333d38a10dec4df33c
+sourceHash: 414a380b6db9f372d9aa9f0a2591c99997a38d6da48c3d55d85715af48b57f85
 ---
 
 在 BitRouter 上，"模型"并不是单个端点，而是一个**聚合体**：一个逻辑模型——比如 `openai/gpt-4o` 或 `anthropic/claude-sonnet-4.6`——可以同时由多个供应商提供。你通过一个稳定的**模型 id** 来访问它，由 BitRouter 决定每个请求实际由哪个底层供应商端点来响应。
@@ -38,6 +38,6 @@ sourceHash: e1544dfd69567911bf9502a7c8a48d50ed3d09bec8d022333d38a10dec4df33c
 - [模型变体](/docs/features/model-variants) —— `:cost` / `:latency` / `:throughput` 后缀。
 - [预设](/docs/features/presets) —— 具名、可复用的路由配置。
 - [结构化输出](/docs/features/structured-outputs) —— 跨供应商强制执行 JSON schema。
-- [添加外部密钥（BYOK）](/docs/cloud/byok) —— 通过你自己的供应商账号路由。
+- [添加外部密钥（BYOK）](/docs/features/byok) —— 通过你自己的供应商账号路由。
 - [本地与私有模型](/docs/integrations/models) —— 把 BitRouter 指向你自己的服务器。
-- [托管供应商与定价](/docs/cloud/managed-models) —— 托管供应商及完整目录。
+- [托管供应商与定价](/docs/get-started/managed-models) —— 托管供应商及完整目录。

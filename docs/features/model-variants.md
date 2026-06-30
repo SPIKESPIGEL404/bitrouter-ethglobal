@@ -1,7 +1,7 @@
 ---
 title: Model Variants
 description: Append :cost, :latency, or :throughput to a model id to choose how BitRouter ranks providers — inline, per request, no body fields.
-sourceHash: 4abf3c53b6d7a87c3f6ddaae70b48ae36552cba1cf8e97156b1207b42a84f619
+sourceHash: 8681f90080a44a7c0a8016c1dbcbfa3b2bb0c54172c3ef9a443e984dc81a5bcf
 ---
 
 When a model is served by more than one provider, BitRouter has to choose which endpoint to send each request to. A **model variant** lets you make that choice inline: append a `:<profile>` suffix to the model id and BitRouter ranks providers by the axis you named.
@@ -51,14 +51,14 @@ Separate from the ranking profiles above, BitRouter accepts a `:discount` suffix
 moonshotai/kimi-k2.6:discount     # route to the self-hosted discounted provider
 ```
 
-Because it pins the provider rather than re-ranking the eligible ones, `:discount` is **not** a routing profile and doesn't combine meaningfully with `:cost` / `:latency` / `:throughput`. Open models are already 25% off by default without it; the suffix forces the discounted self-hosted supply and is where custom account discounts apply. See [Discounted Models](/docs/cloud/managed-models) for the full behavior — including custom discounts up to 50% for open-source projects.
+Because it pins the provider rather than re-ranking the eligible ones, `:discount` is **not** a routing profile and doesn't combine meaningfully with `:cost` / `:latency` / `:throughput`. Open models are already 25% off by default without it; the suffix forces the discounted self-hosted supply and is where custom account discounts apply. See [Discounted Models](/docs/get-started/managed-models) for the full behavior — including custom discounts up to 50% for open-source projects.
 
 ## Variants never change authorization
 
 The profile affects provider *ranking* only. Everything else keys off the base model id:
 
 - [Guardrail](/docs/features/guardrails) model allowlists/denylists and BYOK rules judge `anthropic/claude-sonnet-4.6:cost` exactly as `anthropic/claude-sonnet-4.6` — a profile can never widen or bypass a policy.
-- [BYOK](/docs/cloud/byok) providers still rank ahead of platform providers; the profile orders providers *within* each tier.
+- [BYOK](/docs/features/byok) providers still rank ahead of platform providers; the profile orders providers *within* each tier.
 - Billing is unchanged — you pay the selected provider's rate for the base model.
 
 ## Seeing which profile a request used

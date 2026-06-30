@@ -1,7 +1,7 @@
 ---
 title: 从 TensorZero 迁移
 description: 将 TensorZero 网关迁移到 BitRouter —— 抛开依赖 ClickHouse 的 LLMOps 栈，换成单一、面向 Agent 的二进制，本地或托管皆可。
-sourceHash: 85b2b13f7d9c17023b10e00e4b6c3509325120c5ca0065c926812d1865aefcfa
+sourceHash: 0b6c985670a25c13b4f0d958728639e8b06480832b28005456e89d61a7a85e53
 ---
 
 # 从 TensorZero 迁移到 BitRouter
@@ -33,7 +33,7 @@ BitRouter 有意止步于网关。没有 `tensorzero.toml` 要维护，没有 Cl
 
 ### 2. 面向 Agent，且云端与本地共用同一接口
 
-TensorZero 的网关是面向提供商的 —— 它统一上游。BitRouter 补上**面向 Agent**的另一半：用于工具的 [MCP 网关](/docs/concepts/tools)、用于 Agent 身份与调度的 [ACP 网关](/docs/concepts/agents)、一个[服务端工具循环](/docs/features/server-tools)，以及 [Agent 支付](/docs/cloud/payment) —— 让 Agent 无需你为其预置密钥即可按请求付费。
+TensorZero 的网关是面向提供商的 —— 它统一上游。BitRouter 补上**面向 Agent**的另一半：用于工具的 [MCP 网关](/docs/concepts/tools)、用于 Agent 身份与调度的 [ACP 网关](/docs/concepts/agents)、一个[服务端工具循环](/docs/features/server-tools)，以及 [Agent 支付](/docs/features/payment) —— 让 Agent 无需你为其预置密钥即可按请求付费。
 
 而且**托管云与本地二进制暴露同一个 OpenAI 兼容端点** —— 开发时在本地启动，生产时指向 `api.bitrouter.ai`（或反过来），无需改动客户端代码。两种流程都见[快速开始](/docs/get-started/quickstart)。
 
@@ -116,18 +116,18 @@ bitrouter
 
 | TensorZero 概念 | BitRouter 对应 | 文档 |
 |---|---|---|
-| `tensorzero.toml` 中的 `[models.*]` + `[models.*.providers.*]` | 提供商密钥（自动检测）+ 模型注册表 | [BYOK](/docs/cloud/byok)、[模型](/docs/concepts/models) |
+| `tensorzero.toml` 中的 `[models.*]` + `[models.*.providers.*]` | 提供商密钥（自动检测）+ 模型注册表 | [BYOK](/docs/features/byok)、[模型](/docs/concepts/models) |
 | `[functions.*]`（命名提示 + schema） | 留在应用侧，或一个路由[预设](/docs/features/presets) | [预设](/docs/features/presets) |
 | `[functions.*.variants.*]`（按变体指定模型） | 路由预设变体 / 模型 id | [预设](/docs/features/presets) |
 | `routing` / `retries` / `fallbacks` | 模型回退规则 | [模型回退](/docs/features/model-fallback) |
 | 跨提供商 `load_balancing` | 提供商选择 | [提供商选择](/docs/features/provider-selection) |
 | OpenAI 兼容 `/openai/v1` 端点 | OpenAI 兼容 `/v1` 端点 | [API 参考](/docs/reference/openai-compatible/createChatCompletion) |
 | 原生 `POST /inference` 端点 | OpenAI、Anthropic 与 Google 兼容协议 | [API 参考](/docs/reference) |
-| ClickHouse 可观测性 + UI | 发往你自己后端的 OTLP trace 与指标，或 Cloud 上的托管 Activity | [OpenTelemetry](/docs/features/opentelemetry)、[云端追踪](/docs/cloud/tracing) |
+| ClickHouse 可观测性 + UI | 发往你自己后端的 OTLP trace 与指标，或 Cloud 上的托管 Activity | [OpenTelemetry](/docs/features/opentelemetry)、[云端追踪](/docs/features/opentelemetry#cloud-activity-hosted) |
 | OpenTelemetry（OTLP）导出 | OpenTelemetry（OTLP）导出 | [OpenTelemetry](/docs/features/opentelemetry) |
 | 内置结构化输出（JSON functions） | 跨所有提供商的结构化输出 | [结构化输出](/docs/features/structured-outputs) |
 | ——（无对应） | MCP / ACP / Skills Agent 网关 | [工具](/docs/concepts/tools)、[Agents](/docs/concepts/agents) |
-| ——（无对应） | Agent 自主支付（x402 / MPP） | [支付](/docs/cloud/payment) |
+| ——（无对应） | Agent 自主支付（x402 / MPP） | [支付](/docs/features/payment) |
 
 ## BitRouter 有意不提供的能力
 

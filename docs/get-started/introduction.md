@@ -1,14 +1,14 @@
 ---
 title: Introduction
 description: Agent-native LLM router that makes every model call reliable, traceable, secure, and cost-effective — with zero harness changes.
-sourceHash: 06782ac97e5dee18821297c3176a6156ddb4d1539acf39627c6112a8a768a5a4
+sourceHash: 3ab349f82f74efaab0c28d767daaffb9e8578da0329be264fa9466cf5efa4dcd
 ---
 
 ## What is BitRouter?
 
 BitRouter is an **agent-native LLM router that optimizes your agent with every run**. It's a single local binary that gives any agent one endpoint to discover, route to, and pay for LLMs and tools across providers — with **zero harness changes**. Point your runtime at it and every model call becomes reliable, traceable, secure, and cost-effective.
 
-It runs anywhere your agent runs, with no dependencies to install, and is operated as a permissionless network where any provider can register and any agent can connect. The [Core](/docs/get-started/installation) is **open-source under Apache 2.0 and self-hostable for free** — bring your own keys or run a local model and you owe nothing. [Cloud](/docs/cloud/overview) is an optional hosted layer that adds managed providers, agentic payments, and account-wide guardrail policies on top. See the full [models & pricing](/docs/cloud/managed-models) catalog.
+It runs anywhere your agent runs, with no dependencies to install, and is operated as a permissionless network where any provider can register and any agent can connect. The [Core](/docs/get-started/installation) is **open-source under Apache 2.0 and self-hostable for free** — bring your own keys or run a local model and you owe nothing. [Cloud](/docs/get-started/self-hosted-vs-cloud) is an optional hosted layer that adds managed providers, agentic payments, and account-wide guardrail policies on top. See the full [models & pricing](/docs/get-started/managed-models) catalog.
 
 ## Why agents run on BitRouter
 
@@ -24,7 +24,7 @@ Full call-chain visibility: every agent, every model, every step, with cost attr
 
 ### Security — guardrails for every agent, configured once
 
-Regex guardrails that redact or block risky prompts and output, plus rate limits — enforced at the router, once, for every agent, with no application-level changes. Combined with per-agent [KYA](/docs/cloud/payment) identity, an autonomous agent holding your keys stops being an unsupervised attack surface. See [Guardrails](/docs/features/guardrails).
+Regex guardrails that redact or block risky prompts and output, plus rate limits — enforced at the router, once, for every agent, with no application-level changes. Combined with per-agent [KYA](/docs/features/payment) identity, an autonomous agent holding your keys stops being an unsupervised attack surface. See [Guardrails](/docs/features/guardrails).
 
 ### Efficiency — not every call needs your strongest model
 

@@ -1,7 +1,7 @@
 ---
 title: Migrate from TensorZero
 description: Move a TensorZero gateway setup to BitRouter — drop the ClickHouse-backed LLMOps stack for a single agent-native binary, local or hosted.
-sourceHash: 85b2b13f7d9c17023b10e00e4b6c3509325120c5ca0065c926812d1865aefcfa
+sourceHash: 0b6c985670a25c13b4f0d958728639e8b06480832b28005456e89d61a7a85e53
 ---
 
 # Migrating from TensorZero to BitRouter
@@ -33,7 +33,7 @@ BitRouter deliberately stops at the gateway. There's no `tensorzero.toml` to mai
 
 ### 2. Agent-native, and cloud/local share one surface
 
-TensorZero's gateway is provider-facing — it unifies the upstreams. BitRouter adds the **agent-facing** half: an [MCP gateway](/docs/concepts/tools) for tools, an [ACP gateway](/docs/concepts/agents) for agent identity and dispatch, a [server-tool loop](/docs/features/server-tools), and [agentic payment](/docs/cloud/payment) so an agent can pay per request without you provisioning a key for it.
+TensorZero's gateway is provider-facing — it unifies the upstreams. BitRouter adds the **agent-facing** half: an [MCP gateway](/docs/concepts/tools) for tools, an [ACP gateway](/docs/concepts/agents) for agent identity and dispatch, a [server-tool loop](/docs/features/server-tools), and [agentic payment](/docs/features/payment) so an agent can pay per request without you provisioning a key for it.
 
 And **the hosted cloud and local binary expose the same OpenAI-compatible endpoint** — start local during development, point at `api.bitrouter.ai` for production (or vice versa) without changing client code. See the [Quick Start](/docs/get-started/quickstart) for both flows.
 
@@ -116,18 +116,18 @@ To skip the local proxy entirely, point clients at `https://api.bitrouter.ai/v1`
 
 | TensorZero concept | BitRouter equivalent | Docs |
 |---|---|---|
-| `[models.*]` + `[models.*.providers.*]` in `tensorzero.toml` | Provider keys (auto-detected) + the model registry | [BYOK](/docs/cloud/byok), [Models](/docs/concepts/models) |
+| `[models.*]` + `[models.*.providers.*]` in `tensorzero.toml` | Provider keys (auto-detected) + the model registry | [BYOK](/docs/features/byok), [Models](/docs/concepts/models) |
 | `[functions.*]` (named prompt + schema) | App-side, or a routing [preset](/docs/features/presets) | [Presets](/docs/features/presets) |
 | `[functions.*.variants.*]` (per-variant model) | Routing preset variants / model ids | [Presets](/docs/features/presets) |
 | `routing` / `retries` / `fallbacks` | Model fallback rules | [Model fallback](/docs/features/model-fallback) |
 | `load_balancing` across providers | Provider selection | [Provider selection](/docs/features/provider-selection) |
 | OpenAI-compatible `/openai/v1` endpoint | OpenAI-compatible `/v1` endpoint | [API Reference](/docs/reference/openai-compatible/createChatCompletion) |
 | Native `POST /inference` endpoint | OpenAI-, Anthropic-, and Google-compatible protocols | [API Reference](/docs/reference) |
-| ClickHouse observability + UI | OTLP traces & metrics to your own backend, or hosted Activity on Cloud | [OpenTelemetry](/docs/features/opentelemetry), [Cloud Tracing](/docs/cloud/tracing) |
+| ClickHouse observability + UI | OTLP traces & metrics to your own backend, or hosted Activity on Cloud | [OpenTelemetry](/docs/features/opentelemetry), [Cloud Tracing](/docs/features/opentelemetry#cloud-activity-hosted) |
 | OpenTelemetry (OTLP) export | OpenTelemetry (OTLP) export | [OpenTelemetry](/docs/features/opentelemetry) |
 | Embedded structured outputs (JSON functions) | Structured outputs across all providers | [Structured outputs](/docs/features/structured-outputs) |
 | — (no equivalent) | MCP / ACP / Skills agent gateways | [Tools](/docs/concepts/tools), [Agents](/docs/concepts/agents) |
-| — (no equivalent) | Autonomous agent payment (x402 / MPP) | [Payment](/docs/cloud/payment) |
+| — (no equivalent) | Autonomous agent payment (x402 / MPP) | [Payment](/docs/features/payment) |
 
 ## What BitRouter intentionally doesn't ship
 

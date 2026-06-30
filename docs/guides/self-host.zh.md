@@ -1,7 +1,7 @@
 ---
 title: 自托管 BitRouter
 description: 在自有基础设施上运行自托管 BitRouter 的生产实践 —— 配置文件、密钥、守护进程生命周期、指标与加固。
-sourceHash: b9d1cdb7d31206bbf24ad86df84dd29359e8ee65a92d7b42864711d22132cebb
+sourceHash: 8c7accdceb945d6dfd258bdc9d2e9117263e3bc41481462feb3e65831502810b
 ---
 
 # 自托管 BitRouter
@@ -9,7 +9,7 @@ sourceHash: b9d1cdb7d31206bbf24ad86df84dd29359e8ee65a92d7b42864711d22132cebb
 这是在你自有基础设施上运行 BitRouter 的 **生产** 路径：一个提交进仓库的配置文件、真实的提供商密钥、
 作为受管守护进程运行的路由器、指标导出，以及基本加固。如果你只想在 60 秒内把它跑起来，请从
 [安装](/docs/get-started/installation) 开始 —— 本指南承接其后。在自托管与托管产品之间做选择？
-参见 [自托管 vs 云](/docs/cloud/overview)。
+参见 [自托管 vs 云](/docs/get-started/self-hosted-vs-cloud)。
 
 路由器默认监听 `127.0.0.1:4356` —— 仅回环，除非你明确选择对外开放。
 
@@ -178,7 +178,7 @@ span 模型、按请求归因与各后端的导出配置见
 
 <Cards>
   <Card title="安装" href="/docs/get-started/installation" description="若你跳过了：60 秒本地安装。" />
-  <Card title="自托管 vs 云" href="/docs/cloud/overview" description="选择适合你的部署模型。" />
+  <Card title="自托管 vs 云" href="/docs/get-started/self-hosted-vs-cloud" description="选择适合你的部署模型。" />
   <Card title="OpenTelemetry" href="/docs/features/opentelemetry" description="OTLP trace + 指标导出与按请求归因。" />
   <Card title="护栏" href="/docs/features/guardrails" description="面向请求与响应的内容防火墙。" />
 </Cards>
